@@ -92,11 +92,23 @@ _FITTED_CASES = (
     ),
     (
         fitted_measurement.CASE[0],
+        "test_actual0056_inert_startup_candidate_binds_source_roles_and_control",
+    ),
+    (
+        fitted_measurement.CASE[0],
+        "test_actual0056_stable_role_identity_on_distinct_connections",
+    ),
+    (
+        fitted_measurement.CASE[0],
         "test_actual0056_lab_only_recovery_cas_after_fresh_restricted_observations",
     ),
     (
         fitted_measurement.CASE[0],
         "test_actual0056_owner_grant_lock_and_rollback",
+    ),
+    (
+        fitted_measurement.CASE[0],
+        "test_actual0056_draft_locked_owner_grant_and_separate_role_readback",
     ),
     (
         fitted_measurement.CASE[0],

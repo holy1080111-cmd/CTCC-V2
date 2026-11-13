@@ -531,25 +531,25 @@ def _source(chain, scope, *, proof_schema=SCHEMA):
         "page_validated",
         "raw_finalized",
     )
+    phases_by_request = [{} for _ in packet.observations]
+    duplicate_phases = set()
     for record in records:
-        if record["kind"] in phase_kinds and (
-            type(record["data"].get("request_index")) is not int
-            or not 0 <= record["data"]["request_index"] < len(packet.observations)
-        ):
+        kind = record["kind"]
+        if kind not in phase_kinds:
+            continue
+        index = record["data"].get("request_index")
+        if type(index) is not int or not 0 <= index < len(phases_by_request):
             raise NativeAccountProofError("native_account_original_index_invalid")
+        phases = phases_by_request[index]
+        if kind in phases:
+            duplicate_phases.add(index)
+        else:
+            phases[kind] = record
     for index, page in enumerate(packet.observations):
-        matching = {
-            kind: [
-                record
-                for record in records
-                if record["kind"] == kind
-                and record["data"].get("request_index") == index
-            ]
-            for kind in phase_kinds
-        }
-        if any(len(items) != 1 for items in matching.values()):
+        matching = phases_by_request[index]
+        if len(matching) != len(phase_kinds) or index in duplicate_phases:
             raise NativeAccountProofError("native_account_original_phase_missing")
-        transport = matching["raw_finalized"][0]["data"]
+        transport = matching["raw_finalized"]["data"]
         peer = transport.get("tls_certificate_sha256")
         if transport.get("tls_provenance") != "owned_signed_verified_tls":
             raise NativeAccountProofError("native_account_original_tls_required")
@@ -575,10 +575,10 @@ def _source(chain, scope, *, proof_schema=SCHEMA):
                 "tls_peer_sha256": peer,
                 **({"tls_hostname": hostname} if hostname is not None else {}),
                 "original_event_sha256": {
-                    kind: journal.digest(journal.canonical(items[0]))
-                    for kind, items in matching.items()
+                    kind: journal.digest(journal.canonical(matching[kind]))
+                    for kind in phase_kinds
                 },
-                "body_exhausted_at": matching["body_complete"][0]["observed_at"],
+                "body_exhausted_at": matching["body_complete"]["observed_at"],
             }
         )
     return reference, packet, records, joins

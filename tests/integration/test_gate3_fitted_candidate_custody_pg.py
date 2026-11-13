@@ -73,6 +73,7 @@ from scripts import current0056_native_owner_pregrant_v1 as owner_pregrant
 from scripts import current0056_postgrant_acl_measurement_v1 as postgrant_acl
 from scripts import current_contract_source_scopes_v1 as source_scopes
 from scripts import devval_campaign_physical_catalog_v1 as devval_catalog
+from scripts import native_owner_grant_0056_draft_v1 as owner_grant_draft
 from scripts import native_owner_route_preflight_0056_v1 as owner_route
 from scripts import native_owner_upgrade_0056_v1 as owner_upgrade
 from scripts import verify_final_hermetic as archive_checks
@@ -107,6 +108,18 @@ _N234_POSTGRANT_ACL_SHAPE_SHA256 = (
 )
 _N234_ROLE_OBSERVER_SOURCE_SHA256 = (
     "0d8984cddbc46a724f5d93dba88af7392276eb0a42e560334914686ce0717aa9"
+)
+# The newer inert candidate has separate exact source pins. N234 remains intact.
+_CANDIDATE_0056_SOURCE_PINS = {
+    "app/core/native_role_witness_0056_v1.py": (
+        "164ba609ecff5e7df4d77689dcfdf34c4ff0506ff5587b7494cd1e15a833488a"
+    ),
+    "app/core/native_startup_candidate_0056_v1.py": (
+        "69458555dea8f36c6b7773dfe86fd7598222b69220c1b6a6a64bc8ca632eef48"
+    ),
+}
+_STABLE_ROLE_IDENTITY_V2_SOURCE_SHA256 = (
+    "e309e6847ca4cd0d94e932fe837fb70b95e184d6d8d30f822ca0cfed72e59290"
 )
 _READ = "gate3_fitted_binding_read(text)"
 _ACK_READ = "gate3_fitted_binding_ack_read(text)"
@@ -1942,6 +1955,86 @@ async def test_actual0056_owner_grant_lock_and_rollback(
     assert readback.startup_admission is readback.execution_authority is False
 
 
+async def test_actual0056_draft_locked_owner_grant_and_separate_role_readback(
+    _actual_0056_ungranted_lab,
+):
+    """A disposable lab invokes the private draft; the public entry stays off."""
+    owner, owner_factory, selected, _ = _actual_0056_ungranted_lab
+    names = tuple(
+        factory.kw["bind"].url.username
+        for factory in (
+            selected.writer_factory,
+            selected.custody_factory,
+            selected.frame_reader_factory,
+        )
+    )
+    roles = dict(zip(("writer", "custody", "frame_reader"), names, strict=True))
+    pregrant = await owner_pregrant.observe_owner_pregrant_diagnostic_0056(
+        owner_factory, source=_SOURCE_ROOT, **roles
+    )
+    readwrite = await owner_pregrant._read_owner_pregrant_graph_0056(
+        owner_factory, owner.url.username, names, readwrite=True
+    )
+    async with owner.begin() as connection:
+        for setting in _GRANT_TX_SETTINGS:
+            await connection.exec_driver_sql(setting)
+        await connection.exec_driver_sql("SET LOCAL search_path TO pg_catalog, pg_temp")
+        fitted_write = await connection.scalar(
+            text(fitted_delta.OWNER_READWRITE_CATALOG_SQL)
+        )
+        fitted_delta.inspect_owner_readwrite_catalog(
+            fitted_write, owner=owner.url.username, demo_roles=names
+        )
+    identity, _, _ = fitted_measurement._read_hermetic_inputs()
+    source = source_scopes.actual_current_source_scope(_SOURCE_ROOT)
+    async with owner.connect() as connection:
+        profile = tuple(
+            (await connection.execute(owner_grant_draft._PROFILE_SQL)).one()
+        )
+        role_oids = await core_acl._roles(connection, names, profile[4])
+    pins = owner_grant_draft.OwnerGrantDraftPinsV1(
+        source_commit=identity["commit"],
+        source_tree=identity["tree"],
+        source_archive_sha256=identity["archive_sha256"],
+        route=owner_route.OwnerRoutePinsV1(
+            source_manifest_sha256=source.manifest_sha256,
+            ca_sha256=os.environ["CTCC_DEVVAL_CUSTODY_TEST_TLS_CA_SHA256"],
+            cluster_system_identifier_sha256=sha(profile[11].encode("ascii")),
+            host=owner.url.host,
+            port=owner.url.port,
+            database=owner.url.database,
+            owner=owner.url.username,
+            database_oid=profile[5],
+            owner_oid=profile[4],
+            database_head="0056",
+        ),
+        writer=names[0],
+        custody=names[1],
+        frame_reader=names[2],
+        writer_oid=role_oids[names[0]],
+        custody_oid=role_oids[names[1]],
+        frame_reader_oid=role_oids[names[2]],
+        portable_inherited_definitions_sha256=pregrant.inherited_native_definitions_sha256,
+        portable_fitted_pregrant_normalized_sha256=pregrant.fitted_normalized_owner_catalog_sha256,
+        raw_inherited_owner_readonly_sha256=pregrant.inherited_raw_owner_graph_sha256,
+        raw_inherited_owner_readwrite_sha256=readwrite[2],
+        raw_fitted_owner_readonly_sha256=pregrant.fitted_raw_owner_catalog_sha256,
+        raw_fitted_owner_readwrite_sha256=sha(canonical(fitted_write)),
+        exact_42_plan_sha256=pregrant.exact_grant_plan_sha256,
+    )
+    physical = await owner_grant_draft._read_before(owner_factory, pins)
+    async with owner.begin() as connection:
+        await owner_grant_draft._locked_grant(connection, pins, physical)
+    await owner_grant_draft._readback(owner, pins, physical)
+    restricted = await observation.observe_restricted_native_roles_0056_v1(
+        selected, source=_SOURCE_ROOT
+    )
+    assert restricted.database_head == "0056"
+    assert restricted.startup_admission is restricted.execution_authority is False
+    with pytest.raises(owner_grant_draft.OwnerGrantRefusal):
+        await owner_grant_draft.grant_reviewed_owner_0056_v1(pins)
+
+
 async def test_actual0056_full_native_role_observation_tls(
     _actual_0056_role_observation_lab,
 ):
@@ -2216,6 +2309,7 @@ async def test_actual0056_native_lifespan_denies_before_recovery_cas(
         is False
     )
     assert await read_control() == before
+
     settings = Settings(
         _env_file=None,
         ctcc_native_only_lifespan_v1=True,
@@ -2250,6 +2344,156 @@ async def test_actual0056_native_lifespan_denies_before_recovery_cas(
     assert instance.state.native_only_recovery_confirmed is False
     forbidden_recovery.assert_not_awaited()
     assert await read_control() == before
+
+
+async def test_actual0056_inert_startup_candidate_binds_source_roles_and_control(
+    _actual_0056_role_observation_lab,
+):
+    from app.core import native_role_witness_0056_v1 as witness56
+    from app.core import native_startup_candidate_0056_v1 as candidate56
+    from app.core import native_startup_control_observation_0056_v1 as startup56
+    from app.database.models.demo_automation import DemoAutomationState
+
+    _, owner_factory, selected, _ = _actual_0056_role_observation_lab
+    identity, files, files_raw = fitted_measurement._read_hermetic_inputs()
+    source = fitted_measurement.source_identity(identity, files, files_raw)
+    for relative, expected in _CANDIDATE_0056_SOURCE_PINS.items():
+        assert files[relative]["sha256"] == expected
+        assert sha((_SOURCE_ROOT / relative).read_bytes()) == expected
+    assert (
+        sha((_SOURCE_ROOT / "MANIFEST.sha256").read_bytes())
+        == source["manifest_sha256"]
+    )
+    assert (
+        sha(
+            (
+                _SOURCE_ROOT
+                / "app/core/native_role_preflight_0056_full_diagnostic_v1.py"
+            ).read_bytes()
+        )
+        == _N234_ROLE_OBSERVER_SOURCE_SHA256
+    )
+
+    instant = datetime(2026, 1, 1, tzinfo=UTC)
+    async with owner_factory.begin() as session:
+        session.add(
+            DemoAutomationState(
+                id=1,
+                control_revision=7,
+                session_date=instant.date(),
+                armed=True,
+                restart_latch_required=True,
+                active_trades={"synthetic-tracked-position": {"retained": True}},
+                updated_at=instant,
+            )
+        )
+    # These independent lab reads supply diagnostic inputs only.
+    measured = await witness56.observe_restricted_native_roles_0056_witness_v1(
+        selected, source=_SOURCE_ROOT
+    )
+    measured_control = await startup56.observe_startup_control_0056_witness_v1(selected)
+    assert (
+        measured.server_incarnation_sha256 == measured_control.server_incarnation_sha256
+    )
+    assert measured.role_route_sha256 == measured_control.role_route_sha256
+    pins = candidate56.NativeStartupCandidate0056PinsV1(
+        source["manifest_sha256"],
+        _N234_INHERITED_NATIVE_SHA256,
+        _N234_POSTGRANT_ACL_SHAPE_SHA256,
+        measured.observation.frame_writer_observation_sha256,
+        measured.observation.raw_custody_catalog_sha256,
+        measured.server_incarnation_sha256,
+        measured.role_route_sha256,
+    )
+    result = await candidate56.observe_selected_native_startup_candidate_0056_v1(
+        selected, source=_SOURCE_ROOT, pins=pins
+    )
+    assert result.control_revision == 7
+    assert result.admission == "DENY"
+    assert result.independent_reference_authenticated is False
+    assert result.startup_admission is result.execution_authority is False
+    assert (
+        result.deployment_server_incarnation_sha256
+        == measured.server_incarnation_sha256
+    )
+    assert result.deployment_role_route_sha256 == measured.role_route_sha256
+
+
+async def test_actual0056_stable_role_identity_on_distinct_connections(
+    _actual_0056_role_observation_lab,
+):
+    from app.core import native_role_identity_0056_v2 as stable56
+
+    _, _, selected, _ = _actual_0056_role_observation_lab
+    identity, files, files_raw = fitted_measurement._read_hermetic_inputs()
+    source = fitted_measurement.source_identity(identity, files, files_raw)
+    relative = "app/core/native_role_identity_0056_v2.py"
+    assert files[relative]["sha256"] == _STABLE_ROLE_IDENTITY_V2_SOURCE_SHA256
+    assert sha((_SOURCE_ROOT / relative).read_bytes()) == (
+        _STABLE_ROLE_IDENTITY_V2_SOURCE_SHA256
+    )
+    assert source["manifest_sha256"] == sha(
+        (_SOURCE_ROOT / "MANIFEST.sha256").read_bytes()
+    )
+    factories = (
+        selected.writer_factory,
+        selected.custody_factory,
+        selected.frame_reader_factory,
+    )
+    assert all(
+        isinstance(factory.kw["bind"].sync_engine.pool, NullPool)
+        for factory in factories
+    )
+    # Hold one backend while two independently opened V2 observations run.
+    # This verifies distinct connections on one live PG incarnation, not a PG restart.
+    async with selected.writer_factory() as held:
+        held_pid = await held.scalar(text("SELECT pg_catalog.pg_backend_pid()"))
+        held_start = await held.scalar(
+            text("SELECT pg_catalog.pg_postmaster_start_time()")
+        )
+        first = await stable56.observe_restricted_role_identity_0056_v2(
+            selected, source=_SOURCE_ROOT
+        )
+        second = await stable56.observe_restricted_role_identity_0056_v2(
+            selected, source=_SOURCE_ROOT
+        )
+        async with selected.writer_factory() as probe:
+            probe_pid = await probe.scalar(text("SELECT pg_catalog.pg_backend_pid()"))
+            probe_start = await probe.scalar(
+                text("SELECT pg_catalog.pg_postmaster_start_time()")
+            )
+        assert type(held_pid) is type(probe_pid) is int
+        assert held_pid != probe_pid
+        assert held_start == probe_start
+    assert first.stable_identity_sha256 == second.stable_identity_sha256
+    assert first.server_incarnation_sha256 == second.server_incarnation_sha256
+    assert first.role_oids == second.role_oids
+    assert first.role_names == second.role_names
+    assert first.deployment_reference_authenticated is False
+    assert first.startup_admission is first.execution_authority is False
+    route = observation.selectors._database_route(
+        selected.writer_factory.kw["bind"].url
+    )
+    expected = {
+        "expected_database_oid": first.database_oid,
+        "expected_owner_oid": first.owner_oid,
+        "expected_role_names": first.role_names,
+        "expected_role_oids": first.role_oids,
+        "expected_route": route,
+        "expected_sha256": first.stable_identity_sha256,
+    }
+    matched = stable56.compare_static_role_identity_0056_v2(first, **expected)
+    assert matched["admission"] == "DENY"
+    assert matched["startup_admission"] is matched["execution_authority"] is False
+    changed = (
+        first.role_oids[0],
+        max(*first.role_oids, first.owner_oid) + 1,
+        first.role_oids[2],
+    )
+    with pytest.raises(stable56.NativeRoleIdentity0056Error):
+        stable56.compare_static_role_identity_0056_v2(
+            first, **{**expected, "expected_role_oids": changed}
+        )
 
 
 async def test_actual0056_lab_only_recovery_cas_after_fresh_restricted_observations(

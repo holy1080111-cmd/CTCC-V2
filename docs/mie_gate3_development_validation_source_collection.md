@@ -511,6 +511,20 @@ capture artifacts before further use. Independent custody must still
 retain and acknowledge this package before the Development window
 opens. These functions have no source, outcome or holdout reader.
 
+The offline command retains the two capture artifacts and the package. Run
+it against the exact source archive with the externally retained pins.
+
+```text
+python -m scripts.compile_devval_research_package --source-archive <file> --source-archive-sha256 <sha256> --blueprint <file> --blueprint-sha256 <sha256> --scorer-config <file> --calibration-policy <file> --calibration-policy-sha256 <sha256> --market-policy <file> --market-policy-sha256 <typed-policy-sha256> --decision-delay-seconds <seconds> --output-directory <empty-private-directory>
+```
+
+Use the reviewed digest of the validated market policy and the scorer digest
+already pinned in the blueprint. The command checks each file after writing
+it and reports the three digests only after verifying the complete directory.
+If a write fails, preserve all files that reached the directory and use a
+fresh private directory for a new attempt. Retain the output and its digest
+with the independent custodian for pre-window acknowledgement.
+
 `audit_devval_joint_companion_coverage_v1` uses the verified schedule and
 batch digests to replay both companions at the later of the two measured
 aggregate availability times and the two companion readbacks. The audit

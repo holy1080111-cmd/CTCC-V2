@@ -827,15 +827,20 @@ async def start_owned_journal(*, repository, scope, plan, checkpoint, clock, tok
     return journal
 
 
-def _original_wire_event(issuer, event_json, raw_body, packet_payload):
-    """Validate a new original-wire event before any readback is constructed."""
+def _checked_wire_event(issuer, event_json, raw_body, packet_payload):
+    """Validate source bytes and return the event and its parsed document."""
     if issuer is not _ISSUER:
         raise AccountJournalError("owned_journal_event_required")
     event = object.__new__(_JournalEvent)
     object.__setattr__(event, "event_json", event_json)
     object.__setattr__(event, "raw_body", raw_body)
     object.__setattr__(event, "packet_payload", packet_payload)
-    record = checked_event(event)
+    return event, checked_event(event)
+
+
+def _original_wire_event(issuer, event_json, raw_body, packet_payload):
+    """Validate a new original-wire event before any readback is constructed."""
+    event, record = _checked_wire_event(issuer, event_json, raw_body, packet_payload)
     return event, record["sequence"], record["previous_sha256"]
 
 
@@ -847,13 +852,7 @@ def _original_wire_readback(
     The parsed record is local to this trusted construction; no caller can
     supply a prevalidated record or skip the full raw/packet event check.
     """
-    if issuer is not _ISSUER:
-        raise AccountJournalError("owned_journal_event_required")
-    event = object.__new__(_JournalEvent)
-    object.__setattr__(event, "event_json", event_json)
-    object.__setattr__(event, "raw_body", raw_body)
-    object.__setattr__(event, "packet_payload", packet_payload)
-    record = checked_event(event)
+    event, record = _checked_wire_event(issuer, event_json, raw_body, packet_payload)
     _checked_readback_clocks(record, db_recorded_at, readback_at)
     readback = object.__new__(JournalReadback)
     object.__setattr__(readback, "event", event)

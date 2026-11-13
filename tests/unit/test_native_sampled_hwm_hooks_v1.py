@@ -793,6 +793,7 @@ def real_v4_guard_with_declared_prior_providers(monkeypatch, io):
         "source_inventory",
         "original_wire_event",
         "original_wire_readback",
+        "original_wire_parse",
         "original_wire_clock_predicate",
         "original_wire_journal",
         "original_wire_issuer",
@@ -823,6 +824,10 @@ async def test_both_entries_deny_changed_measurement_dependency_before_observati
                 assembly._v4_wire.journal,
                 "_original_wire_readback",
                 lambda *_args: None,
+            )
+        elif defect == "original_wire_parse":
+            monkeypatch.setattr(
+                assembly._v4_wire.journal, "_checked_wire_event", lambda *_args: None
             )
         elif defect == "original_wire_clock_predicate":
             monkeypatch.setattr(

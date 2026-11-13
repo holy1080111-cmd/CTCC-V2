@@ -390,6 +390,47 @@ def replay(raw, files, chain, scope):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    ("replace_with_kind", "request_index", "reason"),
+    (
+        ("headers_received", 0, "original_phase_missing"),
+        ("request_start", True, "original_index_invalid"),
+    ),
+)
+async def test_source_phase_index_rejects_duplicate_missing_and_boolean_index(
+    monkeypatch, replace_with_kind, request_index, reason
+):
+    raw, _, chain, scope, _ = await companion_fixture(monkeypatch)
+    proof_schema = json.loads(raw)["schema_version"]
+    reference, _, _, _ = proof._source(chain, scope, proof_schema=proof_schema)
+    checked_event = journal.checked_event
+    victim = next(
+        point.event
+        for point in chain
+        if checked_event(point.event)["kind"] == "request_start"
+    )
+
+    def checked_with_test_mutation(event):
+        value = checked_event(event)
+        if event is victim:
+            value["kind"] = replace_with_kind
+            value["data"]["request_index"] = request_index
+        return value
+
+    # Stand in for the earlier independent replay here so the phase-index
+    # check itself must reject a malformed candidate index.
+    monkeypatch.setattr(proof.observed, "source_reference", lambda _: reference)
+    monkeypatch.setattr(
+        proof.current, "verify_current_account_sources", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(journal, "checked_event", checked_with_test_mutation)
+    with pytest.raises(
+        proof.NativeAccountProofError, match=f"^native_account_{reason}$"
+    ):
+        proof._source(chain, scope, proof_schema=proof_schema)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     "mutation",
     [None, "changed_event", "changed_db_timestamp", "reversed_readback", "extended"],
 )
