@@ -468,6 +468,60 @@ def test_current56_enables_progress_only_for_postgres_without_filtering():
         assert "-k" not in command and "-m" not in command[3:]
 
 
+@pytest.mark.parametrize(
+    ("mode", "index", "accepted"),
+    [("postgres", "1", True), ("postgres", "0", False), ("shard", "1", False)],
+)
+def test_fitted_diagnostic_is_explicit_and_cases_only(
+    monkeypatch, mode, index, accepted
+):
+    flag = "--shard-index" if mode == "shard" else "--postgres-component-index"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "verify-current56",
+            "--archive",
+            "source.tar",
+            "--archive-sha256",
+            "a" * 64,
+            "--commit",
+            COMMIT,
+            "--tree",
+            TREE,
+            "--output",
+            "unused",
+            "--suite",
+            mode,
+            flag,
+            index,
+            "--fitted-catalog-diagnostic",
+        ],
+    )
+    if accepted:
+        args, observed = current56._arguments()
+        assert args.fitted_catalog_diagnostic is True and observed == 1
+        assert len(current56._FITTED_CASES) == 3
+        assert current56._FITTED_JUNIT not in current56_contract.component_artifacts(
+            "postgres", 1
+        )
+    else:
+        with pytest.raises(ValueError, match="current56_runner_arguments_invalid"):
+            current56._arguments()
+
+
+def test_fitted_diagnostic_cannot_be_relabelled_as_component(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        current56_contract,
+        "_read",
+        lambda _root, name: json.dumps(
+            {"identity.json": {"component_validation": "PASS"}}.get(name, {})
+        ).encode(),
+    )
+    with pytest.raises(ValueError, match="fitted_catalog_diagnostic_identity_invalid"):
+        current56.verify_fitted_catalog_diagnostic(tmp_path, b"", {})
+
+
 def test_postgres_progress_preserves_crash_prefix_and_redacts_nodeids(
     monkeypatch, tmp_path
 ):

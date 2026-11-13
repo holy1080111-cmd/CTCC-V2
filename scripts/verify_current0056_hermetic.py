@@ -9,6 +9,7 @@ from contextlib import ExitStack
 from pathlib import Path
 from uuid import uuid4
 
+from scripts import current0056_fitted_catalog_measurement_v1 as fitted_measurement
 from scripts import current0056_hermetic_contract as contract
 from scripts import verify_final_hermetic as shared
 from scripts.current0055_catalog_receipt import verify_current55_catalog_report
@@ -45,6 +46,15 @@ _EXACT_HOST_HELPERS = (
     "verify_linux_shard.py",
 )
 _PARENT_HEAD_SQL = "SELECT version_num FROM public.alembic_version"
+_FITTED_JUNIT = "test-results/fitted-catalog-diagnostic.xml"
+_FITTED_CASES = (
+    fitted_measurement.CASE,
+    (fitted_measurement.CASE[0], "test_actual0056_full_native_role_observation_tls"),
+    (
+        fitted_measurement.CASE[0],
+        "test_actual0056_full_native_role_rejects_swapped_roles_and_extra_grant",
+    ),
+)
 
 
 def _test_command(mode, index):
@@ -86,10 +96,15 @@ def _arguments():
     )
     parser.add_argument("--shard-index", type=int)
     parser.add_argument("--postgres-component-index", type=int)
+    parser.add_argument("--fitted-catalog-diagnostic", action="store_true")
     args = parser.parse_args()
     if (
         (args.shard_index is not None and args.suite != "shard")
         or (args.postgres_component_index is not None and args.suite != "postgres")
+        or (
+            args.fitted_catalog_diagnostic
+            and (args.suite != "postgres" or args.postgres_component_index != 1)
+        )
         or not re.fullmatch(r"[0-9a-f]{40}", args.commit)
         or not re.fullmatch(r"[0-9a-f]{40}", args.tree)
         or not re.fullmatch(r"[0-9a-f]{64}", args.archive_sha256)
@@ -147,6 +162,7 @@ def main(*, archive_bytes=None):
 
 
 def _run(args, index, raw, files, runner_sha, root):
+    diagnostic = args.fitted_catalog_diagnostic
     test_results = root / "test-results"
     test_results.mkdir(mode=0o777)
     test_results.chmod(
@@ -203,6 +219,8 @@ def _run(args, index, raw, files, runner_sha, root):
         "external_order_writes": 0,
         "trading_acceptance": False,
     }
+    if diagnostic:
+        identity["validation_scope"] = "fitted_catalog_diagnostic_only"
     _write(root / "identity.json", identity)
     run = shared.Run(root)
     resources = []
@@ -435,11 +453,20 @@ def _run(args, index, raw, files, runner_sha, root):
             identity["recovery"] = shared.verify_pytest_report(
                 root / contract.RECOVERY_REPORT, required_cases=contract.RECOVERY_CASES
             )
-        stage = contract.component_test_stage(args.suite, index)
-        junit, _ = contract.component_report_paths(args.suite, index)
+        if diagnostic:
+            stage, junit = "fitted-catalog-diagnostic", _FITTED_JUNIT
+            test_command = (
+                *_PYTEST,
+                f"--junitxml=/validation-results/{Path(junit).name}",
+                *_cases_to_nodes(_FITTED_CASES),
+            )
+        else:
+            stage = contract.component_test_stage(args.suite, index)
+            junit, _ = contract.component_report_paths(args.suite, index)
+            test_command = _test_command(args.suite, index)
         container(
             stage,
-            *_test_command(args.suite, index),
+            *test_command,
             mounts=(
                 *test_mount,
                 *(source_mount if needs_devval_tls else ()),
@@ -457,7 +484,9 @@ def _run(args, index, raw, files, runner_sha, root):
             timeout=shared.FULL_TEST_TIMEOUT_SECONDS,
         )
         identity["tests"] = shared.verify_pytest_report(
-            root / junit, allow_unrelated_skips=True
+            root / junit,
+            required_cases=_FITTED_CASES if diagnostic else (),
+            allow_unrelated_skips=not diagnostic,
         )
         if anchor:
             resources.append(("container", api))
@@ -528,14 +557,16 @@ def _run(args, index, raw, files, runner_sha, root):
                 "scripts.verify_migration_identity",
             )
             container("migration-drift-after-restart", "alembic", "check")
-        identity["component_validation"] = "PASS"
+        identity["component_validation"] = "NOT_RUN" if diagnostic else "PASS"
         identity["hermetic_regression"] = (
-            "PASS" if args.suite == "full" else "PENDING_UNION"
+            "NOT_RUN"
+            if diagnostic
+            else ("PASS" if args.suite == "full" else "PENDING_UNION")
         )
     except Exception as error:
         identity.update(
-            component_validation="FAIL",
-            hermetic_regression="FAIL",
+            component_validation="NOT_RUN" if diagnostic else "FAIL",
+            hermetic_regression="NOT_RUN" if diagnostic else "FAIL",
             failure_type=type(error).__name__,
         )
         raise
@@ -548,10 +579,14 @@ def _run(args, index, raw, files, runner_sha, root):
         identity["cleanup"] = (
             "PASS" if all(item["status"] != "FAIL" for item in cleanup) else "FAIL"
         )
-        if identity["cleanup"] == "FAIL":
+        if identity["cleanup"] == "FAIL" and not diagnostic:
             identity.update(component_validation="FAIL", hermetic_regression="FAIL")
         _write(root / "identity.json", identity)
-        expected = contract.component_artifacts(args.suite, index)
+        expected = (
+            _diagnostic_artifacts(run.steps)
+            if diagnostic
+            else contract.component_artifacts(args.suite, index)
+        )
         hashes = {
             name: contract.digest((root / name).read_bytes())
             for name in sorted(expected)
@@ -559,17 +594,20 @@ def _run(args, index, raw, files, runner_sha, root):
         }
         _write(root / "results.sha256.json", hashes)
     try:
-        contract.verify_current56_component(
-            root,
-            raw,
-            commit=args.commit,
-            tree=args.tree,
-            manifest_sha256=identity["manifest_sha256"],
-        )
+        if diagnostic:
+            verify_fitted_catalog_diagnostic(root, raw, files)
+        else:
+            contract.verify_current56_component(
+                root,
+                raw,
+                commit=args.commit,
+                tree=args.tree,
+                manifest_sha256=identity["manifest_sha256"],
+            )
     except Exception as error:
         identity.update(
-            component_validation="FAIL",
-            hermetic_regression="FAIL",
+            component_validation="NOT_RUN" if diagnostic else "FAIL",
+            hermetic_regression="NOT_RUN" if diagnostic else "FAIL",
             failure_type=type(error).__name__,
         )
         _write(root / "identity.json", identity)
@@ -577,6 +615,119 @@ def _run(args, index, raw, files, runner_sha, root):
         _write(root / "results.sha256.json", hashes)
         raise
     return 0
+
+
+def _diagnostic_artifacts(steps):
+    return {
+        "identity.json",
+        "source-files.json",
+        "steps.json",
+        "cleanup.json",
+        _FITTED_JUNIT,
+        f"test-results/{fitted_measurement.FILE}",
+        *(f"{step['name']}.log" for step in steps),
+    }
+
+
+def verify_fitted_catalog_diagnostic(root, raw, files):
+    identity = read_evidence_json(contract._read(root, "identity.json"))
+    steps = read_evidence_json(contract._read(root, "steps.json"))
+    hashes = read_evidence_json(contract._read(root, "results.sha256.json"))
+    stage = "fitted-catalog-diagnostic"
+    required = (*contract.component_stage_names("postgres", 1)[:-1], stage)
+    if (
+        identity.get("validation_scope") != "fitted_catalog_diagnostic_only"
+        or identity.get("suite") != "postgres"
+        or identity.get("postgres_component_index") != 1
+        or identity.get("shard_index") is not None
+        or identity.get("component_validation") != "NOT_RUN"
+        or identity.get("hermetic_regression") != "NOT_RUN"
+        or identity.get("cleanup") != "PASS"
+        or "failure_type" in identity
+        or identity.get("host_credentials") is not False
+        or identity.get("host_env") is not False
+        or identity.get("trading_acceptance") is not False
+        or type(identity.get("external_order_writes")) is not int
+        or identity["external_order_writes"] != 0
+        or contract.digest(raw) != identity["archive_sha256"]
+        or tuple(step["name"] for step in steps) != required
+        or any(
+            type(step["exit_code"]) is not int
+            or step["exit_code"] != 0
+            or "failure_type" in step
+            or "policy_refusal" in step
+            for step in steps
+        )
+        or set(hashes) != _diagnostic_artifacts(steps)
+        or any(
+            contract.digest(contract._read(root, name)) != digest
+            for name, digest in hashes.items()
+        )
+    ):
+        raise ValueError("fitted_catalog_diagnostic_identity_invalid")
+    mapping = contract._read(root, "source-files.json")
+    if (
+        read_evidence_json(mapping) != files
+        or contract.digest(mapping) != identity["source_files_sha256"]
+    ):
+        raise ValueError("fitted_catalog_diagnostic_source_changed")
+    with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as archive:
+        if (
+            archive.pax_headers.get("comment") != identity["commit"]
+            or shared.archive_tree(archive) != identity["tree"]
+            or shared.archive_files(archive) != files
+        ):
+            raise ValueError("fitted_catalog_diagnostic_source_changed")
+    network = read_evidence_json(contract._read(root, "network-inspect.log"))
+    image = read_evidence_json(contract._read(root, "image-identity.log"))
+    lock = read_evidence_json(contract._read(root, "dependency-lock.log"))
+    run_id = identity["run_id"]
+    prefix = f"ctcc-final-{run_id}-"
+    if (
+        network["Name"] != prefix + "network"
+        or network["Internal"] is not True
+        or network["Containers"] not in ({}, None)
+        or network["Labels"]["org.ctcc.validation.run"] != run_id
+        or image["Id"] != identity["image_id"]
+        or not re.fullmatch(r"sha256:[0-9a-f]{64}", image["Id"])
+        or image["Config"]["Labels"]["org.opencontainers.image.revision"]
+        != identity["commit"]
+        or image["Config"]["Labels"]["org.ctcc.source.tree"] != identity["tree"]
+        or lock["target"] != "linux"
+        or lock["lock_sha256"]
+        != files["requirements/validation-linux-py312.lock"]["sha256"]
+        or lock["accepted_full_validation_baseline"] is not False
+        or contract._read(root, "copied-source-exact.log").strip()
+        != str(len(files)).encode()
+        or b"manifest check passed:" not in contract._read(root, "copied-manifest.log")
+        or contract._read(root, "redis-ready.log").strip() != b"PONG"
+        or b"accepting connections" not in contract._read(root, "postgres-ready.log")
+        or contract._read(root, "migration-reservation-unique.log").strip()
+        != contract.RESERVATION_UNIQUE
+        or b"No new upgrade operations detected"
+        not in contract._read(root, "migration-drift.log")
+        or contract._read(root, stage + ".log")
+        .splitlines()
+        .count(b"HERMETIC_EXECUTION_AUTHORITY=0")
+        != 1
+        or contract.migration_readback(
+            contract._read(root, "migration-identity.log"),
+            contract.migration_digest(files),
+        )
+        != identity["migration"]
+    ):
+        raise ValueError("fitted_catalog_diagnostic_runtime_changed")
+    contract._cleanup(contract._read(root, "cleanup.json"), prefix, anchor=False)
+    junit = shared.verify_pytest_report(
+        root / _FITTED_JUNIT, required_cases=_FITTED_CASES
+    )
+    if junit != identity["tests"] or junit["passed"] != len(_FITTED_CASES):
+        raise ValueError("fitted_catalog_diagnostic_test_scope_changed")
+    return fitted_measurement.verify_measurement(
+        contract._read(root, f"test-results/{fitted_measurement.FILE}"),
+        identity=identity,
+        source_files=files,
+    )
 
 
 if __name__ == "__main__":

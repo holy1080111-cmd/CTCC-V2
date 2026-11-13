@@ -1,0 +1,55 @@
+name: DB0056 fitted catalog diagnostic
+
+on:
+  push:
+    branches: [work/db0056-fitted-catalog-diagnostic]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fitted-catalog:
+    if: github.ref == 'refs/heads/work/db0056-fitted-catalog-diagnostic'
+    name: DB0056 isolated catalog measurement ${{ matrix.cluster }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        cluster: [1, 2]
+    steps:
+      - name: Checkout exact diagnostic source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Measure and verify one fresh isolated PostgreSQL cluster
+        shell: bash
+        run: |
+          set -euo pipefail
+          commit=$(git rev-parse HEAD)
+          test "$commit" = "$GITHUB_SHA"
+          tree=$(git rev-parse 'HEAD^{tree}')
+          archive="$RUNNER_TEMP/ctcc-source.tar"
+          git -c core.autocrlf=false -c core.eol=lf archive --format=tar --output="$archive" "$commit"
+          digest=$(sha256sum "$archive" | cut -d ' ' -f 1)
+          python3 -m scripts.verify_final_hermetic \
+            --archive "$archive" --archive-sha256 "$digest" \
+            --commit "$commit" --tree "$tree" \
+            --suite postgres --postgres-component-index 1 --fitted-catalog-diagnostic \
+            --output "$RUNNER_TEMP/ctcc-fitted-catalog"
+
+      - name: Preserve catalog diagnostic and exact source identity
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ctcc-db0056-fitted-catalog-${{ matrix.cluster }}-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/ctcc-source.tar
+            ${{ runner.temp }}/ctcc-fitted-catalog/*.json
+            ${{ runner.temp }}/ctcc-fitted-catalog/*.log
+            ${{ runner.temp }}/ctcc-fitted-catalog/test-results/*.xml
+            ${{ runner.temp }}/ctcc-fitted-catalog/test-results/current0056-fitted-catalog-single-redacted.json
+          if-no-files-found: error
+          retention-days: 30
