@@ -6,16 +6,23 @@ Validation row, feature, label, raw score, or outcome into the fit input.
 
 from __future__ import annotations
 
-from app.mie.validation.artifact import FrozenGate3Artifact, _freeze, _verify
+from app.mie.validation.artifact import SHA256_RE, FrozenGate3Artifact, _freeze, _verify
 from app.mie.validation.contracts import DatasetPartition
+from app.mie.validation.frozen_legacy_raw_scorer_v1 import _checked_config
+from app.mie.validation.prospective_development_validation_plan import INSTRUMENTS
 from app.mie.validation.prospective_devval_development_fit_v1 import (
     DevelopmentLegacyFitInputV1,
     DevelopmentLegacySideV1,
     DevelopmentLegacySlotV1,
 )
+from app.mie.validation.prospective_devval_joint_companion_coverage_v1 import (
+    PublishedCompanionV1,
+    _outcomes,
+)
 from app.mie.validation.prospective_devval_joint_raw_score_v1 import (
     _MAX_EVENT_BYTES,
     JointDevvalRawScoreEventV1,
+    score_joint_devval_companion_event_v1,
 )
 from app.mie.validation.prospective_devval_joint_study_v1 import (
     verify_devval_joint_study_v1,
@@ -29,6 +36,66 @@ _MAX_POLICY_BYTES = 8 * 1024
 
 class DevelopmentLegacyProjectionError(ValueError):
     """Bounded refusal; no labels, paths, or score values in the message."""
+
+
+def _verify_development_raw_roster(study, development, payloads, pins, companions):
+    if (
+        len(development) < 2
+        or type(payloads) is not tuple
+        or type(pins) is not tuple
+        or type(companions) is not tuple
+        or len(payloads) != len(development)
+        or len(pins) != len(development)
+        or len(companions) != len(development)
+        or any(type(pair) is not tuple or len(pair) != 2 for pair in companions)
+        or any(type(pin) is not str or SHA256_RE.fullmatch(pin) is None for pin in pins)
+        or len(set(pins)) != len(pins)
+    ):
+        raise DevelopmentLegacyProjectionError("development_raw_roster_changed")
+    flat = tuple(item for pair in companions for item in pair)
+    if any(type(item) is not PublishedCompanionV1 for item in flat):
+        raise DevelopmentLegacyProjectionError("development_raw_roster_changed")
+    # Reuse the acquisition inventory's uniqueness and native path checks.
+    _outcomes(flat, len(study.slots))
+    verified = []
+    for slot, payload, pin, pair in zip(
+        development, payloads, pins, companions, strict=True
+    ):
+        coverage = slot.coverage
+        if (
+            slot.rows is None
+            or coverage.status != "covered_computational"
+            or coverage.joint_decision_at is None
+            or any(
+                item.slot_ordinal != coverage.ordinal
+                or item.instrument_id != symbol
+                or item.expected_publication_sha256 != side.publication_sha256
+                or item.expected_readback_sha256 != side.readback_sha256
+                for item, symbol, side in zip(
+                    pair, INSTRUMENTS, coverage.sides, strict=True
+                )
+            )
+            or type(payload) is not bytes
+            or not 0 < len(payload) <= _MAX_EVENT_BYTES
+        ):
+            raise DevelopmentLegacyProjectionError("development_raw_roster_changed")
+        raw = _verify(
+            payload, expected_sha256=pin, contract_type=JointDevvalRawScoreEventV1
+        )
+        if (
+            raw.status != "complete_computational"
+            or raw.partition != DatasetPartition.DEVELOPMENT
+            or raw.slot_ordinal != coverage.ordinal
+            or raw.schedule_sha256 != study.schedule_sha256
+            or raw.coverage_sha256 != study.coverage_sha256
+            or raw.batch_sha256 != study.batch_sha256
+            or raw.event_closed_at != coverage.event_closed_at
+            or raw.decision_cutoff_at != coverage.decision_cutoff_at
+            or raw.joint_decision_at != coverage.joint_decision_at
+        ):
+            raise DevelopmentLegacyProjectionError("development_raw_roster_changed")
+        verified.append(raw)
+    return tuple(verified)
 
 
 def project_development_legacy_fit_input_v1(
@@ -47,10 +114,14 @@ def project_development_legacy_fit_input_v1(
     expected_study_plan_sha256: str,
     policy_payload: bytes,
     expected_policy_sha256: str,
+    scorer_config_json: bytes,
     development_raw_event_payloads: tuple[bytes, ...],
     expected_development_raw_event_sha256s: tuple[str, ...],
+    development_companions: tuple[
+        tuple[PublishedCompanionV1, PublishedCompanionV1], ...
+    ],
 ) -> FrozenGate3Artifact[DevelopmentLegacyFitInputV1]:
-    """Rebuild the outer study, then publish only its Development projection."""
+    """Rebuild the study and exact Development scores before projecting rows."""
     try:
         study = verify_devval_joint_study_v1(
             joint_study_payload,
@@ -81,53 +152,53 @@ def project_development_legacy_fit_input_v1(
             study.source_checkpoint != policy.source_checkpoint
             or study.source_archive_sha256 != policy.source_archive_sha256
             or study.feature_plan_sha256 != policy.joint_feature_plan_sha256
+            or study.plan.feature_plan.outcome_horizon_seconds
+            != policy.outcome_horizon_seconds
+            or study.plan.feature_plan.positive_threshold != policy.positive_threshold
         ):
             raise ValueError("Development policy and source changed")
+        _checked_config(
+            scorer_config_json,
+            expected_config_sha256=policy.scorer_config_sha256,
+            expected_source_checkpoint=study.source_checkpoint,
+            expected_source_archive_sha256=study.source_archive_sha256,
+        )
         development = tuple(
             slot
             for slot in study.slots
             if slot.coverage.partition == DatasetPartition.DEVELOPMENT
         )
-        if (
-            len(development) < 2
-            or type(development_raw_event_payloads) is not tuple
-            or type(expected_development_raw_event_sha256s) is not tuple
-            or len(development) != len(development_raw_event_payloads)
-            or len(development) != len(expected_development_raw_event_sha256s)
-        ):
-            raise ValueError("Development raw event roster changed")
-        projected = []
-        for slot, raw_payload, raw_pin in zip(
+        retained = _verify_development_raw_roster(
+            study,
             development,
             development_raw_event_payloads,
             expected_development_raw_event_sha256s,
+            development_companions,
+        )
+        if any(raw.config_sha256 != policy.scorer_config_sha256 for raw in retained):
+            raise DevelopmentLegacyProjectionError("development_raw_roster_changed")
+        projected = []
+        for slot, raw, raw_payload, raw_pin, companions in zip(
+            development,
+            retained,
+            development_raw_event_payloads,
+            expected_development_raw_event_sha256s,
+            development_companions,
             strict=True,
         ):
-            raw = (
-                _verify(
-                    raw_payload,
-                    expected_sha256=raw_pin,
-                    contract_type=JointDevvalRawScoreEventV1,
-                )
-                if type(raw_payload) is bytes
-                and 0 < len(raw_payload) <= _MAX_EVENT_BYTES
-                else None
+            rebuilt = score_joint_devval_companion_event_v1(
+                schedule_payload,
+                expected_schedule_sha256=expected_schedule_sha256,
+                coverage_payload=coverage_payload,
+                expected_coverage_sha256=expected_coverage_sha256,
+                expected_batch_sha256=expected_batch_sha256,
+                config_json=scorer_config_json,
+                expected_config_sha256=policy.scorer_config_sha256,
+                slot_ordinal=slot.coverage.ordinal,
+                companions=companions,
             )
-            if (
-                raw is None
-                or slot.rows is None
-                or raw.status != "complete_computational"
-                or raw.partition != DatasetPartition.DEVELOPMENT
-                or raw.slot_ordinal != slot.coverage.ordinal
-                or raw.schedule_sha256 != study.schedule_sha256
-                or raw.coverage_sha256 != study.coverage_sha256
-                or raw.batch_sha256 != study.batch_sha256
-                or raw.config_sha256 != policy.scorer_config_sha256
-                or raw.event_closed_at != slot.coverage.event_closed_at
-                or raw.decision_cutoff_at != slot.coverage.decision_cutoff_at
-                or raw.joint_decision_at != slot.coverage.joint_decision_at
-            ):
-                raise ValueError("Development raw event does not match joint study")
+            if rebuilt.payload != raw_payload or rebuilt.sha256 != raw_pin:
+                raise DevelopmentLegacyProjectionError("development_raw_replay_changed")
             sides = []
             for row, scored, observed in zip(
                 slot.rows, raw.sides, slot.coverage.sides, strict=True
@@ -198,6 +269,8 @@ def project_development_legacy_fit_input_v1(
             ),
             contract_type=DevelopmentLegacyFitInputV1,
         )
+    except DevelopmentLegacyProjectionError:
+        raise
     except (AttributeError, KeyError, TypeError, ValueError, ArithmeticError):
         raise DevelopmentLegacyProjectionError(
             "development_legacy_projection_refused"
