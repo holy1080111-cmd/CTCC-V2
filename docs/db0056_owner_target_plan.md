@@ -38,3 +38,16 @@ Add `--private-plan-directory /private/empty-plan-directory` to retain
 directory must already be owner-private. Publication refuses to replace
 an existing file. The file contains the target role and database identities,
 so keep it private. It contains no DSN, password or permission to grant.
+
+After provisioning, run the direct-login check with the three restricted
+runtime database URLs configured on the same reviewed TLS route. Supply the
+private plan file and the `private_target_plan_file_sha256` from observation.
+
+```text
+python -B -m scripts.native_owner_postgrant_readback_0056_v1 --inspect-granted-owner-target --plan-file /private/plan/db0056-target-grant-pins.json --plan-file-sha256 <file digest> --owner-dsn-file /private/owner-dsn --ca-file /private/ca.pem --source-archive-file /reviewed/CTCC-source.tar
+```
+
+Exit `2` means fresh logins observed the exact scoped grants and an unchanged
+physical target. The command confirms the restricted PostgreSQL principals and
+their privileges. It does not establish which authentication mechanism was
+used. Exit `1` is a refusal. The check does not apply or retry a grant.

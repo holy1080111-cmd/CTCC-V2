@@ -2042,7 +2042,9 @@ async def test_actual0056_draft_locked_owner_grant_and_separate_role_readback(
     # TLS engines and queries the actual scoped PostgreSQL catalogs.
     ca_file = Path(os.environ["CTCC_DEVVAL_CUSTODY_TEST_TLS_CA_FILE"])
     archive, archive_pin = _reconstruct_owned_lab_archive(tmp_path, identity, files)
-    owner_dsn = tmp_path / "postgrant-owner-dsn"
+    private = tmp_path / "postgrant-owner-private"
+    private.mkdir(mode=0o700)
+    owner_dsn = private / "postgrant-owner-dsn"
     owner_dsn.write_bytes(
         owner.url.set(password=secrets.token_hex(24))
         .render_as_string(hide_password=False)

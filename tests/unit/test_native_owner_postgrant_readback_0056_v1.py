@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
+import json
+from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,8 +15,50 @@ from sqlalchemy.pool import NullPool
 
 from app.core.native_role_identity_0056_v2 import NativeRoleIdentity0056V2
 from app.core.native_role_witness_0056_v1 import runtime_witness_0056
+from app.domain.source_primitives import canonical, sha
 from scripts import native_owner_postgrant_readback_0056_v1 as readback
 from tests.unit.test_native_owner_grant_0056_draft_v1 import _pins
+
+
+def test_loads_exact_published_plan_and_rejects_changed_hash(tmp_path, monkeypatch):
+    monkeypatch.setattr(readback.target_plan, "_require_private_file", Mock())
+    path = tmp_path / "target.json"
+    pins = _pins()
+    raw = canonical(
+        {
+            "schema": readback.target_plan._PRIVATE_PLAN_SCHEMA,
+            "pins": asdict(pins),
+        }
+    )
+    path.write_bytes(raw)
+    assert readback._load_plan(path, sha(raw)) == pins
+    with pytest.raises(readback.OwnerPostgrantReadbackRefusal):
+        readback._load_plan(path, "f" * 64)
+
+
+def test_postgrant_cli_keeps_deny_for_matching_target(monkeypatch, capsys):
+    paths = [
+        "--inspect-granted-owner-target",
+        "--plan-file",
+        "pins",
+        "--plan-file-sha256",
+        "digest",
+        "--owner-dsn-file",
+        "owner",
+        "--ca-file",
+        "ca",
+        "--source-archive-file",
+        "archive",
+    ]
+    monkeypatch.setattr(readback, "_load_plan", Mock(return_value=_pins()))
+    observe = AsyncMock(return_value={"admission": "DENY", "status": "OBSERVED_DENY"})
+    monkeypatch.setattr(readback, "observe_owner_postgrant_readback_0056_v1", observe)
+    assert readback.main(paths) == 2
+    assert json.loads(capsys.readouterr().out)["admission"] == "DENY"
+    observe.assert_awaited_once()
+    assert readback.main(paths[1:]) == 1
+    assert json.loads(capsys.readouterr().out)["status"] == "REFUSED"
+    observe.assert_awaited_once()
 
 
 def test_owner_incarnation_normalizes_to_restricted_server_digest():
@@ -99,7 +142,10 @@ def staged(monkeypatch):
         return actual
 
     settings = SimpleNamespace(ctcc_native_pg_tls_ca_sha256=pins.route.ca_sha256)
-    monkeypatch.setattr(readback.owner_upgrade, "_verify_reviewed_archive", Mock())
+    monkeypatch.setattr(
+        readback, "require_exact_installed_owner_source_0056_v1", Mock()
+    )
+    monkeypatch.setattr(readback.target_plan, "_require_private_file", Mock())
     monkeypatch.setattr(
         readback.owner_route,
         "_prepare",

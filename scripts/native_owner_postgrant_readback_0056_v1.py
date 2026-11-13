@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 from contextlib import AsyncExitStack
+from dataclasses import asdict
 from datetime import UTC
 from pathlib import Path
 
@@ -14,13 +16,20 @@ from sqlalchemy.pool import NullPool
 from app.config.settings import get_settings
 from app.core import native_role_identity_0056_v2 as identity56
 from app.core import native_role_preflight_0056_full_diagnostic_v1 as roles56
+from app.database.native_pg_tls_v1 import _read_bounded_regular_file_v1
 from app.demo_automation import native_server_selectors_v2 as selectors
 from app.domain.source_primitives import canonical, sha
 from scripts import native_owner_grant_0056_draft_v1 as draft56
 from scripts import native_owner_route_preflight_0056_v1 as owner_route
+from scripts import native_owner_target_plan_0056_v1 as target_plan
 from scripts import native_owner_upgrade_0056_v1 as owner_upgrade
+from scripts.evidence_json import read_evidence_json
+from scripts.native_owner_reviewed_source_0056_v1 import (
+    require_exact_installed_owner_source_0056_v1,
+)
 
 _SOURCE = Path(__file__).resolve().parents[1]
+_SCHEMA = "ctcc.native_owner_0056.postgrant_target_readback.inert.v1"
 
 
 class OwnerPostgrantReadbackRefusal(ValueError):
@@ -36,6 +45,33 @@ def _need(condition: bool) -> None:
 
 def _factory(engine):
     return async_sessionmaker(engine, autoflush=False, expire_on_commit=False)
+
+
+def _load_plan(path: Path, expected_sha256: str) -> draft56.OwnerGrantDraftPinsV1:
+    _need(draft56._digest(expected_sha256))
+    target_plan._require_private_file(path)
+    raw = _read_bounded_regular_file_v1(path, 32768)
+    _need(sha(raw) == expected_sha256)
+    value = read_evidence_json(raw)
+    _need(
+        type(value) is dict
+        and canonical(value) == raw
+        and set(value) == {"schema", "pins"}
+        and value["schema"] == target_plan._PRIVATE_PLAN_SCHEMA
+        and type(value["pins"]) is dict
+        and set(value["pins"])
+        == set(draft56.OwnerGrantDraftPinsV1.__dataclass_fields__)
+        and type(value["pins"]["route"]) is dict
+        and set(value["pins"]["route"])
+        == set(owner_route.OwnerRoutePinsV1.__dataclass_fields__)
+    )
+    fields = {
+        **value["pins"],
+        "route": owner_route.OwnerRoutePinsV1(**value["pins"]["route"]),
+    }
+    pins = draft56.OwnerGrantDraftPinsV1(**fields)
+    draft56._names(pins)
+    return pins
 
 
 def _configured_role_urls(selected, route, names):
@@ -111,15 +147,13 @@ async def observe_owner_postgrant_readback_0056_v1(
     try:
         names = draft56._names(pins)
         role_oids = (pins.writer_oid, pins.custody_oid, pins.frame_reader_oid)
-        owner_upgrade._verify_reviewed_archive(
-            owner_upgrade.OwnerUpgradePinsV1(
-                pins.source_commit,
-                pins.source_tree,
-                pins.source_archive_sha256,
-                pins.route,
-            ),
-            source_archive_file,
+        source = owner_upgrade.OwnerUpgradePinsV1(
+            pins.source_commit, pins.source_tree, pins.source_archive_sha256, pins.route
         )
+        require_exact_installed_owner_source_0056_v1(
+            _SOURCE, source, source_archive_file
+        )
+        target_plan._require_private_file(owner_dsn_file)
         expected_route = (
             "postgresql+asyncpg",
             pins.route.host,
@@ -188,9 +222,14 @@ async def observe_owner_postgrant_readback_0056_v1(
                 pins.route, owner_dsn_file=owner_dsn_file, ca_file=ca_file
             )
             _need(read_again.url == prepared.url)
+        require_exact_installed_owner_source_0056_v1(
+            _SOURCE, source, source_archive_file
+        )
         return {
-            "schema": "ctcc.native_owner_0056.postgrant_target_readback.inert.v1",
+            "schema": _SCHEMA,
+            "status": "OBSERVED_DENY",
             "database_head": "0056",
+            "target_grant_pins_sha256": sha(canonical(asdict(pins))),
             "cluster_system_identifier_sha256": pins.route.cluster_system_identifier_sha256,
             "server_incarnation_sha256": actual.server_incarnation_sha256,
             "restricted_role_identity_sha256": actual.stable_identity_sha256,
@@ -199,6 +238,7 @@ async def observe_owner_postgrant_readback_0056_v1(
             "restricted_logins_observed": 3,
             "separate_read_only_owner_observations": 2,
             "password_authentication_verified": False,
+            "external_approval_authenticated": False,
             "startup_admission": False,
             "execution_authority": False,
             "admission": "DENY",
@@ -207,3 +247,39 @@ async def observe_owner_postgrant_readback_0056_v1(
         raise
     except Exception:  # noqa: BLE001 -- do not expose private profiles or SQL.
         _need(False)
+
+
+class _PrivateParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        _need(False)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = _PrivateParser(add_help=False, allow_abbrev=False)
+    parser.add_argument("--inspect-granted-owner-target", action="store_true")
+    parser.add_argument("--plan-file", type=Path, required=True)
+    parser.add_argument("--plan-file-sha256", required=True)
+    parser.add_argument("--owner-dsn-file", type=Path, required=True)
+    parser.add_argument("--ca-file", type=Path, required=True)
+    parser.add_argument("--source-archive-file", type=Path, required=True)
+    try:
+        args = parser.parse_args(argv)
+        _need(args.inspect_granted_owner_target is True)
+        pins = _load_plan(args.plan_file, args.plan_file_sha256)
+        receipt = asyncio.run(
+            observe_owner_postgrant_readback_0056_v1(
+                pins,
+                owner_dsn_file=args.owner_dsn_file,
+                ca_file=args.ca_file,
+                source_archive_file=args.source_archive_file,
+            )
+        )
+    except (Exception, KeyboardInterrupt, asyncio.CancelledError):  # noqa: BLE001 -- redact paths and private catalog inputs
+        print('{"admission":"DENY","status":"REFUSED"}')
+        return 1
+    print(canonical(receipt).decode("ascii"))
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
