@@ -90,7 +90,7 @@ def target(synthetic):
     )
 
 
-def data(target, *, filled=False):
+def data(target, *, filled=False, exact_outgoing_query=False):
     request = target.request
     inner = json.loads(json.loads(target.intent_json)["intent_json"])
     expected = inner["exact_order"]
@@ -272,13 +272,17 @@ def data(target, *, filled=False):
     result = []
     for index, (role, path, params, values) in enumerate(sequence):
         started = at + timedelta(seconds=index)
+        ordered = tuple(sorted(params.items()))
+        outgoing = ordered if exact_outgoing_query else tuple(params.items())
         result.append(
             (
                 role,
                 read.DemoReconciliationObservationV1(
                     path,
-                    tuple(sorted(params.items())),
-                    target.origin + path + ("?" + urlencode(params) if params else ""),
+                    ordered,
+                    target.origin
+                    + path
+                    + ("?" + urlencode(outgoing) if outgoing else ""),
                     "f" * 64,
                     "a" * 64,
                     started,

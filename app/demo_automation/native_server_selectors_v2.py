@@ -46,6 +46,7 @@ _SELECTIONS = WeakKeyDictionary()
 _SELECTING = {}
 _MAX_SELECTIONS = 16
 _SOURCE_ONLY_0056 = object()
+_CONTROLLED_0056 = object()
 _ROUTE_ARTIFACT_NAME = "configured_demo_official_route_evidence_v2.json"
 _ROUTE_ARTIFACT_SHA = "426a0fe117bc756e2c8c2c850f5658134966e8be785d1f2aca46e4ed0e0d7544"
 _ORIGIN = "https://openapi.okx.com"
@@ -111,9 +112,13 @@ class ConfiguredDemoIdentitySelectionV2:
 
     @property
     def source_roles_0056(self):
-        roles = _record(self)["source_roles_0056"]
-        _need(roles is not None, "native_demo_selector_0056_source_required")
-        return roles
+        entry = _record(self)
+        _need(
+            entry["purpose_0056"] is _SOURCE_ONLY_0056
+            and entry["source_roles_0056"] is not None,
+            "native_demo_selector_0056_source_required",
+        )
+        return entry["source_roles_0056"]
 
     def close(self):
         _need(type(self) is ConfiguredDemoIdentitySelectionV2)
@@ -313,7 +318,7 @@ async def select_configured_demo_identity_v2(
         _need(
             _source_use is None
             or (
-                _source_use is _SOURCE_ONLY_0056
+                (_source_use is _SOURCE_ONLY_0056 or _source_use is _CONTROLLED_0056)
                 and not source_only_role_preflight
                 and not retain_read_transport
             )
@@ -323,7 +328,7 @@ async def select_configured_demo_identity_v2(
         artifact = _route_artifact()
         factories = select_configured_native_demo_factories_v2()
         source_roles_0056 = None
-        if _source_use is _SOURCE_ONLY_0056:
+        if _source_use is not None:
             source_roles_0056 = await _source_roles_before_get_0056(factories)
             _need(
                 _configured_inputs(private_client, read_session, instrument_ids)
@@ -407,7 +412,11 @@ async def select_configured_demo_identity_v2(
         binding = sha(
             canonical(
                 {
-                    "purpose": "configured_demo_route_selector_v2",
+                    "purpose": (
+                        "configured_demo_controlled_account_selector_0056"
+                        if _source_use is _CONTROLLED_0056
+                        else "configured_demo_route_selector_v2"
+                    ),
                     "route_artifact_sha256": _ROUTE_ARTIFACT_SHA,
                     "parsed_selector_sha256": sha(parsed),
                     "raw_selector_sha256": sha(observation.raw_body),
@@ -468,6 +477,7 @@ async def select_configured_demo_identity_v2(
             "selector_signature": observation.request_signature,
             "factories": factories,
             "source_roles_0056": source_roles_0056,
+            "purpose_0056": _source_use,
             "factory_pins": (
                 history._factory_pin(factories.custody_factory),
                 history._factory_pin(factories.frame_reader_factory),
@@ -528,6 +538,33 @@ async def select_configured_demo_source_identity_0056_v1(
         instrument_ids=instrument_ids,
         _source_use=_SOURCE_ONLY_0056,
     )
+
+
+async def _select_configured_demo_controlled_identity_0056(
+    *, private_client, read_session, instrument_ids
+):
+    """Pin the configured DB0056 roles and signed account for Control preparation."""
+    return await select_configured_demo_identity_v2(
+        private_client=private_client,
+        read_session=read_session,
+        instrument_ids=instrument_ids,
+        _source_use=_CONTROLLED_0056,
+    )
+
+
+def _controlled_identity_0056(selection):
+    """Return the original Control selector record within its same-task lease."""
+    from app.core.native_role_witness_0056_v1 import RestrictedNativeRoles0056WitnessV1
+
+    entry = _record(selection)
+    _need(
+        entry["purpose_0056"] is _CONTROLLED_0056
+        and type(entry["source_roles_0056"]) is RestrictedNativeRoles0056WitnessV1
+        and entry["source_roles_0056"].observation.database_head == "0056"
+        and entry["source_roles_0056"].execution_authority is False,
+        "native_demo_selector_0056_controlled_identity_required",
+    )
+    return entry["record"], entry["factories"], entry["source_roles_0056"]
 
 
 async def _dispose_failed_selection_factories_v2(factories):

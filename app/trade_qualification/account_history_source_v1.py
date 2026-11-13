@@ -803,12 +803,16 @@ async def acquire_configured_history_current_source_0056_v1(
     *, selection, read_session, private_client, raw_root, companion_root
 ):
     """Collect and immediately burn the configured DB0056 diagnostic owner."""
-    from app.demo_automation.native_server_selectors_v2 import _record
+    from app.demo_automation.native_server_selectors_v2 import (
+        _SOURCE_ONLY_0056,
+        _record,
+    )
 
     selected = _record(selection)
     if (
         selected["read_session"] is not read_session
         or selected["private_client"] is not private_client
+        or selected["purpose_0056"] is not _SOURCE_ONLY_0056
         or selected["source_roles_0056"] is None
     ):
         _deny("native_history_0056_original_selector_required")
@@ -893,11 +897,15 @@ async def _acquire_native_history_source(
                 or _partition_key is not _PARTITION_CURRENT_V2
             ):
                 _deny("native_history_0056_source_purpose_required")
-            from app.demo_automation.native_server_selectors_v2 import _record
+            from app.demo_automation.native_server_selectors_v2 import (
+                _SOURCE_ONLY_0056,
+                _record,
+            )
 
             source56 = _record(_source_selection_0056)
             if (
-                source56["source_roles_0056"] is None
+                source56["purpose_0056"] is not _SOURCE_ONLY_0056
+                or source56["source_roles_0056"] is None
                 or source56["read_session"] is not read_session
                 or source56["private_client"] is not private_client
                 or source56["evidence"].scope_config is not scope_config

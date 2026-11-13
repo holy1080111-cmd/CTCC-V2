@@ -2,12 +2,13 @@
 
 import os
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
 import pytest
-from sqlalchemy import update
+from sqlalchemy import text, update
+from sqlalchemy.exc import DBAPIError
 
 from app.config.settings import Settings
 from app.core.native_only_lifespan import _MUST_BE_FALSE
@@ -25,6 +26,131 @@ from tests.integration.test_gate3_fitted_candidate_custody_pg import (
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 _ARCHIVE = Path("/ctcc-admitted-test-source.tar")
+
+
+async def test_actual0056_restricted_control_repository_reads_back_lifecycle(
+    _actual_0056_role_observation_lab,  # noqa: F811
+    monkeypatch,
+):
+    from app.core.native_role_witness_0056_v1 import (
+        observe_restricted_native_roles_0056_witness_v1,
+    )
+    from app.database.repositories import demo_control_current56_v1 as repository56
+    from app.database.repositories.demo_control import DemoControlRepository
+    from app.trade_qualification.demo_control import (
+        ControlPins,
+        ControlScope,
+        account_lock_key,
+    )
+    from app.trade_qualification.demo_control_runtime import DemoControlOwner
+
+    owner_engine, owner_factory, selected, _ = _actual_0056_role_observation_lab
+    roles = await observe_restricted_native_roles_0056_witness_v1(
+        selected, source=control.deployment._SOURCE
+    )
+    scope = ControlScope("demo", "730021")
+
+    def clock():
+        return datetime.now(UTC)
+
+    historical = DemoControlRepository(owner_factory, clock=clock)
+    genesis = await historical.latch_stop(scope, command_id="a" * 64)
+    current = repository56.DemoControlRepository0056V1(
+        selected, roles=roles, scope=scope, clock=clock
+    )
+    assert (await current.verify_native_deployment_v2()).state == genesis.state
+    pending_sessions = []
+    original = repository56.DemoControlRepository._store
+
+    async def observe_actual_lock(session, row, state, **write):
+        pending_sessions.append(
+            (state.revision, (await repository56.lineage._metadata(session))[8])
+        )
+        if state.revision == 2:
+            async with owner_engine.begin() as competing:
+                assert not await competing.scalar(
+                    text("SELECT pg_catalog.pg_try_advisory_xact_lock(:key)"),
+                    {"key": account_lock_key(scope)},
+                )
+                with pytest.raises(DBAPIError) as ddl:
+                    await competing.exec_driver_sql(
+                        "LOCK TABLE public.demo_control_journal IN ACCESS EXCLUSIVE MODE NOWAIT"
+                    )
+                assert ddl.value.orig.sqlstate == "55P03"
+        return await original(session, row, state, **write)
+
+    committed_sessions = []
+    original_read = current._read
+
+    async def observe_actual_readback(exact_scope):
+        result = await original_read(exact_scope)
+        committed_sessions.append((result.state.revision, result.metadata[8]))
+        return result
+
+    with monkeypatch.context() as observation:
+        observation.setattr(
+            repository56.DemoControlRepository,
+            "_store",
+            staticmethod(observe_actual_lock),
+        )
+        observation.setattr(current, "_read", observe_actual_readback)
+        pins = ControlPins("b" * 64, "c" * 64, "d" * 64)
+        owner = DemoControlOwner(current, scope, pins)
+        acquired = await owner.start()
+        renewed = await owner.renew()
+        assert acquired.state.owner_epoch == renewed.state.owner_epoch == 1
+        assert acquired.state.emergency_stop is True
+        assert renewed.state.owner_sha256 == owner.owner_sha256
+        assert not owner.observed_arm_intent and not renewed.execution_authority
+        with pytest.raises(repository56.DemoControlRepository0056Error):
+            await current.change(
+                scope,
+                owner_token=b"g" * 32,
+                owner_epoch=1,
+                expected_revision=renewed.state.revision,
+                action="arm_requested",
+                command_id="e" * 64,
+                arm_expires_at=clock() + timedelta(seconds=1),
+            )
+        with pytest.raises(repository56.DemoControlRepository0056Error):
+            await current.clear_stop(scope, passed=True)
+        with pytest.raises(repository56.DemoControlRepository0056Error):
+            await current.change(
+                scope,
+                owner_token=owner._owner_token,
+                owner_epoch=1,
+                expected_revision=acquired.state.revision,
+                action="renew",
+                command_id="e" * 64,
+            )
+        assert (await original_read(scope)).event == renewed.event_sha256
+        disarmed = await owner.disarm()
+        released = await owner.release()
+        stop = await current.latch_stop(scope, command_id="f" * 64)
+        assert (
+            disarmed.state.arm_request_id
+            is released.state.arm_request_id
+            is stop.state.arm_request_id
+            is None
+        )
+        assert stop.state.emergency_stop is True
+    assert [rev for rev, _ in pending_sessions] == [2, 3, 4, 5, 6]
+    assert [rev for rev, _ in committed_sessions] == [2, 3, 4, 5, 6]
+    assert len({tx for _, tx in pending_sessions + committed_sessions}) == 10
+    assert (await current.read(scope)).event_sha256 == stop.event_sha256
+    with pytest.raises(repository56.DemoControlRepository0056Error):
+        await current.read(ControlScope("demo", "730022"))
+
+    async def lost_readback(_scope):
+        raise RuntimeError("simulated readback loss after durable commit")
+
+    with monkeypatch.context() as observation:
+        observation.setattr(current, "_read", lost_readback)
+        with pytest.raises(repository56.DemoControlRepository0056Uncertain):
+            await current.latch_stop(scope, command_id="0" * 64)
+    reopened = await current.read(scope)
+    assert reopened.state.revision == stop.state.revision + 1
+    assert reopened.state.emergency_stop is True
 
 
 async def test_actual0056_control_monitor_joins_exact_release_and_restricted_tls(

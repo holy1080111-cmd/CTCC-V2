@@ -116,3 +116,17 @@ read. The reviewed key policy requires `EXACT_READ_TRADE` and
 `SINGLE_PERMITTED_IPV4`. The connection check's exit code continues
 to report whether signed configuration was observed. The two policy
 classifications describe the permissions and IP field returned by OKX.
+
+
+## Verify a configured Demo account before Control ownership
+
+After creating the original account observation, run the preparation check
+from the execution-disabled DB0056 source profile.
+
+    python -B -m scripts.check_native_demo_control_preparation_0056 --instrument BTC-USDT-SWAP
+
+It checks the actual restricted PostgreSQL roles before one signed Demo
+configuration request. The original first account measurement must replay,
+and fresh transactions must agree on the current Control event. The output
+shows the revision, emergency stop, recorded Arm request and measurement
+digest. Control writes, order writes and execution authority remain disabled.

@@ -383,6 +383,7 @@ def test_pg2_keeps_all_required_cases_and_modules_once_across_both_roles():
         "test_actual0056_restricted_account_control_read_replays_exact_scope",
         "test_actual0056_restricted_ledger_replays_retained_control_bound_intent",
         current56_contract.CONTROL_MONITOR_CASE[1],
+        current56_contract.CONTROL_LIFECYCLE_CASE[1],
         current56_contract.REPORT_RESUME_CASE[1],
         current56_contract.INITIAL_TRANSPORT_CASE[1],
     ],
@@ -532,7 +533,7 @@ def test_fitted_diagnostic_is_explicit_and_cases_only(
     if accepted:
         args, observed = current56._arguments()
         assert args.fitted_catalog_diagnostic is True and observed == 1
-        assert len(set(current56._FITTED_CASES)) == len(current56._FITTED_CASES) == 36
+        assert len(set(current56._FITTED_CASES)) == len(current56._FITTED_CASES) == 37
         assert current56_contract.devval_catalog.HERMETIC_CATALOG_CASE in (
             current56._FITTED_CASES
         )
@@ -572,6 +573,7 @@ def test_fitted_diagnostic_is_explicit_and_cases_only(
             "tests.integration.test_db0056_control_monitor_pg",
             "test_actual0056_control_monitor_joins_exact_release_and_restricted_tls",
         ) in current56._FITTED_CASES
+        assert current56_contract.CONTROL_LIFECYCLE_CASE in current56._FITTED_CASES
         assert current56_contract.REPORT_RESUME_CASE in current56._FITTED_CASES
         assert current56_contract.INITIAL_TRANSPORT_CASE in current56._FITTED_CASES
         assert current56._FITTED_JUNIT not in current56_contract.component_artifacts(

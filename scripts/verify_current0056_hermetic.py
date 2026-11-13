@@ -155,6 +155,7 @@ _FITTED_CASES = (
         "test_actual0056_restricted_ledger_replays_retained_control_bound_intent",
     ),
     contract.CONTROL_MONITOR_CASE,
+    contract.CONTROL_LIFECYCLE_CASE,
     contract.REPORT_RESUME_CASE,
     contract.INITIAL_TRANSPORT_CASE,
     (
