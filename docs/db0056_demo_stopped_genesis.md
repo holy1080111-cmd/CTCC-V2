@@ -28,3 +28,23 @@ Both options require the restricted, execution-disabled Demo profile and use onl
 the signed account-configuration GET at the exchange. Successful output has
 `admission=DENY`, `armed=false` and `execution_authority=false`. It contains the
 Control event digest, without account identity or credential values.
+
+## Recover a previously initialized account
+
+After a process interruption, explicitly latch a stop on the signed Demo
+account under the same restricted profile.
+
+```text
+python -B -m scripts.recover_demo_account_restart_0056 --instrument BTC-USDT-SWAP --latch-stop
+```
+
+This operation clears a pending Arm and preserves the owner epoch, source
+pins and existing journal. An already stopped account is read back without
+another write. It refuses an absent or malformed lineage. The command opens
+no exchange order path. Its only exchange request is the signed identity GET.
+Position, intent and protection reconciliation still have to complete before
+an execution path can admit the account.
+
+Exit `2` marks an uncertain commit or an interrupted operation. Re-run with
+`--reconcile-only` to verify the current account stop without creating a new
+event. The readback alone cannot attribute a stop to a lost commit response.

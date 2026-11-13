@@ -3385,3 +3385,71 @@ async def test_actual0056_restricted_writer_creates_only_exact_stopped_genesis(
     preserved = await owner_repository.read(scope)
     assert preserved.state == original.state
     assert preserved.event_sha256 == original.event_sha256
+
+
+async def test_actual0056_restart_recovery_revokes_existing_account_arm(
+    monkeypatch, _actual_0056_role_observation_lab
+):
+    from types import SimpleNamespace
+
+    from app.core import native_account_restart_recovery_0056_v1 as recovery
+    from app.core.native_role_witness_0056_v1 import (
+        observe_restricted_native_roles_0056_witness_v1,
+    )
+    from app.database.repositories.demo_control import DemoControlRepository
+    from app.trade_qualification.demo_control import ControlPins, ControlScope
+
+    _, owner_factory, factories, _ = _actual_0056_role_observation_lab
+    witness = await observe_restricted_native_roles_0056_witness_v1(
+        factories, source=_SOURCE_ROOT
+    )
+    scope = ControlScope("demo", "730005")
+    selection = SimpleNamespace(
+        source_roles_0056=witness,
+        scope_config=SimpleNamespace(expected_uid=scope.account_id),
+    )
+    selected = {"factories": factories}
+    monkeypatch.setattr(recovery.selectors, "_record", lambda _: selected)
+    repository = DemoControlRepository(owner_factory, clock=lambda: datetime.now(UTC))
+    token = b"c" * 32
+    pins = ControlPins("a" * 64, "b" * 64, "c" * 64)
+    owner = await repository.acquire(
+        scope, owner_token=token, pins=pins, command_id="d" * 64
+    )
+    armed = await repository.change(
+        scope,
+        owner_token=token,
+        owner_epoch=owner.state.owner_epoch,
+        expected_revision=owner.state.revision,
+        action="arm_requested",
+        command_id="e" * 64,
+        arm_expires_at=owner.state.lease_until,
+    )
+    with pytest.raises(recovery.NativeAccountRestartRecovery0056Error):
+        await recovery._recover_selected(selection, reconcile_only=True)
+    stopped = await recovery._recover_selected(selection, reconcile_only=False)
+    repeated = await recovery._recover_selected(selection, reconcile_only=False)
+    readback = await recovery._recover_selected(selection, reconcile_only=True)
+    assert (stopped.status, repeated.status, readback.status) == (
+        "STOP_PERSISTED",
+        "STOP_OBSERVED",
+        "STOP_OBSERVED",
+    )
+    assert (
+        stopped.revision
+        == armed.state.revision + 1
+        == readback.revision
+        == repeated.revision
+    )
+    assert (
+        stopped.control_event_sha256
+        == readback.control_event_sha256
+        == repeated.control_event_sha256
+    )
+    assert readback.emergency_stop and readback.admission == "DENY"
+    assert (
+        readback.armed
+        is readback.positions_reconciled
+        is readback.execution_authority
+        is False
+    )

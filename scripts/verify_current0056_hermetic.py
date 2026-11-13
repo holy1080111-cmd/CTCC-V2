@@ -132,6 +132,10 @@ _FITTED_CASES = (
     ),
     (
         fitted_measurement.CASE[0],
+        "test_actual0056_restart_recovery_revokes_existing_account_arm",
+    ),
+    (
+        fitted_measurement.CASE[0],
         "test_actual0056_held_frame_reader_uses_same_transaction_and_real_catalog",
     ),
     (
