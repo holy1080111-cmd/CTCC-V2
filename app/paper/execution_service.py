@@ -17,7 +17,7 @@ from app.domain.paper import (
     PaperTickResult,
 )
 from app.domain.recovery import RecoveryStatus
-from app.paper.engine import PaperBroker
+from app.paper.engine import PaperBroker, PaperBrokerError
 
 T = TypeVar("T")
 
@@ -30,8 +30,8 @@ class PaperExecutionService:
     """Atomic paper mutations with optional PostgreSQL persistence.
 
     The deterministic broker remains synchronous and storage-agnostic. This
-    service serializes mutations, persists state, and restores the previous
-    in-memory snapshot when persistence fails.
+    service serializes mutations and restores the previous in-memory snapshot
+    if a broker operation or persistence fails.
     """
 
     def __init__(
@@ -107,7 +107,12 @@ class PaperExecutionService:
     ) -> PaperTickResult:
         async with self._lock:
             before = self.broker.state()
-            result = self.broker.tick(symbol=symbol, price=price, timestamp=timestamp)
+            result = self._apply_broker_mutation(
+                before,
+                lambda: self.broker.tick(
+                    symbol=symbol, price=price, timestamp=timestamp
+                ),
+            )
             now = datetime.now(UTC)
             material = bool(result.filled_order_ids or result.closed_position_ids)
             interval_due = (
@@ -119,27 +124,22 @@ class PaperExecutionService:
             if self.repository is not None and (
                 material or (has_open_positions and interval_due)
             ):
-                try:
-                    await self._persist(
-                        "paper_tick_applied",
-                        details={
-                            "symbol": symbol,
-                            "price": str(price),
-                            "filled_order_ids": [
-                                str(item) for item in result.filled_order_ids
-                            ],
-                            "closed_position_ids": [
-                                str(item) for item in result.closed_position_ids
-                            ],
-                        },
-                    )
-                    self._last_mark_persist_at = now
-                except Exception as exc:
-                    self.broker.restore(before)
-                    self._last_error = f"{exc.__class__.__name__}: {exc}"
-                    raise PaperPersistenceError(
-                        "paper_tick_persistence_failed"
-                    ) from exc
+                await self._persist_mutation(
+                    before,
+                    "paper_tick_applied",
+                    failure="paper_tick_persistence_failed",
+                    mark_at=now,
+                    details={
+                        "symbol": symbol,
+                        "price": str(price),
+                        "filled_order_ids": [
+                            str(item) for item in result.filled_order_ids
+                        ],
+                        "closed_position_ids": [
+                            str(item) for item in result.closed_position_ids
+                        ],
+                    },
+                )
             return result
 
     async def close(
@@ -243,19 +243,66 @@ class PaperExecutionService:
     ) -> T:
         async with self._lock:
             before = self.broker.state()
-            result = operation()
+            result = self._apply_broker_mutation(before, operation)
             if self.repository is not None:
-                try:
-                    await self._persist(
-                        action,
-                        resource_id=resource_id,
-                        details=details,
-                    )
-                except Exception as exc:
-                    self.broker.restore(before)
-                    self._last_error = f"{exc.__class__.__name__}: {exc}"
-                    raise PaperPersistenceError(f"{action}_persistence_failed") from exc
+                await self._persist_mutation(
+                    before,
+                    action,
+                    failure=f"{action}_persistence_failed",
+                    resource_id=resource_id,
+                    details=details,
+                )
             return result
+
+    def _apply_broker_mutation(
+        self, before: PaperStateView, operation: Callable[[], T]
+    ) -> T:
+        try:
+            return operation()
+        except BaseException as exc:
+            self.broker.restore(before)
+            if isinstance(exc, ArithmeticError):
+                raise PaperBrokerError("paper_numeric_range_exceeded") from None
+            raise
+
+    async def _persist_mutation(
+        self,
+        before: PaperStateView,
+        action: str,
+        *,
+        failure: str,
+        resource_id: str | None = None,
+        details: dict[str, object] | None = None,
+        mark_at: datetime | None = None,
+    ) -> None:
+        # Finish the one in-flight commit attempt before releasing the service
+        # lock. Disconnect cancellation does not itself establish a DB outcome.
+        pending = asyncio.create_task(
+            self._persist(action, resource_id=resource_id, details=details)
+        )
+        cancelled = None
+        while not pending.done():
+            try:
+                await asyncio.shield(pending)
+            except asyncio.CancelledError as exc:
+                cancelled = exc
+            except Exception:  # noqa: BLE001 -- completed task failure is projected below.
+                break
+        try:
+            pending.result()
+        except asyncio.CancelledError:
+            self.broker.restore(before)
+            raise
+        except Exception as exc:
+            self.broker.restore(before)
+            self._last_error = failure
+            if cancelled is not None:
+                raise cancelled from None
+            raise PaperPersistenceError(failure) from exc
+        if mark_at is not None:
+            self._last_mark_persist_at = mark_at
+        if cancelled is not None:
+            raise cancelled
 
     async def _persist(
         self,

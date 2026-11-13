@@ -7,6 +7,7 @@ from threading import RLock
 from uuid import UUID, uuid4
 
 from app.domain.paper import (
+    PAPER_AMOUNT_QUANTUM,
     PaperAccountView,
     PaperOrderRequest,
     PaperOrderView,
@@ -15,11 +16,9 @@ from app.domain.paper import (
     PaperTickResult,
 )
 
-_Q = Decimal("0.00000001")
-
 
 def _q(value: Decimal) -> Decimal:
-    return value.quantize(_Q, rounding=ROUND_DOWN)
+    return value.quantize(PAPER_AMOUNT_QUANTUM, rounding=ROUND_DOWN)
 
 
 @dataclass

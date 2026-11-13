@@ -64,7 +64,7 @@ async def process_tick(request: MarketTickRequest) -> PaperTickResult:
         return await paper_service.tick(
             symbol=request.symbol, price=request.price, timestamp=request.timestamp
         )
-    except PaperPersistenceError as exc:
+    except (PaperBrokerError, PaperPersistenceError) as exc:
         raise _handle(exc) from exc
 
 

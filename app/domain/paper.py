@@ -2,21 +2,29 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
+
+# Eight decimal places are retained by the broker. PostgreSQL Numeric(28,10)
+# accepts at most 18 whole digits. Extra precision still rounds down as before.
+PAPER_AMOUNT_QUANTUM = Decimal("0.00000001")
+PaperAmount = Annotated[
+    Decimal,
+    Field(ge=PAPER_AMOUNT_QUANTUM, lt=Decimal("1e18"), allow_inf_nan=False),
+]
 
 
 class PaperOrderRequest(BaseModel):
     symbol: str = Field(min_length=3, max_length=40)
     side: Literal["long", "short"]
-    quantity: Decimal = Field(gt=0)
-    reference_price: Decimal = Field(gt=0)
-    stop_loss: Decimal = Field(gt=0)
-    take_profit: Decimal = Field(gt=0)
+    quantity: PaperAmount
+    reference_price: PaperAmount
+    stop_loss: PaperAmount
+    take_profit: PaperAmount
     order_type: Literal["market", "limit"] = "market"
-    limit_price: Decimal | None = Field(default=None, gt=0)
+    limit_price: PaperAmount | None = None
     risk_decision: Literal["approved", "rejected"] = "approved"
     strategy: str = Field(default="manual", min_length=2, max_length=100)
     score: int = Field(default=0, ge=0, le=100)
@@ -82,12 +90,12 @@ class PaperPositionView(BaseModel):
 
 class MarketTickRequest(BaseModel):
     symbol: str = Field(min_length=3, max_length=40)
-    price: Decimal = Field(gt=0)
+    price: PaperAmount
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class ManualCloseRequest(BaseModel):
-    price: Decimal = Field(gt=0)
+    price: PaperAmount
     reason: str = Field(default="manual", min_length=2, max_length=100)
 
 

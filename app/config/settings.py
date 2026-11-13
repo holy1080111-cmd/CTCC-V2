@@ -68,6 +68,7 @@ class Settings(BaseSettings):
     api_token: SecretStr = SecretStr("")
     # Opt-in, no-execution native Demo startup. Legacy lifespan stays default.
     ctcc_native_only_lifespan_v1: bool = False
+    ctcc_local_analysis_only_v1: bool = False
     # Optional reviewed PostgreSQL CA for native-only restricted role transport.
     # Both values are required together; the digest is independently pinned.
     ctcc_native_pg_tls_ca_file: str = ""
@@ -477,6 +478,48 @@ class Settings(BaseSettings):
             )
         )
 
+    def _require_local_analysis_settings(self) -> None:
+        switches = (
+            self.ctcc_native_only_lifespan_v1,
+            self.auto_trade,
+            self.live_trading,
+            self.okx_ws_enabled,
+            self.paper_auto_ticks,
+            self.paper_auto_execution,
+            self.okx_demo_enabled,
+            self.okx_demo_allow_order_writes,
+            self.okx_demo_auto_execution,
+            self.okx_demo_auto_reconcile_on_start,
+            self.okx_demo_observability_enabled,
+            self.okx_demo_soak_enabled,
+            self.okx_demo_soak_allow_execute,
+            self.okx_demo_continuous_session_enabled,
+            self.okx_live_enabled,
+            self.okx_live_allow_order_writes,
+            self.okx_live_auto_execution,
+            self.okx_live_auto_reconcile_on_start,
+            self.notion_outbox_enabled,
+            self.submission_outbox_enabled,
+        )
+        exchange_secrets = (
+            self.okx_demo_api_key,
+            self.okx_demo_api_secret,
+            self.okx_demo_api_passphrase,
+            self.okx_live_api_key,
+            self.okx_live_api_secret,
+            self.okx_live_api_passphrase,
+        )
+        if (
+            self.environment != "production"
+            or self.trading_mode != "analysis_only"
+            or self.web_concurrency != 1
+            or not self.paper_persistence_enabled
+            or not self.api_token_is_safe
+            or any(switches)
+            or any(value.get_secret_value() for value in exchange_secrets)
+        ):
+            raise ValueError("local_analysis_configuration_denied")
+
     @model_validator(mode="after")
     def enforce_v168_safety(self) -> "Settings":
         ca_file = self.ctcc_native_pg_tls_ca_file
@@ -492,6 +535,8 @@ class Settings(BaseSettings):
                 "AUTO_TRADE is a legacy unsafe switch and must remain false; "
                 "use explicitly armed OKX_LIVE_AUTO_EXECUTION"
             )
+        if self.ctcc_local_analysis_only_v1:
+            self._require_local_analysis_settings()
         if self.ctcc_demo_high_vol_momentum_v2:
             raise ValueError("CANONICAL_V2_DISPATCH_INTEGRATION_REQUIRED")
 

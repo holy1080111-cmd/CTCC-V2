@@ -361,7 +361,9 @@ DASHBOARD_HTML = r"""
         <h2>本機分析與 Paper 模擬</h2>
         <p>
             先查看 <a href="/readiness">本機服務狀態</a>。
-            <a href="/docs#/analysis">分析 API 文件</a>可用於檢查分析入口；
+            <a href="/dashboard/local-analysis">匯入市場快照分析</a>
+            可直接在本機使用；
+            <a href="/docs#/analysis">分析 API 文件</a>提供 API 契約；
             <a href="/docs#/paper">Paper 模擬 API 文件</a>
             提供手動訂單、報價與帳本查詢；API 文件需另行輸入 CTCC Token。
         </p>

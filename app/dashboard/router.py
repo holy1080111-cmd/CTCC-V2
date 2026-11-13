@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 from fastapi.responses import HTMLResponse
 
+from app.dashboard.local_analysis_page import LOCAL_ANALYSIS_HTML
 from app.dashboard.page import DASHBOARD_HTML
 
 router = APIRouter(
@@ -42,5 +43,16 @@ DASHBOARD_SECURITY_HEADERS = {
 async def dashboard() -> HTMLResponse:
     return HTMLResponse(
         content=DASHBOARD_HTML,
+        headers=DASHBOARD_SECURITY_HEADERS.copy(),
+    )
+
+
+@router.get(
+    "/dashboard/local-analysis",
+    response_class=HTMLResponse,
+)
+async def local_analysis() -> HTMLResponse:
+    return HTMLResponse(
+        content=LOCAL_ANALYSIS_HTML,
         headers=DASHBOARD_SECURITY_HEADERS.copy(),
     )

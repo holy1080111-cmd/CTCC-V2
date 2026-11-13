@@ -10,9 +10,9 @@ Live remains default OFF and requires contemporaneous operator authorization.
 The [local analysis installation](docs/local_analysis_installation.md) runs
 the dashboard and persists manual Paper state on this PC.
 
-The regular app exposes `POST /api/analysis/snapshot` in `/docs`. Authorize
-with the local CTCC API token, then provide the unmodified MarketSnapshot JSON
-saved from `GET /api/market/snapshot/{symbol}` on a connected CTCC instance.
+Open `/dashboard` in the local analysis installation, enter its local CTCC
+API token, and select an unmodified MarketSnapshot JSON file. A connected
+CTCC instance can export that file via `GET /api/market/snapshot/{symbol}`.
 The import is limited to 1 MiB. The app rebuilds 4H, 1H, 15m and 5m analysis
 at the capture time and returns the original input SHA256. Source
 authenticity and order authority remain false for imported data.

@@ -29,7 +29,7 @@ docker compose --env-file "<installation directory>\compose.env" --project-direc
 
 Open the dashboard address printed during preparation. The default is `http://127.0.0.1:8100/dashboard`; readiness is `http://127.0.0.1:8100/readiness`. The dashboard asks for an API token. Open the private `api_token` file in the installation directory as the same Windows user, copy its contents into that prompt, and keep it out of chat, screenshots, and reports. The local analysis API uses the same token in the `X-CTCC-Token` header.
 
-Manual Paper orders, ticks, and closes use the same API token and persist through PostgreSQL across restarts. Automatic Paper ticks and execution stay off. The current exchange-backed symbol analysis routes need exchange access and are unavailable on this internal network. Open `/docs`, authorize with the local API token, and submit an exported MarketSnapshot JSON document to `POST /api/analysis/snapshot`. The command recomputes the analysis at the snapshot's capture time without fetching market data. Use the Paper routes in `/docs` for manual simulation on the local persistent portfolio. Readiness and the dashboard do not prove trading or market-data completeness.
+Manual Paper orders, ticks, and closes use the same API token and persist through PostgreSQL across restarts. Automatic Paper ticks and execution stay off. The current exchange-backed symbol analysis routes need exchange access and are unavailable on this internal network. Open the local dashboard, enter the local API token, and select an exported MarketSnapshot JSON file. CTCC recomputes the analysis at its original capture time. The page uses only the local server and works without internet access. Its Paper section reads the locally saved simulation account and positions. Readiness and the dashboard do not prove trading or market-data completeness.
 
 ## Stop, preserve, recover
 
@@ -38,5 +38,12 @@ docker compose --env-file "<installation directory>\compose.env" --project-direc
 ```
 
 Do not add `-v`: PostgreSQL and Redis use installation-specific named volumes that retain local state. Do not delete the private installation directory while these volumes are in use. Re-running `--prepare` creates a different installation and does not overwrite one. Re-running `--check` verifies an existing installation without changing it.
+
+Keep the exact old source checkout when trying a newer CTCC commit. Stop the
+old project and retain its private installation directory and named volumes.
+Back up both stopped volumes and verify the backup independently before
+changing source. A new source is prepared with new volumes. If it fails, the
+old source, installation directory and volumes can be restarted together.
+The installer does not migrate saved Paper state across source versions.
 
 This is a local analysis profile. It does not implement the separate DB0056 native trading deployment, grant privileges, Arm trading, or send orders. Building the pinned image may fetch locked build dependencies; the running services have no external network route. Actual Docker startup, volume persistence, and Windows bind-mount access need runtime acceptance on the target machine.

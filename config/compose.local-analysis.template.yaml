@@ -27,6 +27,7 @@ services:
       AUTO_TRADE: "false"
       LIVE_TRADING: "false"
       CTCC_NATIVE_ONLY_LIFESPAN_V1: "false"
+      CTCC_LOCAL_ANALYSIS_ONLY_V1: "true"
       OKX_WS_ENABLED: "false"
       OKX_DEMO_ENABLED: "false"
       OKX_DEMO_ALLOW_ORDER_WRITES: "false"

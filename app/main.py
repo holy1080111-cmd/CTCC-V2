@@ -2,7 +2,8 @@ import logging
 from asyncio import CancelledError
 from contextlib import asynccontextmanager, suppress
 
-from fastapi import FastAPI
+from fastapi import APIRouter, FastAPI
+from fastapi.responses import RedirectResponse
 
 from app.api.native_only_http import router as native_only_api_router
 from app.api.router import api_router
@@ -64,6 +65,22 @@ async def lifespan(instance: FastAPI):
                 await engine.dispose()
         return
 
+    if getattr(settings, "ctcc_local_analysis_only_v1", False):
+        try:
+            await paper_service.recover()
+        except BaseException:
+            with suppress(Exception, CancelledError):
+                await engine.dispose()
+            raise
+        try:
+            yield
+        finally:
+            try:
+                await paper_service.persist_now("paper_state_shutdown_checkpoint")
+            finally:
+                await engine.dispose()
+        return
+
     if settings.environment != "test":
         await paper_service.recover()
         await auto_paper_orchestrator.recover()
@@ -109,8 +126,48 @@ async def root() -> dict[str, str]:
     }
 
 
+_LOCAL_ANALYSIS_ROUTES = {
+    "/dashboard/local-analysis": "GET",
+    "/liveness": "GET",
+    "/readiness": "GET",
+    "/api/version": "GET",
+    "/api/capabilities": "GET",
+    "/api/market/supported-symbols": "GET",
+    "/api/analysis/snapshot": "POST",
+    "/api/paper/account": "GET",
+    "/api/paper/state": "GET",
+    "/api/paper/orders": "POST",
+    "/api/paper/orders/{order_id}": "GET",
+    "/api/paper/orders/{order_id}/cancel": "POST",
+    "/api/paper/ticks": "POST",
+    "/api/paper/positions/{position_id}": "GET",
+    "/api/paper/positions/{position_id}/close": "POST",
+}
+
+
+async def _local_dashboard_redirect() -> RedirectResponse:
+    return RedirectResponse("/dashboard/local-analysis")
+
+
+def _local_analysis_router() -> APIRouter:
+    router = APIRouter()
+    seen = set()
+    for route in api_router.routes:
+        method = _LOCAL_ANALYSIS_ROUTES.get(route.path)
+        if method is None:
+            continue
+        if route.methods != {method} or route.path in seen:
+            raise RuntimeError("local_analysis_route_scope_changed")
+        router.routes.append(route)
+        seen.add(route.path)
+    if seen != set(_LOCAL_ANALYSIS_ROUTES):
+        raise RuntimeError("local_analysis_route_scope_changed")
+    return router
+
+
 def _build_app() -> FastAPI:
     native_only = settings.ctcc_native_only_lifespan_v1
+    local_analysis = getattr(settings, "ctcc_local_analysis_only_v1", False)
     docs_options = (
         {
             "openapi_url": None,
@@ -118,7 +175,7 @@ def _build_app() -> FastAPI:
             "redoc_url": None,
             "redirect_slashes": False,
         }
-        if native_only
+        if native_only or local_analysis
         else {}
     )
     instance = FastAPI(
@@ -131,6 +188,17 @@ def _build_app() -> FastAPI:
     instance.state.submission_outbox_runtime = submission_outbox_runtime
     if native_only:
         instance.include_router(native_only_api_router)
+    elif local_analysis:
+        instance.include_router(_local_analysis_router())
+        instance.add_api_route(
+            "/", _local_dashboard_redirect, methods=["GET"], include_in_schema=False
+        )
+        instance.add_api_route(
+            "/dashboard",
+            _local_dashboard_redirect,
+            methods=["GET"],
+            include_in_schema=False,
+        )
     else:
         instance.include_router(api_router)
         instance.add_api_route("/", root, methods=["GET"], include_in_schema=False)
