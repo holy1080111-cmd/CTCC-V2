@@ -75,6 +75,24 @@ def test_inspection_output_contains_no_route_or_role_names_or_oids():
     assert receipt["admission"] == "DENY"
 
 
+def test_private_plan_no_clobber_and_exact_readback(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        subject, "require_private_evidence_base_v2", lambda path: tmp_path
+    )
+    monkeypatch.setattr(subject, "_require_private_file", Mock())
+    digest = subject._retain_private_plan(tmp_path, _pins())
+    path = tmp_path / subject._PRIVATE_PLAN_FILE
+    payload = path.read_bytes()
+    assert sha(payload) == digest
+    assert json.loads(payload) == {
+        "schema": subject._PRIVATE_PLAN_SCHEMA,
+        "pins": asdict(_pins()),
+    }
+    with pytest.raises(OSError):
+        subject._retain_private_plan(tmp_path, _pins())
+    assert path.read_bytes() == payload
+
+
 @pytest.mark.asyncio
 async def test_bad_archive_stops_before_owner_dsn_or_database(monkeypatch):
     invalid = Mock(side_effect=ValueError("private source path"))

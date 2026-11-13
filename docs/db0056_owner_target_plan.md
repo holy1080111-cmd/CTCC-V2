@@ -32,3 +32,9 @@ target values. The target plan digest binds the exact release source, target,
 roles and their 42-statement grant plan. Exit `1` means the observation was
 refused. This command installs no grants and confers no startup or execution
 authority.
+
+Add `--private-plan-directory /private/empty-plan-directory` to retain
+`db0056-target-grant-pins.json` for the later direct-login readback. The
+directory must already be owner-private. Publication refuses to replace
+an existing file. The file contains the target role and database identities,
+so keep it private. It contains no DSN, password or permission to grant.

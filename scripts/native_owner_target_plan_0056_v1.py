@@ -20,6 +20,7 @@ from app.trade_evidence.native_private_root_v2 import (
     _windows_private,
     require_private_evidence_base_v2,
 )
+from app.trade_qualification.account_native_proof_storage import _root_context
 from scripts import current0056_native_owner_pregrant_v1 as owner_pregrant
 from scripts import native_owner_grant_0056_draft_v1 as draft
 from scripts.evidence_json import read_evidence_json
@@ -39,6 +40,8 @@ from scripts.native_owner_upgrade_0056_v1 import (
 _SOURCE = Path(__file__).resolve().parents[1]
 _INPUT = "ctcc.native_owner_0056.target_plan_inputs.v1"
 _OUTPUT = "ctcc.native_owner_0056.target_plan_observation.v1"
+_PRIVATE_PLAN_SCHEMA = "ctcc.native_owner_0056.target_grant_pins.v1"
+_PRIVATE_PLAN_FILE = "db0056-target-grant-pins.json"
 _ROLES = ("writer", "custody", "frame_reader")
 
 
@@ -249,17 +252,32 @@ def _receipt(pins: draft.OwnerGrantDraftPinsV1, reference_sha: str) -> dict:
     }
 
 
+def _retain_private_plan(
+    directory_path: Path, pins: draft.OwnerGrantDraftPinsV1
+) -> str:
+    root = require_private_evidence_base_v2(str(directory_path))
+    payload = canonical({"schema": _PRIVATE_PLAN_SCHEMA, "pins": asdict(pins)})
+    with _root_context(root) as directory:
+        directory.publish(_PRIVATE_PLAN_FILE, payload)
+        _require_private_file(root / _PRIVATE_PLAN_FILE)
+        _need(directory.read(_PRIVATE_PLAN_FILE, 32768) == payload)
+    return sha(payload)
+
+
 async def observe_reviewed_owner_target_plan_0056_v1(
     inputs: OwnerTargetPlanInputsV1,
     *,
     owner_dsn_file: Path,
     ca_file: Path,
     source_archive_file: Path,
+    private_plan_directory: Path | None = None,
 ) -> dict:
     """Bind the exact reviewed source, cluster, role definitions, and ACL plan."""
     try:
         _need(type(inputs) is OwnerTargetPlanInputsV1)
         inputs.role_names()
+        if private_plan_directory is not None:
+            require_private_evidence_base_v2(str(private_plan_directory))
         require_exact_installed_owner_source_0056_v1(
             _SOURCE, inputs.source, source_archive_file
         )
@@ -298,7 +316,12 @@ async def observe_reviewed_owner_target_plan_0056_v1(
         require_exact_installed_owner_source_0056_v1(
             _SOURCE, inputs.source, source_archive_file
         )
-        return _receipt(pins, reference_sha)
+        receipt = _receipt(pins, reference_sha)
+        if private_plan_directory is not None:
+            receipt["private_target_plan_file_sha256"] = _retain_private_plan(
+                private_plan_directory, pins
+            )
+        return receipt
     except (asyncio.CancelledError, OwnerTargetPlanRefusal):
         raise
     except Exception:  # noqa: BLE001 -- redact credentials, route, roles and catalog fields
@@ -318,6 +341,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--owner-dsn-file", type=Path, required=True)
     parser.add_argument("--ca-file", type=Path, required=True)
     parser.add_argument("--source-archive-file", type=Path, required=True)
+    parser.add_argument("--private-plan-directory", type=Path)
     try:
         args = parser.parse_args(argv)
         _need(args.inspect_reviewed_owner_target is True)
@@ -328,6 +352,7 @@ def main(argv: list[str] | None = None) -> int:
                 owner_dsn_file=args.owner_dsn_file,
                 ca_file=args.ca_file,
                 source_archive_file=args.source_archive_file,
+                private_plan_directory=args.private_plan_directory,
             )
         )
     except BaseException:  # noqa: BLE001 -- fixed refusal, including interruption
