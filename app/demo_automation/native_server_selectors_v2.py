@@ -7,6 +7,7 @@ completeness, Arm, reservation, intent or order authority is asserted here.
 
 import asyncio
 import re
+import ssl
 import sys
 import uuid
 from dataclasses import dataclass, field
@@ -20,6 +21,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from app.config.settings import get_settings
+from app.database.native_pg_tls_v1 import reviewed_native_pg_tls_route_v1
 from app.database.repositories import public_runtime_bundle_custody as custody
 from app.domain.native_clock import native_stamp
 from app.domain.source_primitives import (
@@ -547,7 +549,7 @@ def _database_route(url):
 def select_configured_native_demo_factories_v2():
     """Actual server-private DSNs only; native consumers verify real role/ACL."""
     try:
-        from app.database.session import AsyncSessionFactory
+        from app.database.session import AsyncSessionFactory, native_pg_tls_context
 
         settings = get_settings()
         _need(
@@ -565,8 +567,25 @@ def select_configured_native_demo_factories_v2():
             and len(reader_raw) > 0,
             "native_demo_restricted_database_settings_missing",
         )
-        writer_url = AsyncSessionFactory.kw["bind"].url
-        custody_url, reader_url = make_url(custody_raw), make_url(reader_raw)
+        writer_engine = AsyncSessionFactory.kw["bind"]
+        writer_url = writer_engine.url
+        if native_pg_tls_context is None:
+            custody_url, reader_url = make_url(custody_raw), make_url(reader_raw)
+        else:
+            _need(
+                type(native_pg_tls_context) is ssl.SSLContext
+                and native_pg_tls_context.check_hostname is True
+                and native_pg_tls_context.verify_mode == ssl.CERT_REQUIRED
+                and custody._closure(writer_engine.sync_engine.pool._creator)
+                .get("cparams", {})
+                .get("ssl")
+                is native_pg_tls_context,
+                "native_demo_restricted_tls_context_invalid",
+            )
+            custody_url, reader_url = (
+                reviewed_native_pg_tls_route_v1(custody_raw),
+                reviewed_native_pg_tls_route_v1(reader_raw),
+            )
         _need(
             _database_route(writer_url)
             == _database_route(custody_url)
@@ -575,17 +594,33 @@ def select_configured_native_demo_factories_v2():
             == 3,
             "native_demo_distinct_restricted_database_roles_required",
         )
+        tls_options = (
+            {"connect_args": {"ssl": native_pg_tls_context}}
+            if native_pg_tls_context is not None
+            else {}
+        )
         custody_engine = create_async_engine(
-            custody_url, poolclass=NullPool, pool_pre_ping=True
+            custody_url, poolclass=NullPool, pool_pre_ping=True, **tls_options
         )
         reader_engine = create_async_engine(
-            reader_url, poolclass=NullPool, pool_pre_ping=True
+            reader_url, poolclass=NullPool, pool_pre_ping=True, **tls_options
         )
         _need(
             custody._native_engine(custody_engine)
             and custody._native_engine(reader_engine),
             "native_demo_restricted_native_engines_required",
         )
+        if native_pg_tls_context is not None:
+            _need(
+                all(
+                    custody._closure(engine.sync_engine.pool._creator)
+                    .get("cparams", {})
+                    .get("ssl")
+                    is native_pg_tls_context
+                    for engine in (custody_engine, reader_engine)
+                ),
+                "native_demo_restricted_tls_context_invalid",
+            )
         return ConfiguredNativeDemoFactoriesV2(
             AsyncSessionFactory,
             async_sessionmaker(

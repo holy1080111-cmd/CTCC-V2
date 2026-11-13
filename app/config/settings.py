@@ -1,3 +1,4 @@
+import re
 from decimal import Decimal
 from functools import lru_cache
 from typing import Literal
@@ -48,6 +49,7 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
+        hide_input_in_errors=True,
     )
 
     app_name: str = "CTCC V2"
@@ -66,6 +68,10 @@ class Settings(BaseSettings):
     api_token: SecretStr = SecretStr("")
     # Opt-in, no-execution native Demo startup. Legacy lifespan stays default.
     ctcc_native_only_lifespan_v1: bool = False
+    # Optional reviewed PostgreSQL CA for native-only restricted role transport.
+    # Both values are required together; the digest is independently pinned.
+    ctcc_native_pg_tls_ca_file: str = ""
+    ctcc_native_pg_tls_ca_sha256: str = ""
 
     # Independent reporting only. Missing external configuration is handled by
     # the worker and must never abort trading-core/application startup.
@@ -473,6 +479,14 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def enforce_v168_safety(self) -> "Settings":
+        ca_file = self.ctcc_native_pg_tls_ca_file
+        ca_sha256 = self.ctcc_native_pg_tls_ca_sha256
+        if (
+            bool(ca_file) != bool(ca_sha256)
+            or ca_sha256
+            and re.fullmatch(r"[0-9a-f]{64}", ca_sha256, re.ASCII) is None
+        ):
+            raise ValueError("native_pg_tls_configuration_denied")
         if self.auto_trade:
             raise ValueError(
                 "AUTO_TRADE is a legacy unsafe switch and must remain false; "
