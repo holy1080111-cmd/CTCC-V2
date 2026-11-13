@@ -82,6 +82,18 @@ from tests.unit.mie.test_prospective_devval_campaign_plan_v1 import plan_input
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 _SOURCE_ROOT = Path(__file__).resolve().parents[2]
+# Diagnostic component pins from the independent N234 postgrant pair readback
+# (receipt SHA256 81889b574f0ad6eb95ccca507a7a7ee07b7b78f8c7c43c24830ec9b332ee1571).
+# These do not seal a native startup reference or grant execution authority.
+_N234_INHERITED_NATIVE_SHA256 = (
+    "6243338abe9cfcbb4eb613bc3d21cd7adbaf8059644e8b7a1c2df9755ac340c7"
+)
+_N234_POSTGRANT_ACL_SHAPE_SHA256 = (
+    "6f4cd2d534400a6bd571d8b4ca17b0488c6b00c9f2d63a2b1ea0cd0e335ab5ab"
+)
+_N234_ROLE_OBSERVER_SOURCE_SHA256 = (
+    "0d8984cddbc46a724f5d93dba88af7392276eb0a42e560334914686ce0717aa9"
+)
 _READ = "gate3_fitted_binding_read(text)"
 _ACK_READ = "gate3_fitted_binding_ack_read(text)"
 _ROLES = {
@@ -1613,6 +1625,210 @@ async def test_actual0056_native_lifespan_denies_before_recovery_cas(
     assert instance.state.native_only_recovery_confirmed is False
     forbidden_recovery.assert_not_awaited()
     assert await read_control() == before
+
+
+async def test_actual0056_lab_only_recovery_cas_after_fresh_restricted_observations(
+    _actual_0056_role_observation_lab, monkeypatch
+):
+    """Exercise the existing native-only lifespan in a disposable DB0056 lab.
+
+    The production preflight still rejects DB0056. This test-only adapter
+    proves the restricted observations and recovery CAS can operate on one
+    actual role set; it is not a sealed reference or startup permission.
+    """
+    from decimal import Decimal
+
+    from app import main as app_main
+    from app.config.settings import Settings
+    from app.core import native_only_lifespan
+    from app.core import native_startup_control_observation_0056_v1 as startup56
+    from app.database.models.demo_automation import (
+        DemoAutomationRun,
+        DemoAutomationState,
+    )
+    from app.database.repositories.demo_automation import DemoAutomationRepository
+    from app.demo_automation.service import SafeDemoAutomation
+    from app.domain.demo_automation import (
+        DemoAutomationActiveTrade,
+        DemoAutomationRunResult,
+    )
+
+    _, owner_factory, selected, _ = _actual_0056_role_observation_lab
+    writer_factory = selected.writer_factory
+    writer_engine = writer_factory.kw["bind"]
+    repository = DemoAutomationRepository(writer_factory)
+    instant = datetime.now(UTC)
+    exposure = DemoAutomationActiveTrade(
+        instrument_id="BTC-USDT-SWAP",
+        settlement_currency="USDT",
+        direction="long",
+        client_order_id="labRecoveryFixture1",
+        exchange_order_id="10001",
+        protection_client_order_id="labRecoveryProtect1",
+        contracts=Decimal(2),
+        leverage=3,
+        margin_mode="isolated",
+        estimated_margin=Decimal(10),
+        estimated_stop_loss_amount=Decimal(1),
+        start_equity=Decimal(500),
+        started_at=instant,
+    )
+    active_trades = {exposure.instrument_id: exposure.model_dump(mode="json")}
+    run = DemoAutomationRunResult(
+        trigger="manual",
+        execute=False,
+        started_at=instant,
+        completed_at=instant,
+        results=[],
+    )
+    async with owner_factory.begin() as session:
+        session.add_all(
+            [
+                DemoAutomationState(
+                    id=1,
+                    control_revision=7,
+                    session_date=instant.date(),
+                    armed=True,
+                    restart_latch_required=True,
+                    equity_basis="fixture",
+                    baseline_equity=Decimal(500),
+                    peak_equity=Decimal(500),
+                    risk_peak_equity=Decimal(500),
+                    daily_pnl=Decimal(-4),
+                    trades_today=1,
+                    consecutive_losses=1,
+                    active_trades=active_trades,
+                    active_instrument_id=exposure.instrument_id,
+                    active_client_order_id=exposure.client_order_id,
+                    active_start_equity=exposure.start_equity,
+                    active_started_at=exposure.started_at,
+                    updated_at=instant,
+                ),
+                DemoAutomationRun(
+                    trigger=run.trigger,
+                    execute=run.execute,
+                    started_at=run.started_at,
+                    completed_at=run.completed_at,
+                    result=run.model_dump(mode="json"),
+                ),
+            ]
+        )
+    before = await repository.load_state()
+    assert before is not None
+    assert before["_control_revision"] == 7 and before["armed"] is True
+
+    settings = Settings(
+        _env_file=None,
+        ctcc_native_only_lifespan_v1=True,
+        environment="production",
+        trading_mode="okx_demo",
+        web_concurrency=1,
+        okx_demo_enabled=True,
+        okx_demo_api_key="",
+        okx_demo_api_secret="",
+        okx_demo_api_passphrase="",
+        **dict.fromkeys(native_only_lifespan._MUST_BE_FALSE, False),
+    )
+    absent = object()
+    automation = SafeDemoAutomation(
+        settings=settings,
+        repository=repository,
+        strategy_service=absent,
+        risk_service=absent,
+        demo_service=absent,
+        public_client=absent,
+        strategy_control_repository=absent,
+        market_hub=absent,
+        market_client=absent,
+    )
+    observations = []
+
+    async def lab_only_preflight(expected_writer_factory):
+        # The production DB0055 preflight is replaced only inside this test.
+        assert expected_writer_factory is writer_factory
+        assert selected.writer_factory is expected_writer_factory
+        assert (
+            sha(
+                (
+                    _SOURCE_ROOT
+                    / "app/core/native_role_preflight_0056_full_diagnostic_v1.py"
+                ).read_bytes()
+            )
+            == _N234_ROLE_OBSERVER_SOURCE_SHA256
+        )
+        first = await observation.observe_restricted_native_roles_0056_v1(
+            selected, source=_SOURCE_ROOT
+        )
+        control = await startup56.observe_startup_control_0056_v1(selected)
+        second = await observation.observe_restricted_native_roles_0056_v1(
+            selected, source=_SOURCE_ROOT
+        )
+        assert first == second
+        assert first.database_head == control.database_head == "0056"
+        assert (
+            first.inherited_native_definitions_sha256 == _N234_INHERITED_NATIVE_SHA256
+        )
+        assert (
+            first.granted_inherited_acl_shape_sha256 == _N234_POSTGRANT_ACL_SHAPE_SHA256
+        )
+        assert first.admission == "DENY"
+        assert first.startup_admission is first.execution_authority is False
+        assert control.startup_admission is control.execution_authority is False
+        assert control.control == await native_only_lifespan.inspect_existing_control(
+            expected_writer_factory
+        )
+        observations.append((first, control, second))
+        return {"startup_admission": False, "execution_authority": False}
+
+    monkeypatch.setattr(app_main, "settings", settings)
+    monkeypatch.setattr(app_main, "AsyncSessionFactory", writer_factory)
+    monkeypatch.setattr(app_main, "engine", writer_engine)
+    monkeypatch.setattr(app_main, "safe_demo_automation", automation)
+    monkeypatch.setattr(
+        app_main, "preflight_configured_native_roles_v1", lab_only_preflight
+    )
+    instance = app_main._build_app()
+    assert instance.openapi_url is None
+    assert all(
+        route.methods is None or route.methods <= {"GET", "HEAD"}
+        for route in instance.routes
+    )
+
+    async with app_main.lifespan(instance):
+        assert len(observations) == 1
+        assert instance.state.native_only_recovery_confirmed is True
+        after = await repository.load_state()
+        assert after is not None
+        assert after["_control_revision"] == 8
+        assert after["armed"] is False
+        assert (
+            after["emergency_stop"]
+            is after["locked"]
+            is after["_restart_latch_required"]
+            is True
+        )
+        assert "restart_requires_explicit_clear_stop" in after["lock_reasons"]
+        assert after["active_trades"] == active_trades
+        assert all(
+            after[key] == before[key]
+            for key in (
+                "active_instrument_id",
+                "active_client_order_id",
+                "active_start_equity",
+                "active_started_at",
+                "baseline_equity",
+                "daily_pnl",
+                "trades_today",
+                "consecutive_losses",
+            )
+        )
+        assert await automation.history() == [run]
+        status = await automation.status()
+        assert status.recovered and status.emergency_stop and status.locked
+        assert not status.armed and not status.running
+        assert status.active_trades == [exposure]
+    assert instance.state.native_only_recovery_confirmed is False
+    assert await repository.load_state() == after
 
 
 async def test_actual0056_restricted_account_control_read_replays_exact_scope(
