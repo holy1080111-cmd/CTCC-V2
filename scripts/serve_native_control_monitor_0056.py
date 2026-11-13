@@ -190,7 +190,7 @@ def main(argv: list[str] | None = None) -> int:
 
         asyncio.run(server.serve())
         status.deployment._need(server.started)
-    except (Exception, KeyboardInterrupt, asyncio.CancelledError):  # noqa: BLE001 -- no private startup details
+    except (Exception, KeyboardInterrupt, SystemExit, asyncio.CancelledError):  # noqa: BLE001 -- no private startup details
         print(
             canonical({"status": "MONITOR_UNAVAILABLE", "order_writes": 0}).decode(
                 "ascii"

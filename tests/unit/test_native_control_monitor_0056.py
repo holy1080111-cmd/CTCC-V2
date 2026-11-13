@@ -112,3 +112,26 @@ def test_startup_requires_original_independent_control_readback(monkeypatch, pro
     ):
         pytest.fail("Started without verified stored control")
     observe.assert_awaited_once()
+
+
+def test_cli_translates_uvicorn_startup_exit(monkeypatch, capsys):
+    import uvicorn
+
+    async def refuse_startup(_server):
+        raise SystemExit(3)
+
+    monkeypatch.setattr(uvicorn.Server, "serve", refuse_startup)
+    assert (
+        monitor.main(
+            [
+                "--descriptor-file",
+                "private-descriptor",
+                "--source-archive-file",
+                "exact-archive",
+            ]
+        )
+        == 1
+    )
+    assert (
+        capsys.readouterr().out == '{"order_writes":0,"status":"MONITOR_UNAVAILABLE"}\n'
+    )
