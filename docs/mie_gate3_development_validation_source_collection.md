@@ -519,6 +519,21 @@ predicate weights. A neutral direction keeps an empty score. Probability
 calibration requires a separate pre-window policy and Development-only
 training.
 
+`build_devval_joint_study_v1` pins the blueprint, companion schedule,
+coverage report, original batch and study plan. It replays both features
+at the same recorded decision and reconstructs each label from its original
+source availability. Missing or rejected events retain their original
+coordinates. The full cohort must pass replay and the grouped purge and
+embargo checks before the study emits Development folds. A fold rejects
+training labels available at or after its earliest evaluation history.
+
+`verify_devval_joint_study_v1` checks the retained bytes and rebuilds every
+row and fold from the five original inputs. The study preserves exact
+feature JSON and its existing digest, including Decimal scale. It contains
+both partitions' outcomes. Legacy Validation inference requires a separate
+label-free feature and raw-score input and an independently retained
+prediction receipt before opening Validation outcomes.
+
 The adapter checks the post-readback sample against the pinned summary clock,
 the capture deadline and the decision time. It requires fresh quote, book,
 mark, funding, open interest and WS observations, plus the exact 4H, 1H, 15m
