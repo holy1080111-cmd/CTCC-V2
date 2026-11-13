@@ -187,6 +187,44 @@ async def test_real_recovery_requested_and_separate_readback_confirmed():
 
 
 @pytest.mark.asyncio
+async def test_prior_exact_revision_is_preserved_through_recovery():
+    factory = _Factory(_control())
+    automation = _Automation(
+        {"_control_revision": 8, "armed": False, "_restart_latch_required": False}
+    )
+    await native.start_native_only(
+        _settings(), factory, automation, expected_control_revision=7
+    )
+    assert automation.recover_calls == [(True, 7)]
+
+
+@pytest.mark.asyncio
+async def test_changed_revision_after_prior_observation_denies_before_recovery():
+    factory = _Factory(_control(control_revision=8))
+    automation = _Automation(None)
+    with pytest.raises(native.NativeOnlyLifespanError, match="revision_changed"):
+        await native.start_native_only(
+            _settings(), factory, automation, expected_control_revision=7
+        )
+    assert factory.calls == 1
+    assert automation.recover_calls == []
+    assert all("UPDATE" not in query for query in factory.session.queries)
+
+
+@pytest.mark.parametrize("expected", [True, False, 0, -1, "7", 7.0])
+@pytest.mark.asyncio
+async def test_invalid_prior_revision_denied_before_database(expected):
+    factory = _Factory(_control())
+    automation = _Automation(None)
+    with pytest.raises(native.NativeOnlyLifespanError, match="revision_invalid"):
+        await native.start_native_only(
+            _settings(), factory, automation, expected_control_revision=expected
+        )
+    assert factory.calls == 0
+    assert automation.recover_calls == []
+
+
+@pytest.mark.asyncio
 async def test_ambiguous_recovery_readback_denied():
     factory = _Factory(_control())
     automation = _Automation(

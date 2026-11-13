@@ -200,3 +200,13 @@ class MultiTimeframeAnalysis(BaseModel):
     mathematical_core: MathematicalCoreSnapshot | None = None
     generated_at: datetime
     version: str = "1.0.0"
+
+
+class OfflineSnapshotAnalysis(BaseModel):
+    schema_version: Literal["ctcc.offline_snapshot_analysis.v1"] = (
+        "ctcc.offline_snapshot_analysis.v1"
+    )
+    input_sha256: str
+    analysis: MultiTimeframeAnalysis
+    source_authenticity_verified: Literal[False] = False
+    execution_authority: Literal[False] = False

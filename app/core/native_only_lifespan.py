@@ -146,11 +146,30 @@ def _check_recovery(before: ExistingControl, after, status) -> None:
         raise NativeOnlyLifespanError("native_only_recovery_readback_unconfirmed")
 
 
-async def start_native_only(settings, session_factory, automation) -> None:
-    """Keep the existing Demo restart recovery, then independently read back."""
+async def start_native_only(
+    settings,
+    session_factory,
+    automation,
+    *,
+    expected_control_revision: int | None = None,
+) -> None:
+    """Recover against an optional prior revision, then independently read back.
+
+    The supplied revision is only a race fence. Its caller must establish the
+    independent source/route proof; this method grants no startup authority.
+    """
     require_native_only_settings(settings)
+    if expected_control_revision is not None and (
+        type(expected_control_revision) is not int or expected_control_revision < 1
+    ):
+        raise NativeOnlyLifespanError("native_only_expected_control_revision_invalid")
     try:
         before = await inspect_existing_control(session_factory)
+        if (
+            expected_control_revision is not None
+            and before.revision != expected_control_revision
+        ):
+            raise NativeOnlyLifespanError("native_only_control_revision_changed")
         if automation.repository is None:
             raise NativeOnlyLifespanError("native_only_control_repository_missing")
         # Bind the recovery CAS to the exact admitted control revision.

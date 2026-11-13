@@ -5,6 +5,16 @@ undergoing new source-bound validation (2026-10-22 update); [current status and 
 distinguish engineering checks from real Demo, OOS and Micro Live acceptance.
 Live remains default OFF and requires contemporaneous operator authorization.
 
+## Use CTCC analysis with a saved market snapshot
+
+The regular app exposes `POST /api/analysis/snapshot` in `/docs`. Authorize
+with the local CTCC API token, then provide the unmodified MarketSnapshot JSON
+saved from `GET /api/market/snapshot/{symbol}` on a connected CTCC instance.
+The import is limited to 1 MiB. The app rebuilds 4H, 1H, 15m and 5m analysis
+at the capture time and returns the original input SHA256. Source
+authenticity and order authority remain false for imported data.
+The regular app also exposes manual Paper operations under `/api/paper`.
+
 Core planning index: [CTCC core master — 123 project discussion](docs/ctcc_core_master.md).
 This separates the integrated target design from implemented, validated, and
 deployed capability; it does not enable trading.

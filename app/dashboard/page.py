@@ -181,6 +181,10 @@ DASHBOARD_HTML = r"""
             font-size: 18px;
         }
 
+        .section a {
+            color: var(--accent);
+        }
+
         .badge {
             display: inline-flex;
             align-items: center;
@@ -351,6 +355,20 @@ DASHBOARD_HTML = r"""
                 等待第一次成功更新
             </div>
         </article>
+    </section>
+
+    <section class="section" aria-label="本機分析入口">
+        <h2>本機分析與 Paper 模擬</h2>
+        <p>
+            先查看 <a href="/readiness">本機服務狀態</a>。
+            <a href="/docs#/analysis">分析 API 文件</a>可用於檢查分析入口；
+            <a href="/docs#/paper">Paper 模擬 API 文件</a>
+            提供手動訂單、報價與帳本查詢；API 文件需另行輸入 CTCC Token。
+        </p>
+        <p>
+            此頁的 Demo 權益與持倉需要有效的 OKX Demo 私有讀取來源。
+            來源失敗時顯示「讀取失敗」，不代表零持倉或可交易。
+        </p>
     </section>
 
     <section class="section">
@@ -671,6 +689,22 @@ async function apiGet(path, token) {
             }
         );
 
+        if (!response.ok) {
+            if (
+                response.status === 401 ||
+                response.status === 403
+            ) {
+                sessionStorage.removeItem(TOKEN_KEY);
+                throw new Error(
+                    "API Token 驗證失敗，請重新設定。"
+                );
+            }
+
+            throw new Error(
+                `${path} 回傳 ${response.status}`
+            );
+        }
+
         const responseText = await response.text();
         let payload = null;
 
@@ -680,23 +714,6 @@ async function apiGet(path, token) {
             } catch {
                 payload = responseText;
             }
-        }
-
-        if (!response.ok) {
-            if (
-                response.status === 401 ||
-                response.status === 403
-            ) {
-                sessionStorage.removeItem(TOKEN_KEY);
-            }
-
-            throw new Error(
-                `${path} 回傳 ${response.status}: ${
-                    typeof payload === "string"
-                        ? payload
-                        : JSON.stringify(payload)
-                }`
-            );
         }
 
         endpointMetadata.set(
@@ -1117,6 +1134,11 @@ function markAutomationUnavailable() {
     byId("safetyState").className = "card-value warn";
     byId("lockReasons").textContent =
         "安全狀態尚未確認";
+
+    byId("dailyPnl").textContent = "—";
+    byId("dailyPnl").className = "card-value warn";
+    byId("dailyPnlNote").textContent =
+        "今日交易資料尚未確認";
 }
 
 function markPositionsUnavailable() {
@@ -1147,6 +1169,15 @@ function markPerformanceUnavailable(error) {
 
     byId("performanceRaw").textContent =
         error || "績效 API 暫時無法取得";
+
+    for (const id of [
+        "activeDays",
+        "realizedTrades",
+        "profitFactor",
+        "maxDrawdown"
+    ]) {
+        byId(id).textContent = "—";
+    }
 }
 
 function markEventsUnavailable() {
@@ -1154,6 +1185,14 @@ function markEventsUnavailable() {
 
     byId("events").innerHTML =
         '<div class="empty">監控事件暫時無法取得。</div>';
+}
+
+function markSnapshotUnavailable() {
+    markBalanceUnavailable();
+    markAutomationUnavailable();
+    markPositionsUnavailable();
+    markPerformanceUnavailable("快照尚未確認");
+    markEventsUnavailable();
 }
 
 function formatDuration(milliseconds) {
@@ -1179,7 +1218,7 @@ function renderDataIntegrityStatus() {
         stateElement.classList.add("bad");
 
         noteElement.textContent =
-            `?????${lastContractError}`;
+            `快照格式錯誤：${lastContractError}`;
 
         return;
     }
@@ -1241,7 +1280,7 @@ function renderDataIntegrityStatus() {
 
 class SnapshotContractError extends Error {
     constructor(code) {
-        super(`Snapshot ???????${code}`);
+        super(`Snapshot contract invalid: ${code}`);
 
         this.name = "SnapshotContractError";
         this.code = code;
@@ -1864,9 +1903,11 @@ async function refreshAll() {
         }
 
         lastCycleSuccessCount = 0;
-        lastCycleFailureCount = 1;
+        lastCycleFailureCount =
+            EXPECTED_SNAPSHOT_SOURCES.length;
         lastCycleSpreadMs = null;
 
+        markSnapshotUnavailable();
         renderDataIntegrityStatus();
 
         showNotice(
