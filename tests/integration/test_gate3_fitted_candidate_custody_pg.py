@@ -3837,10 +3837,23 @@ async def test_actual0056_restart_recovery_revokes_existing_account_arm(
             pytest.fail("bootstrap claims reached reservation purpose")
     async with factories.writer_factory() as session, session.begin():
         await observation.current55._session_settings(session, frame=True)
+        transaction = session.sync_session.get_transaction()
+        await issuer_transaction.require_actual_issued_writer_v1(
+            session, database_head="0056", role_oid=stamp.role_oid
+        )
+        for head, oid in (("0055", stamp.role_oid), ("0056", stamp.role_oid + 1)):
+            with pytest.raises(
+                issuer_transaction.NativeIssuerTransactionError,
+                match="^native_issuer_database_refused$",
+            ):
+                await issuer_transaction.require_actual_issued_writer_v1(
+                    session, database_head=head, role_oid=oid
+                )
         current, event = await issuer_transaction.read_actual_issuer_control_0056(
             session, scope
         )
         assert current == armed.state and event == armed.event_sha256
+        assert session.sync_session.get_transaction() is transaction
     stable_roles = await observe_restricted_role_identity_0056_v2(
         factories, source=_SOURCE_ROOT
     )

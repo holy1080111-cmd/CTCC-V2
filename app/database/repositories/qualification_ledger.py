@@ -921,15 +921,13 @@ class QualificationLedgerRepository:
         return observed, control_wire
 
     async def _inspect_native_original55_local_events_v2(self, binding, *, key):
-        """Actual55 original G6, only after the genuine issuer's own transition.
+        """Actual original G6, after the genuine issuer's own transition.
 
         The source CURRENT checkpoint is retained unchanged in native custody.
         The issuer wrapper proves exactly that source's own issued row/claims
         and revisions; no arbitrary newer checkpoint is substituted here.
         """
-        from app.database.repositories import (
-            collector_current_0055_multirole_catalog_v1 as catalog55,
-        )
+        from app.database.repositories import native_issuer_transaction
         from app.database.repositories.demo_control_current55_v2 import (
             DemoControlRepositoryV2,
         )
@@ -955,6 +953,8 @@ class QualificationLedgerRepository:
                 or actual.source_generation is not source.source_generation
                 or actual.session_factory is not source.session_factory
                 or actual.control_expectation != source.control_expectation
+                or actual.database_head != source.database_head
+                or actual.writer_role_oid != source.writer_role_oid
                 or actual_record["scope"] != scope
                 or actual_record["deadline"] != deadline
             ):
@@ -982,11 +982,24 @@ class QualificationLedgerRepository:
                 {"value": str(budget)},
             )
             current()
-            await catalog55.verify_actual_issuer_catalog_v2(session)
-            current()
-            state, event = await DemoControlRepositoryV2.read_in_transaction(
-                session, ControlScope(scope.environment, scope.account_id)
+            await native_issuer_transaction.require_actual_issued_writer_v1(
+                session,
+                database_head=source.database_head,
+                role_oid=source.writer_role_oid,
             )
+            current()
+            control_scope = ControlScope(scope.environment, scope.account_id)
+            if source.database_head == "0056":
+                (
+                    state,
+                    event,
+                ) = await native_issuer_transaction.read_actual_issuer_control_0056(
+                    session, control_scope
+                )
+            else:
+                state, event = await DemoControlRepositoryV2.read_in_transaction(
+                    session, control_scope
+                )
             current()
             selected = await self._locked(session, scope)
             current()

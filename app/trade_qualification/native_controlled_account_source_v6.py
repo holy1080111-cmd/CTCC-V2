@@ -2458,6 +2458,8 @@ def _replay_issued_original_source_v2(binding, *, key):
         original_expires_at=state["expires_at"],
         monotonic_deadline_ns=state["monotonic_deadline_ns"],
         execution_mode=state["execution_mode"],
+        database_head=state["issued_readback"].database_head,
+        writer_role_oid=state["issued_readback"].transition.write_role_oid,
     )
 
 
@@ -2482,6 +2484,8 @@ def require_issued_original_frame_context_v1(binding, local_binding, *, key):
         or record["source_generation"] is not state["generation"]
         or source.control_expectation != ctrl["expectation"]
         or record["control_expectation"] != ctrl["expectation"]
+        or source.database_head != state["issued_readback"].database_head
+        or source.writer_role_oid != state["issued_readback"].transition.write_role_oid
         or source.current_record != state["current_record"]
         or source.private_raw_bundle != state["current"]["bundle_raw"]
     ):

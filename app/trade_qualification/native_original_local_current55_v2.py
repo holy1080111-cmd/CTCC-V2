@@ -1,4 +1,4 @@
-"""Genuine issued55 source → NEW original public capture → fixed local G1–G10.
+"""Genuine issued source → NEW original public capture → fixed local G1–G10.
 
 No OFF V13 owner is elevated. The old precursor and local gate functions are
 shared calculation only. Source/context authority comes exclusively from the
@@ -22,6 +22,7 @@ from app.database.repositories import (
 )
 from app.database.repositories import demo_control as historical_control
 from app.database.repositories import demo_control_current55_v2 as control55
+from app.database.repositories import native_issuer_transaction as issuer_transaction
 from app.database.repositories import public_runtime_bundle_custody as custody
 from app.database.repositories import qualification_ledger as repository_module
 from app.domain.analysis import MultiTimeframeAnalysis
@@ -88,6 +89,8 @@ class IssuedOriginalSourceV2:
     original_expires_at: datetime
     monotonic_deadline_ns: int
     execution_mode: execution_mode.CapturedExecutionModeV1
+    database_head: str
+    writer_role_oid: int
     execution_authority: bool = field(default=False, init=False)
 
 
@@ -144,6 +147,10 @@ def _source(record):
         or value.monotonic_deadline_ns <= 0
         or value.current_plan.environment != "demo"
         or value.current_plan.settlement_currency != "USDT"
+        or type(value.database_head) is not str
+        or value.database_head not in {"0055", "0056"}
+        or type(value.writer_role_oid) is not int
+        or value.writer_role_oid <= 0
         or value.execution_authority is not False
     ):
         _deny("native_original55_exact_source_context_required")
@@ -177,6 +184,7 @@ def _source(record):
         or value.private_raw_bundle != record["private_raw_bundle"]
         or frozen.payload != record["private_packet_raw"]
         or value.control_expectation != record["control_expectation"]
+        or (value.database_head, value.writer_role_oid) != record["issued_writer_pin"]
         or value.original_expires_at != record["original_source_expiry"]
         or value.monotonic_deadline_ns != record["original_source_monotonic_expiry"]
     ):
@@ -589,6 +597,7 @@ def capture_owned_original_current55_local_v2(
             private_raw_bundle=value.private_raw_bundle,
             private_packet_raw=frozen.payload,
             control_expectation=value.control_expectation,
+            issued_writer_pin=(value.database_head, value.writer_role_oid),
             original_source_expiry=value.original_expires_at,
             original_source_monotonic_expiry=value.monotonic_deadline_ns,
             deadline=value.original_expires_at,
@@ -637,7 +646,11 @@ async def _capture(binding):
                     repository_module.text("SET LOCAL synchronous_commit='on'")
                 )
                 _source(record)
-                await catalog55.verify_actual_issuer_catalog_v2(session)
+                await issuer_transaction.require_actual_issued_writer_v1(
+                    session,
+                    database_head=value.database_head,
+                    role_oid=value.writer_role_oid,
+                )
                 _source(record)
             document = value.current_plan.model_dump(mode="python", round_trip=True)
             document.update(plan_id="original55-" + uuid4().hex, created_at=_clock())
@@ -900,6 +913,8 @@ _NATIVE_GUARD = source_guard.install_native_guards_v1(
         custody,
         catalog55,
         catalog55.policy,
+        issuer_transaction,
+        issuer_transaction.writer56,
         catalog55.policy.native_close_intent,
         catalog55.policy.native_close_index,
         local.precursor,

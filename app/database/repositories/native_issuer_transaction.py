@@ -116,6 +116,20 @@ async def read_actual_native_issuer_transaction(
         _require(False)
 
 
+async def require_actual_issued_writer_v1(
+    session: AsyncSession, *, database_head: str, role_oid: int
+) -> None:
+    """Compare actual writer evidence to the original issued role and head."""
+    _require(
+        type(database_head) is str
+        and database_head in {"0055", "0056"}
+        and type(role_oid) is int
+        and role_oid > 0
+    )
+    actual, _ = await read_actual_native_issuer_transaction(session)
+    _require(actual.head == database_head and actual.role_oid == role_oid)
+
+
 async def read_actual_issuer_control_0056(session: AsyncSession, scope: ControlScope):
     """Replay the inherited Control journal with the exact DB0056 writer."""
     catalog, before = await read_actual_native_issuer_transaction(session)

@@ -121,3 +121,40 @@ async def test_replacing_the_transaction_inside_catalog_read_refuses(session, da
     with pytest.raises(issuer.NativeIssuerTransactionError):
         await issuer.read_actual_native_issuer_transaction(session)
     database.metadata.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "expected",
+    [("0056", 55), ("0055", 55), ("0056", 56), ("unknown", 55), ("0056", True)],
+)
+async def test_original_g6_writer_matches_issued_head_and_role(
+    session, database, expected
+):
+    head, role = expected
+    if expected == ("0056", 55):
+        await issuer.require_actual_issued_writer_v1(
+            session, database_head=head, role_oid=role
+        )
+        database.writer.assert_awaited_once_with(session)
+    else:
+        with pytest.raises(
+            issuer.NativeIssuerTransactionError,
+            match="^native_issuer_database_refused$",
+        ):
+            await issuer.require_actual_issued_writer_v1(
+                session, database_head=head, role_oid=role
+            )
+        if head == "unknown" or role is True:
+            database.head.assert_not_awaited()
+    database.legacy.assert_not_awaited()
+
+
+async def test_original_g6_confirmed_old_writer_uses_only_db0055_catalog(
+    session, database
+):
+    database.head.return_value = SimpleNamespace(all=lambda: ["0055"])
+    await issuer.require_actual_issued_writer_v1(
+        session, database_head="0055", role_oid=_METADATA[3]
+    )
+    database.legacy.assert_awaited_once_with(session)
+    database.writer.assert_not_awaited()
