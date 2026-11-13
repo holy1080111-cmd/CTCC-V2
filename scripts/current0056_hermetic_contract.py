@@ -61,9 +61,14 @@ CURRENT56_NATIVE_ROLE_CASES = tuple(
     )
 )
 CURRENT56_PG1_REQUIRED_CASES = (*CURRENT56_CUSTODY_CASES, *CURRENT56_NATIVE_ROLE_CASES)
+PREDICTION_CUSTODY_CASE = (
+    "tests.integration.test_public_runtime_bundle_custody_repository",
+    "test_validation_prediction_precursor_uses_actual_db0046_commit_and_readback",
+)
 REQUIRED_CURRENT56_CASES = (
     *previous.REQUIRED_CURRENT55_CASES,
     *CURRENT56_PG1_REQUIRED_CASES,
+    PREDICTION_CUSTODY_CASE,
 )
 _PARENT_UPGRADE = ("migration-upgrade-parent", "migration-parent-readback")
 _EMPTY_ROUNDTRIP = (
@@ -234,10 +239,13 @@ def _collection(root, mode, index, identity):
         )
     if mode != "full":
         selection = previous._collection(root, mode, index, identity)
-        if mode == "postgres" and index == 1:
-            checked = shared.verify_pytest_report(
-                root / junit, required_cases=CURRENT56_PG1_REQUIRED_CASES
+        if mode == "postgres":
+            cases = (
+                CURRENT56_PG1_REQUIRED_CASES
+                if index == 1
+                else (PREDICTION_CUSTODY_CASE,)
             )
+            checked = shared.verify_pytest_report(root / junit, required_cases=cases)
             if (
                 checked["sha256"] != identity["tests"]["sha256"]
                 or checked["skipped"] != 0

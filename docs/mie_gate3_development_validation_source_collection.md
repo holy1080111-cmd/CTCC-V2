@@ -551,6 +551,29 @@ and the matching raw score event. The caller must independently retain
 the causal-prefix provenance and prediction receipt before releasing
 outcomes to the evaluator.
 
+### DB0046 prediction retention precursor
+
+`prospective_devval_prediction_db0046_precursor_v1` can retain one exact
+label-free `DevvalValidationPredictionV1` through the existing restricted
+DB0046 raw-bundle repository. It validates canonical prediction bytes against
+independently supplied prediction, event, input, policy and Development-fit
+hashes before database I/O. A domain-separated proof digest binds those pins to
+the DB0046 row. Publication consumes the repository's actual commit and
+separate-transaction readback receipt; a later owner can only recover by exact
+retained pins and read-only DB0046 lookup. An uncertain append is never retried.
+
+This is a **computational retention precursor**. DB0046 has no per-event unique
+constraint, no independent prediction custodian, no source-kind discriminator,
+and no outcome-release or first-evaluator-access mechanism. Its server timestamp
+does not prove that prediction publication preceded outcome access. The adapter
+does not recompute the prediction from original market inputs, grant formal
+Gate 3 or OOS eligibility, or release Validation labels. Distinct DB0046 rows
+for the same event are possible and must remain a denial until a separately
+reviewed one-attempt publication and controlled outcome-release contract exists.
+The focused tests exercise ordering, exact pins, a changed readback, an
+uncertain append and read-only recovery with synthetic repository responses;
+actual restricted PostgreSQL publication remains unexecuted for this seam.
+
 The adapter checks the post-readback sample against the pinned summary clock,
 the capture deadline and the decision time. It requires fresh quote, book,
 mark, funding, open interest and WS observations, plus the exact 4H, 1H, 15m

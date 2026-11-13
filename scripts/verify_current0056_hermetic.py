@@ -70,6 +70,7 @@ _FITTED_CASES = (
         "tests.integration.test_qualification_submission_intent_repository",
         "test_uncertain_and_expired_intent_read_is_audit_only_and_hold_remains",
     ),
+    contract.PREDICTION_CUSTODY_CASE,
 )
 
 

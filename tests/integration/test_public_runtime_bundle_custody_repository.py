@@ -13,6 +13,7 @@ import json
 import os
 import re
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from functools import wraps
 from pathlib import Path
 from uuid import uuid4
@@ -188,6 +189,95 @@ async def test_history_source_envelope_bytes_use_existing_custody_without_source
     assert replay.execution_authority is False
     with pytest.raises(RuntimeBundleCustodyError):
         consume(receipt, data)
+
+
+async def test_validation_prediction_precursor_uses_actual_db0046_commit_and_readback(
+    runtime_custody_database,
+):
+    """Exercise the new DENY-only wrapper against the existing restricted role."""
+    from app.mie.validation.prospective_devval_prediction_db0046_precursor_v1 import (
+        PredictionCustodyPinsV1,
+        publish_prediction_precursor_v1,
+        read_prediction_precursor_v1,
+    )
+    from app.mie.validation.prospective_devval_validation_inputs_v1 import (
+        ValidationEventIdentityV1,
+    )
+    from app.mie.validation.prospective_devval_validation_prediction_v1 import (
+        DevvalValidationPredictionV1,
+        ValidationPredictionSideV1,
+    )
+
+    repository, restricted_engine, _ = runtime_custody_database
+    close = datetime(2026, 11, 20, 4, tzinfo=UTC)
+    missing = tuple(
+        ValidationPredictionSideV1(
+            instrument_id=symbol,
+            status="missing",
+            feature_replay_sha256=None,
+            raw_result_sha256=None,
+            raw_direction=None,
+            bin_index=None,
+            probability=None,
+        )
+        for symbol in ("BTC-USDT-SWAP", "ETH-USDT-SWAP")
+    )
+    prediction = DevvalValidationPredictionV1(
+        identity=ValidationEventIdentityV1(
+            schedule_sha256="a" * 64,
+            coverage_sha256="b" * 64,
+            batch_sha256="c" * 64,
+            slot_ordinal=7,
+            event_closed_at=close,
+            decision_at=None,
+            decision_cutoff_at=close + timedelta(minutes=1),
+        ),
+        feature_projection_sha256="d" * 64,
+        raw_event_sha256="e" * 64,
+        policy_sha256="f" * 64,
+        development_fit_sha256="1" * 64,
+        development_fit_input_sha256="2" * 64,
+        final_development_rows_sha256="3" * 64,
+        latest_development_label_read_at=close - timedelta(hours=25),
+        validation_feature_history_start_at=close - timedelta(hours=24),
+        feature_plan_sha256="4" * 64,
+        scorer_config_sha256="5" * 64,
+        status="incomplete",
+        sides=missing,
+    )
+    raw = prediction.canonical_json_bytes()
+    pins = PredictionCustodyPinsV1(
+        prediction_sha256=hashlib.sha256(raw).hexdigest(),
+        schedule_sha256=prediction.identity.schedule_sha256,
+        coverage_sha256=prediction.identity.coverage_sha256,
+        batch_sha256=prediction.identity.batch_sha256,
+        slot_ordinal=prediction.identity.slot_ordinal,
+        feature_projection_sha256=prediction.feature_projection_sha256,
+        raw_event_sha256=prediction.raw_event_sha256,
+        policy_sha256=prediction.policy_sha256,
+        development_fit_sha256=prediction.development_fit_sha256,
+        development_fit_input_sha256=prediction.development_fit_input_sha256,
+        feature_plan_sha256=prediction.feature_plan_sha256,
+        scorer_config_sha256=prediction.scorer_config_sha256,
+    )
+    published = await publish_prediction_precursor_v1(
+        repository, prediction_payload=raw, pins=pins
+    )
+    assert published.mode == "published"
+    assert published.append_transaction_id != published.readback_transaction_id
+    assert published.recorded_at <= published.database_readback_at
+    assert published.execution_authority is False
+    fresh = RuntimeBundleCustodyRepository(
+        async_sessionmaker(restricted_engine, expire_on_commit=False)
+    )
+    recovered = await read_prediction_precursor_v1(
+        fresh, prediction_payload=raw, pins=pins
+    )
+    assert recovered.mode == "recovered_read_only"
+    assert recovered.bundle_id == published.bundle_id
+    assert recovered.append_transaction_id is None
+    assert recovered.pre_outcome_publication_verified is False
+    assert recovered.evaluator_first_access_verified is False
 
 
 def consume(receipt, data):
