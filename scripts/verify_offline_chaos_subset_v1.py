@@ -17,6 +17,8 @@ import re
 import subprocess
 import sys
 import tarfile
+import xml.etree.ElementTree as ET
+from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -30,6 +32,7 @@ from scripts.verify_final_hermetic import (
 )
 
 _MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
+_MAX_JUNIT_BYTES = 512 * 1024
 _HEX64 = re.compile(r"[a-f0-9]{64}\Z")
 _COMMON = (
     "exchange/test_owned_write_seams_v1.py::test_real_pinned_stack_tls_positive_and_duplicate_no_resubmit",
@@ -53,7 +56,10 @@ _OS_CASES = {
     ),
     "linux": (
         "test_trade_evidence_outbox.py::test_native_posix_identical_enqueue_and_conflict_never_replace_bytes",
-        "test_trade_evidence_outbox.py::test_native_posix_linked_paths_are_refused_without_altering_outside_bytes",
+        "test_trade_evidence_outbox.py::test_native_posix_linked_paths_are_refused_without_altering_outside_bytes[root]",
+        "test_trade_evidence_outbox.py::test_native_posix_linked_paths_are_refused_without_altering_outside_bytes[ancestor]",
+        "test_trade_evidence_outbox.py::test_native_posix_linked_paths_are_refused_without_altering_outside_bytes[state]",
+        "test_trade_evidence_outbox.py::test_native_posix_linked_paths_are_refused_without_altering_outside_bytes[job_hardlink]",
     ),
 }
 
@@ -167,6 +173,66 @@ def _verify_report(path: Path, roster: list[str]) -> dict:
     return result
 
 
+def _read_junit(path: Path) -> bytes:
+    if (
+        path.is_symlink()
+        or not path.is_file()
+        or not 0 < path.stat().st_size <= _MAX_JUNIT_BYTES
+    ):
+        raise ValueError("offline_chaos_junit_unavailable")
+    raw = path.read_bytes()
+    if not 0 < len(raw) <= _MAX_JUNIT_BYTES or b"<!" in raw:
+        raise ValueError("offline_chaos_junit_unavailable")
+    return raw
+
+
+def _failure_summary(raw: bytes, roster: list[str]) -> bytes:
+    """Extract only bounded outcomes, never raw XML, properties or diagnostics."""
+    root = ET.fromstring(raw)
+    if (
+        root.tag != "testsuites"
+        or not len(root)
+        or any(item.tag != "testsuite" for item in root)
+    ):
+        raise ValueError("offline_chaos_failure_report_unavailable")
+    expected = {}
+    for node in roster:
+        source, name = node.split("::", 1)
+        expected[(source.removesuffix(".py").replace("/", "."), name)] = node
+    found = Counter()
+    outcomes = {}
+    for suite in root:
+        for case in suite.findall("testcase"):
+            node = expected.get((case.get("classname"), case.get("name")))
+            found[node] += 1
+            if node is not None:
+                outcome = next(
+                    (
+                        tag
+                        for tag in ("error", "failure", "skipped")
+                        if case.find(tag) is not None
+                    ),
+                    "passed",
+                )
+                outcomes[node] = "duplicate" if found[node] > 1 else outcome
+    return (
+        json.dumps(
+            {
+                "schema": "ctcc.offline_chaos_failed_junit_outcomes.v1",
+                "acceptance": False,
+                "junit_sha256": _sha(raw),
+                "unexpected_case_count": found[None],
+                "selected_outcomes": {
+                    node: outcomes.get(node, "missing") for node in roster
+                },
+            },
+            sort_keys=True,
+            indent=2,
+        )
+        + "\n"
+    ).encode()
+
+
 def _publish(output: Path, files: dict[str, bytes]) -> str:
     output.mkdir(mode=0o700)
     _canonical_path(output)
@@ -272,10 +338,21 @@ def run(archive: Path, archive_sha256: str, output: Path) -> tuple[bool, str]:
             if result.returncode:
                 raise ValueError("offline_chaos_pytest_failed")
             stage = "junit_readback"
-            record["tests"] = _verify_report(junit, roster)
-            raw = junit.read_bytes()
-            if _sha(raw) != record["tests"]["sha256"]:
-                raise ValueError("offline_chaos_junit_changed")
+            try:
+                raw = _read_junit(junit)
+                verified = _verify_report(junit, roster)
+                if _sha(raw) != verified["sha256"]:
+                    raise ValueError("offline_chaos_junit_changed")
+            except (OSError, ValueError, ET.ParseError):
+                try:
+                    summary = _failure_summary(_read_junit(junit), roster)
+                except (OSError, ValueError, ET.ParseError):
+                    pass
+                else:
+                    files["chaos-failed-outcomes.json"] = summary
+                    record["failed_junit_outcomes_sha256"] = _sha(summary)
+                raise
+            record["tests"] = verified
             stage = "source_readback"
             if (
                 verify_source_checkpoint(source, archive, archive_sha256)

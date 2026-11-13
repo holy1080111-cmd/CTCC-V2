@@ -1,6 +1,8 @@
 import hashlib
+import json
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
 
 import pytest
 
@@ -44,6 +46,77 @@ def test_report_requires_exact_successful_case(tmp_path, case, skipped, expected
     else:
         with pytest.raises(ValueError, match=expected_error):
             chaos._verify_report(path, roster)
+
+
+def _linux_roster():
+    return [
+        "tests/unit/" + case for case in (*chaos._COMMON, *chaos._OS_CASES["linux"])
+    ]
+
+
+def _roster_junit(roster):
+    root = ET.Element("testsuites")
+    suite = ET.SubElement(
+        root, "testsuite", tests=str(len(roster)), errors="0", failures="0", skipped="0"
+    )
+    for node in roster:
+        source, name = node.split("::")
+        ET.SubElement(
+            suite,
+            "testcase",
+            classname=source.removesuffix(".py").replace("/", "."),
+            name=name,
+        )
+    return root, suite
+
+
+def test_linux_roster_replays_all_four_link_variants_with_exact_node_keys(tmp_path):
+    roster = _linux_roster()
+    expected = {
+        "test_native_posix_linked_paths_are_refused_without_altering_outside_bytes"
+        + f"[{variant}]"
+        for variant in ("root", "ancestor", "state", "job_hardlink")
+    }
+    assert {
+        node.split("::")[1] for node in roster if "linked_paths" in node
+    } == expected
+    assert len(roster) == 18
+    assert len((*chaos._COMMON, *chaos._OS_CASES["windows"])) == 15
+    root, _ = _roster_junit(roster)
+    path = tmp_path / "linux.xml"
+    path.write_bytes(ET.tostring(root))
+    assert chaos._verify_report(path, roster)["passed"] == 18
+
+
+def test_failure_summary_keeps_only_roster_outcomes_and_bounded_digest(tmp_path):
+    roster = _linux_roster()
+    xml, suite = _roster_junit(roster)
+    known = list(suite)
+    suite.remove(known[-1])
+    ET.SubElement(known[1], "skipped", message="SECRET_SKIPPED_REASON")
+    suite.append(known[2])
+    ET.SubElement(
+        suite,
+        "testcase",
+        classname="SECRET_UNEXPECTED_CLASS",
+        name="SECRET_UNEXPECTED_NAME",
+    )
+    path = tmp_path / "linux.xml"
+    path.write_bytes(ET.tostring(xml))
+    raw = chaos._read_junit(path)
+    summary_raw = chaos._failure_summary(raw, roster)
+    assert b"SECRET" not in summary_raw
+    summary = json.loads(summary_raw)
+    assert summary["acceptance"] is False
+    assert summary["junit_sha256"] == hashlib.sha256(raw).hexdigest()
+    assert summary["unexpected_case_count"] == 1
+    assert summary["selected_outcomes"][roster[0]] == "passed"
+    assert summary["selected_outcomes"][roster[1]] == "skipped"
+    assert summary["selected_outcomes"][roster[2]] == "duplicate"
+    assert summary["selected_outcomes"][roster[-1]] == "missing"
+    path.write_bytes(b"<!DOCTYPE unsafe><testsuites/>")
+    with pytest.raises(ValueError, match="offline_chaos_junit_unavailable"):
+        chaos._read_junit(path)
 
 
 def test_non_loopback_refusal_remains_fatal_when_a_case_catches_it(tmp_path):
