@@ -25,7 +25,7 @@ if ((Get-FileHash -Algorithm SHA256 -LiteralPath $sslFile).Hash -ine
 # Reproduce the existing reviewed desktop trust policy in the CI runtime.
 $lf = [string][char]10
 $crlf = [string][char]13 + $lf
-$rejectedCa = Join-Path $PSScriptRoot 'codex-rejected-cas.pem'
+$rejectedCa = Join-Path $PSScriptRoot 'windows-validation-rejected-ca.txt'
 if ((Get-FileHash -Algorithm SHA256 -LiteralPath $rejectedCa).Hash -ine
     '8eff8829fead3440b04ad306d16ab7de76b1b11046e8a33fdcb50170db938d57') {
     throw 'WINDOWS_VALIDATION_REJECTED_CA_SOURCE_CHANGED'
