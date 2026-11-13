@@ -1915,6 +1915,16 @@ async def test_actual_current55_restricted_native_lifecycle_recovery(
                     patch.setattr(app_main, name, value)
                 patch.setattr(configured_db, "AsyncSessionFactory", writer_factory)
                 patch.setattr(configured_db, "engine", writer)
+                patch.setattr(configured_db, "settings", settings)
+                patch.setattr(
+                    configured_db,
+                    "native_pg_tls_settings_pin",
+                    (
+                        settings.database_url,
+                        settings.ctcc_native_pg_tls_ca_file,
+                        settings.ctcc_native_pg_tls_ca_sha256,
+                    ),
+                )
                 patch.setattr(selectors, "get_settings", lambda: settings)
                 instance = app_main._build_app()
 

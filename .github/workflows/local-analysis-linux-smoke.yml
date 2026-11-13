@@ -26,6 +26,7 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
+          unset DOCKER_HOST DOCKER_CONTEXT
           install_root="$(mktemp -d "$RUNNER_TEMP/ctcc-analysis-smoke.XXXXXXXX")"
           install_id="$(python3 -c 'import uuid; print(uuid.uuid4().hex)')"
           project="ctcc-analysis-$install_id"
@@ -88,22 +89,34 @@ jobs:
           PY
 
           "${compose[@]}" config --quiet
+          "${compose[@]}" config --format json | python3 -c '
+          import json, sys
+          config = json.load(sys.stdin)
+          expected = {
+              "services": {"api", "ingress", "postgres", "redis"},
+              "networks": {"analysis_internal", "analysis_ingress"},
+              "volumes": {"analysis_socket", "postgres_data", "redis_data"},
+              "secrets": {"analysis_api_token", "analysis_database_url", "analysis_postgres_password"},
+          }
+          if any(set(config.get(key, {})) != names for key, names in expected.items()):
+              raise SystemExit("LOCAL_ANALYSIS_SMOKE_REFUSED compose_inventory")
+          '
           "${compose[@]}" build --quiet
           "${compose[@]}" up -d --no-build
 
           python3 - <<'PY'
           import hashlib
+          import http.client
           import json
           import os
           import subprocess
           import time
           import urllib.error
-          import urllib.request
           from pathlib import Path
 
           root = Path(os.environ["install_root"])
           project = os.environ["project"]
-          base = f"http://127.0.0.1:{os.environ['port']}"
+          host_port = int(os.environ["port"])
           token = (root / "api_token").read_text("ascii")
           compose = [
               "docker", "compose", "--env-file", str(root / "compose.env"),
@@ -117,12 +130,85 @@ jobs:
                   timeout=30, text=True,
               ).stdout.strip()
 
+          services = {"api", "ingress", "postgres", "redis"}
+          internal_network = project + "_analysis_internal"
+          ingress_network = project + "_analysis_ingress"
+          socket_volume = project + "_analysis_socket"
+
+          def one_inspect(kind: str, identity: str) -> dict:
+              observed = json.loads(docker(kind, "inspect", identity))
+              if type(observed) is not list or len(observed) != 1:
+                  raise RuntimeError("inspect_inventory_mismatch")
+              return observed[0]
+
+          def assert_network(name: str, *, internal: bool, identities: set[str]) -> None:
+              observed = one_inspect("network", name)
+              if (
+                  observed.get("Driver") != "bridge"
+                  or observed.get("Internal") is not internal
+                  or observed.get("Labels", {}).get("com.docker.compose.project") != project
+                  or set((observed.get("Containers") or {}).keys()) != identities
+              ):
+                  raise RuntimeError("runtime_network_inventory_mismatch")
+
+          def assert_no_published_port(container: dict) -> None:
+              if (
+                  (container["HostConfig"].get("PortBindings") or {})
+                  or any((container["NetworkSettings"].get("Ports") or {}).values())
+              ):
+                  raise RuntimeError("service_host_port_present")
+
+          def assert_ingress_binding(container: dict) -> None:
+              expected = {"8000/tcp": [{"HostIp": "127.0.0.1", "HostPort": str(host_port)}]}
+              if (container["HostConfig"].get("PortBindings") or {}) != expected:
+                  raise RuntimeError("ingress_configured_binding_mismatch")
+              active = {
+                  key: value for key, value in (container["NetworkSettings"].get("Ports") or {}).items()
+                  if value is not None
+              }
+              if active != expected:
+                  raise RuntimeError("ingress_active_binding_mismatch")
+
+          def inspect_services() -> dict:
+              ids = docker(
+                  "ps", "-a", "--no-trunc", "--filter",
+                  f"label=com.docker.compose.project={project}", "--format", "{{.ID}}",
+              ).splitlines()
+              if len(ids) != len(services) or len(set(ids)) != len(services):
+                  raise RuntimeError("runtime_service_inventory_mismatch")
+              observed = {}
+              for identity in ids:
+                  container = one_inspect("container", identity)
+                  kind = container["Config"]["Labels"].get("com.docker.compose.service")
+                  if kind not in services or kind in observed or container.get("Id") != identity:
+                      raise RuntimeError("runtime_service_inventory_mismatch")
+                  if container["State"]["Running"] is not True:
+                      raise RuntimeError("service_not_running")
+                  expected_network = ingress_network if kind == "ingress" else internal_network
+                  if set(container["NetworkSettings"]["Networks"]) != {expected_network}:
+                      raise RuntimeError("service_network_mismatch")
+                  if kind == "ingress":
+                      assert_ingress_binding(container)
+                  else:
+                      assert_no_published_port(container)
+                  host_config = container["HostConfig"]
+                  if host_config.get("Privileged") is not False or host_config.get("CapAdd"):
+                      raise RuntimeError("runtime_privilege_refused")
+                  observed[kind] = container
+              assert_network(
+                  internal_network, internal=True,
+                  identities={observed[kind]["Id"] for kind in ("api", "postgres", "redis")},
+              )
+              assert_network(ingress_network, internal=False, identities={observed["ingress"]["Id"]})
+              return observed
+
           def request(
               path: str,
               *,
               payload: dict | None = None,
               raw_body: bytes | None = None,
               auth: bool = False,
+              redirect_dashboard: bool = False,
           ):
               headers = {"Content-Type": "application/json"}
               if auth:
@@ -132,10 +218,28 @@ jobs:
               data = raw_body if raw_body is not None else (
                   None if payload is None else json.dumps(payload).encode("ascii")
               )
-              item = urllib.request.Request(base + path, data=data, headers=headers)
-              with urllib.request.urlopen(item, timeout=4) as response:
-                  body = response.read(1_000_000)
-                  return response.status, body
+              method = "GET" if data is None else "POST"
+              with_loopback = http.client.HTTPConnection("127.0.0.1", host_port, timeout=4)
+              try:
+                  with_loopback.request(method, path, body=data, headers=headers)
+                  with with_loopback.getresponse() as response:
+                      status = response.status
+                      location = response.getheader("Location")
+                      body = response.read(1_000_001)
+                  if len(body) > 1_000_000:
+                      raise RuntimeError("http_body_size_refused")
+              finally:
+                  with_loopback.close()
+              if status >= 400:
+                  raise urllib.error.HTTPError(path, status, "", None, None)
+              if 300 <= status < 400:
+                  if not (
+                      redirect_dashboard and status == 307 and path == "/dashboard"
+                      and location == "/dashboard/local-analysis" and not auth
+                  ):
+                      raise RuntimeError("http_redirect_refused")
+                  return request(location)
+              return status, body
 
           def ready() -> dict:
               for _ in range(120):
@@ -151,29 +255,108 @@ jobs:
                           ):
                               raise RuntimeError("readiness_detail_refused")
                           return detail
-                  except (OSError, urllib.error.HTTPError):
+                  except (OSError, http.client.HTTPException):
                       pass
                   time.sleep(2)
               raise RuntimeError("readiness_timeout")
+
+          def assert_socket_mounts(containers: dict) -> None:
+              volume = one_inspect("volume", socket_volume)
+              if (
+                  volume.get("Driver") != "local" or volume.get("Options")
+                  or volume.get("Labels", {}).get("com.docker.compose.project") != project
+              ):
+                  raise RuntimeError("runtime_socket_volume_mismatch")
+              mount_paths = {
+                  "api": {
+                      "/run/ctcc-analysis", "/run/secrets/analysis_database_url",
+                      "/run/secrets/analysis_api_token",
+                  },
+                  "ingress": {"/run/ctcc-analysis"},
+                  "postgres": {"/var/lib/postgresql/data", "/run/secrets/analysis_postgres_password"},
+                  "redis": {"/data"},
+              }
+              for kind, destinations in mount_paths.items():
+                  mounts = containers[kind]["Mounts"]
+                  by_path = {mount["Destination"]: mount for mount in mounts}
+                  if len(mounts) != len(destinations) or set(by_path) != destinations:
+                      raise RuntimeError("runtime_mount_inventory_mismatch")
+                  for path, mount in by_path.items():
+                      if path.startswith("/run/secrets/"):
+                          source = root / path.rsplit("/", 1)[-1].removeprefix("analysis_")
+                          if (
+                              mount.get("Type") != "bind"
+                              or mount.get("Source") != str(source)
+                              or mount.get("RW") is not False
+                          ):
+                              raise RuntimeError("runtime_secret_mount_mismatch")
+                      else:
+                          suffix = {
+                              "/run/ctcc-analysis": "analysis_socket",
+                              "/var/lib/postgresql/data": "postgres_data",
+                              "/data": "redis_data",
+                          }[path]
+                          if (
+                              mount.get("Type") != "volume"
+                              or mount.get("Name") != f"{project}_{suffix}"
+                              or mount.get("RW") is not (kind != "ingress")
+                          ):
+                              raise RuntimeError("runtime_socket_volume_mismatch")
+
+          def assert_socket_endpoint(api: dict, ingress: dict, image: dict) -> None:
+              api_command = api["Config"]["Cmd"]
+              api_entrypoint = api["Config"].get("Entrypoint")
+              if (
+                  api_entrypoint != ["/bin/sh", "-ec"]
+                  or type(api_command) is not list or len(api_command) != 1
+                  or api_command[0].splitlines()[-1] != (
+                      "exec uvicorn app.main:app --uds /run/ctcc-analysis/api.sock "
+                      "--no-proxy-headers --workers 1"
+                  )
+              ):
+                  raise RuntimeError("runtime_api_socket_command_mismatch")
+              host = ingress["HostConfig"]
+              config = ingress["Config"]
+              if (
+                  ingress["Image"] != api["Image"]
+                  or config.get("User") != "ctcc"
+                  or config.get("User") != image["Config"].get("User")
+                  or config.get("Entrypoint") != ["python", "-B", "-m", "scripts.local_analysis_ingress"]
+                  or config.get("Cmd") not in (None, [])
+                  or sorted(config.get("Env") or []) != sorted(image["Config"].get("Env") or [])
+                  or host.get("ReadonlyRootfs") is not True
+                  or host.get("CapDrop") != ["ALL"]
+                  or host.get("SecurityOpt") != ["no-new-privileges:true"]
+              ):
+                  raise RuntimeError("runtime_ingress_command_or_privileges_mismatch")
+              socket_check = (
+                  "import os,stat; "
+                  "sock = os.lstat('/run/ctcc-analysis/api.sock'); "
+                  "assert stat.S_ISSOCK(sock.st_mode); print(sock.st_dev, sock.st_ino)"
+              )
+              socket_identities = {
+                  subprocess.run(
+                      [*compose, "exec", "-T", kind, "python", "-B", "-c", socket_check],
+                      check=True, capture_output=True, timeout=10,
+                  ).stdout.strip()
+                  for kind in ("api", "ingress")
+              }
+              if len(socket_identities) != 1 or not all(socket_identities):
+                  raise RuntimeError("runtime_shared_socket_identity_mismatch")
 
           phase = "host_readiness"
           substep = "await_ready"
           try:
               ready()
               phase = "runtime_identity"
-              substep = "compose_ps_api"
-              api_id = subprocess.run(
-                  [*compose, "ps", "-a", "-q", "api"], check=True,
-                  capture_output=True, timeout=20, text=True,
-              ).stdout.strip()
-              if not api_id:
-                  raise RuntimeError("api_container_missing")
-              substep = "inspect_api"
-              api = json.loads(docker("container", "inspect", api_id))[0]
-              if api["State"]["Running"] is not True:
-                  raise RuntimeError("api_container_not_running")
+              substep = "inspect_topology"
+              containers = inspect_services()
+              api = containers["api"]
+              ingress = containers["ingress"]
               substep = "inspect_image"
-              image = json.loads(docker("image", "inspect", api["Image"]))[0]
+              image = one_inspect("image", api["Image"])
+              if image.get("Id") != api["Image"]:
+                  raise RuntimeError("image_id_mismatch")
               labels = image["Config"]["Labels"]
               if labels["org.opencontainers.image.revision"] != os.environ["GITHUB_SHA"]:
                   raise RuntimeError("image_commit_mismatch")
@@ -203,53 +386,24 @@ jobs:
                   raise RuntimeError("runtime_paper_persistence_missing")
               if configured.get("CTCC_LOCAL_ANALYSIS_ONLY_V1") != "true":
                   raise RuntimeError("runtime_local_profile_missing")
-              if "API_TOKEN" in configured or "DATABASE_URL" in configured:
+              if (
+                  "API_TOKEN" in configured or "DATABASE_URL" in configured
+                  or any(configured.get(key) for key in (
+                      "OKX_DEMO_API_KEY", "OKX_DEMO_API_SECRET", "OKX_DEMO_API_PASSPHRASE",
+                      "OKX_LIVE_API_KEY", "OKX_LIVE_API_SECRET", "OKX_LIVE_API_PASSPHRASE",
+                      "NOTION_OUTBOX_TOKEN_FILE",
+                  ))
+              ):
                   raise RuntimeError("runtime_secret_config_exposed")
-              substep = "inspect_network"
-              networks = api["NetworkSettings"]["Networks"]
-              network_name = project + "_analysis_internal"
-              if set(networks) != {network_name}:
-                  raise RuntimeError("api_network_mismatch")
-              network = json.loads(docker("network", "inspect", network_name))[0]
-              if network["Internal"] is not True:
-                  raise RuntimeError("runtime_egress_boundary_missing")
-              substep = "inspect_api_bindings"
-              configured_bindings = (api["HostConfig"].get("PortBindings") or {}).get("8000/tcp")
-              if not configured_bindings or any(
-                  item.get("HostIp") != "127.0.0.1" or item.get("HostPort") != os.environ["port"]
-                  for item in configured_bindings
-              ):
-                  raise RuntimeError("api_loopback_binding_mismatch")
-              active_bindings = (api["NetworkSettings"].get("Ports") or {}).get("8000/tcp")
-              if active_bindings is not None and (
-                  not active_bindings
-                  or any(
-                      item.get("HostIp") != "127.0.0.1" or item.get("HostPort") != os.environ["port"]
-                      for item in active_bindings
-                  )
-              ):
-                  raise RuntimeError("api_active_binding_mismatch")
-              substep = "inspect_dependencies"
-              for service in ("postgres", "redis"):
-                  service_id = subprocess.run(
-                      [*compose, "ps", "-a", "-q", service], check=True,
-                      capture_output=True, timeout=20, text=True,
-                  ).stdout.strip()
-                  if not service_id:
-                      raise RuntimeError("dependency_container_missing")
-                  observed = json.loads(docker("container", "inspect", service_id))[0]
-                  if observed["State"]["Running"] is not True:
-                      raise RuntimeError("dependency_not_running")
-                  if set(observed["NetworkSettings"]["Networks"]) != {network_name}:
-                      raise RuntimeError("service_network_mismatch")
-                  if any((observed["NetworkSettings"].get("Ports") or {}).values()):
-                      raise RuntimeError("service_host_port_present")
-                  if any((observed["HostConfig"].get("PortBindings") or {}).values()):
-                      raise RuntimeError("service_host_port_present")
+              substep = "inspect_socket_custody"
+              assert_socket_mounts(containers)
+              assert_socket_endpoint(api, ingress, image)
+              api_started_at = api["State"]["StartedAt"]
+              ingress_started_at = ingress["State"]["StartedAt"]
 
               phase = "local_http"
               substep = "route_checks"
-              status, dashboard = request("/dashboard")
+              status, dashboard = request("/dashboard", redirect_dashboard=True)
               if status != 200 or b"CTCC" not in dashboard:
                   raise RuntimeError("dashboard_refused")
               status, local_page = request("/dashboard/local-analysis")
@@ -325,11 +479,23 @@ jobs:
               if status != 201 or order["status"] != "filled":
                   raise RuntimeError("paper_order_refused")
               order_id = order["id"]
+              substep = "restart_api"
               subprocess.run(
-                  [*compose, "restart", "api"], check=True,
+                  [*compose, "restart", "--no-deps", "api"], check=True,
                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=45,
               )
               ready()
+              substep = "inspect_after_restart"
+              restarted = inspect_services()
+              if (
+                  any(restarted[kind]["Id"] != containers[kind]["Id"] for kind in services)
+                  or restarted["api"]["Image"] != api["Image"]
+                  or restarted["api"]["State"]["StartedAt"] <= api_started_at
+                  or restarted["ingress"]["State"]["StartedAt"] != ingress_started_at
+              ):
+                  raise RuntimeError("runtime_api_restart_identity_mismatch")
+              assert_socket_mounts(restarted)
+              assert_socket_endpoint(restarted["api"], restarted["ingress"], image)
               status, raw = request(f"/api/paper/orders/{order_id}", auth=True)
               replay = json.loads(raw)
               if status != 200 or replay["id"] != order_id or replay["status"] != "filled":
@@ -339,14 +505,19 @@ jobs:
                   raise RuntimeError("paper_account_recovery_refused")
 
               result = {
-                  "schema": "ctcc.local_analysis.linux_compose_smoke.v1",
+                  "schema": "ctcc.local_analysis.linux_compose_smoke.v2",
                   "status": "CANDIDATE_AWAITING_CLEANUP",
                   "source_commit": os.environ["GITHUB_SHA"],
                   "source_tree": expected_tree,
                   "manifest_sha256": hashlib.sha256(Path("MANIFEST.sha256").read_bytes()).hexdigest(),
                   "image_id": api["Image"],
+                  "ingress_image_id": ingress["Image"],
                   "loopback_host_reachable": True,
                   "internal_network_verified": True,
+                  "ingress_separate_loopback_only_verified": True,
+                  "exact_shared_unix_socket_verified": True,
+                  "ingress_has_no_credentials_or_extra_capabilities": True,
+                  "same_ingress_survived_api_process_restart": True,
                   "paper_auth_guard_verified": True,
                   "paper_restart_recovery_verified": True,
                   "offline_snapshot_sha256": hashlib.sha256(fixture).hexdigest(),
@@ -361,8 +532,7 @@ jobs:
               )
           except Exception as exc:
               allowed = {
-                  "api_container_missing", "api_container_not_running",
-                  "image_commit_mismatch", "image_tree_mismatch",
+                  "image_id_mismatch", "image_commit_mismatch", "image_tree_mismatch",
                   "readiness_timeout", "readiness_detail_refused", "dashboard_refused",
                   "local_page_refused", "legacy_route_exposed", "write_route_exposed",
                   "paper_unauthorized_guard_refused", "paper_unauthorized_guard_missing",
@@ -371,17 +541,22 @@ jobs:
                   "paper_account_recovery_refused",
                   "runtime_mode_mismatch", "runtime_local_profile_missing",
                   "runtime_execution_flag_mismatch", "runtime_paper_persistence_missing",
-                  "runtime_secret_config_exposed", "api_network_mismatch",
-                  "runtime_egress_boundary_missing", "api_loopback_binding_mismatch",
-                  "api_active_binding_mismatch", "dependency_container_missing",
-                  "dependency_not_running", "service_network_mismatch",
-                  "service_host_port_present",
+                  "runtime_secret_config_exposed", "service_network_mismatch",
+                  "runtime_network_inventory_mismatch", "runtime_service_inventory_mismatch",
+                  "inspect_inventory_mismatch", "runtime_privilege_refused", "service_not_running",
+                  "service_host_port_present", "ingress_configured_binding_mismatch",
+                  "ingress_active_binding_mismatch", "runtime_api_socket_command_mismatch",
+                  "runtime_ingress_command_or_privileges_mismatch", "runtime_socket_volume_mismatch",
+                  "runtime_mount_inventory_mismatch", "runtime_secret_mount_mismatch",
+                  "runtime_shared_socket_identity_mismatch",
+                  "runtime_api_restart_identity_mismatch", "http_body_size_refused",
+                  "http_redirect_refused",
               }
               code = exc.args[0] if type(exc) is RuntimeError and exc.args and exc.args[0] in allowed else "unexpected_refusal"
               fixed_substeps = {
-                  "await_ready", "compose_ps_api", "inspect_api", "inspect_image",
-                  "inspect_runtime_env", "inspect_network", "inspect_api_bindings",
-                  "inspect_dependencies", "route_checks",
+                  "await_ready", "inspect_topology", "inspect_image",
+                  "inspect_runtime_env", "inspect_socket_custody", "route_checks",
+                  "restart_api", "inspect_after_restart",
               }
               fixed_kinds = {
                   "RuntimeError", "KeyError", "TypeError", "AttributeError",
@@ -453,7 +628,9 @@ jobs:
               containers
               or project + "_postgres_data" in volumes
               or project + "_redis_data" in volumes
+              or project + "_analysis_socket" in volumes
               or project + "_analysis_internal" in networks
+              or project + "_analysis_ingress" in networks
           ):
               raise SystemExit("owned_cleanup_refused")
 
@@ -467,10 +644,15 @@ jobs:
               raise SystemExit("private_root_member_identity_refused")
           candidate = json.loads((root / "smoke-candidate.json").read_bytes())
           if (
-              candidate.get("schema") != "ctcc.local_analysis.linux_compose_smoke.v1"
+              candidate.get("schema") != "ctcc.local_analysis.linux_compose_smoke.v2"
               or candidate.get("status") != "CANDIDATE_AWAITING_CLEANUP"
               or candidate.get("source_commit") != os.environ["GITHUB_SHA"]
               or candidate.get("internal_network_verified") is not True
+              or candidate.get("ingress_separate_loopback_only_verified") is not True
+              or candidate.get("exact_shared_unix_socket_verified") is not True
+              or candidate.get("ingress_has_no_credentials_or_extra_capabilities") is not True
+              or candidate.get("same_ingress_survived_api_process_restart") is not True
+              or candidate.get("image_id") != candidate.get("ingress_image_id")
               or candidate.get("paper_restart_recovery_verified") is not True
               or candidate.get("offline_execution_authority") is not False
           ):

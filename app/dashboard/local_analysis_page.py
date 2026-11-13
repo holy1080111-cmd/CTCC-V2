@@ -107,6 +107,8 @@ LOCAL_ANALYSIS_HTML = r"""<!doctype html>
 <script>
 "use strict";
 const MAX_SNAPSHOT_BYTES = 1024 * 1024;
+const PAPER_UNCERTAIN = "paper_persistence_outcome_unknown";
+const PAPER_RESTART_MESSAGE = "本機 Paper 寫入結果未明，已暫停操作。請重新啟動本機服務並核對帳本，再決定是否重送。";
 const tokenInput = document.getElementById("token");
 const fileInput = document.getElementById("snapshot");
 const button = document.getElementById("analyze");
@@ -229,6 +231,10 @@ async function refreshPaper(token) {
         signal: controller.signal
       });
       if (!response.ok) {
+        if (await paperPersistenceUnknown(response)) {
+          paperStatus.textContent = PAPER_RESTART_MESSAGE;
+          return false;
+        }
         paperStatus.textContent = response.status === 401 || response.status === 403
           ? "本機 API Token 驗證失敗，請重新輸入。"
           : "本機 Paper 帳本暫時無法讀取。";
@@ -295,6 +301,15 @@ function setPaperActionBusy(busy) {
   paperTickButton.disabled = busy;
 }
 
+async function paperPersistenceUnknown(response) {
+  if (response.status !== 503) return false;
+  try {
+    return (await response.json())?.detail === PAPER_UNCERTAIN;
+  } catch {
+    return false;
+  }
+}
+
 async function paperPost(path, token, payload) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 30000);
@@ -315,6 +330,7 @@ async function paperPost(path, token, payload) {
     return {
       status: response.status,
       ok: response.ok,
+      persistenceUnknown: await paperPersistenceUnknown(response),
       value: response.ok ? await response.json() : null
     };
   } finally {
@@ -393,6 +409,10 @@ paperOrderButton.addEventListener("click", async () => {
     const response = await paperPost("/api/paper/orders", token, {
       ...payload, client_order_id: pendingPaperOrder.id
     });
+    if (response.persistenceUnknown) {
+      showUncertainPaperOrder(PAPER_RESTART_MESSAGE);
+      return;
+    }
     if (response.status === 401 || response.status === 403) {
       if (pendingPaperOrder.uncertain) {
         showUncertainPaperOrder("本次 Token 驗證失敗；先前模擬請求仍未確認，請讀取帳本。");
@@ -466,6 +486,10 @@ paperTickButton.addEventListener("click", async () => {
   paperActionStatus.textContent = "送出本機模擬報價中…";
   try {
     const response = await paperPost("/api/paper/ticks", token, {symbol, price});
+    if (response.persistenceUnknown) {
+      paperActionStatus.textContent = PAPER_RESTART_MESSAGE;
+      return;
+    }
     if (response.status === 401 || response.status === 403) {
       paperActionStatus.textContent = "本機 API Token 驗證失敗；模擬報價未授權。";
       return;

@@ -1,6 +1,6 @@
 # Local analysis installation
 
-This installation runs the CTCC dashboard and offline analysis API on this PC. It does not connect to OKX or enable Demo or Live trading. The generated Compose file binds the API to `127.0.0.1`, places all services on an internal Docker network, and uses separate persistent PostgreSQL and Redis volumes. It never reads the host `.env` or an OKX key.
+This installation runs the CTCC dashboard and offline analysis API on this PC. It does not connect to OKX or enable Demo or Live trading. The generated Compose file publishes the dashboard on `127.0.0.1` through a dedicated relay. CTCC, PostgreSQL and Redis stay on an internal Docker network. The relay listens on a separate network and can forward only to the API's mounted Unix socket. PostgreSQL and Redis use separate persistent volumes. It never reads the host `.env` or an OKX key.
 
 ## Prepare and verify
 
@@ -46,4 +46,4 @@ changing source. A new source is prepared with new volumes. If it fails, the
 old source, installation directory and volumes can be restarted together.
 The installer does not migrate saved Paper state across source versions.
 
-This is a local analysis profile. It does not implement the separate DB0056 native trading deployment, grant privileges, Arm trading, or send orders. Building the pinned image may fetch locked build dependencies; the running services have no external network route. Actual Docker startup, volume persistence, and Windows bind-mount access need runtime acceptance on the target machine.
+This is a local analysis profile. It does not implement the separate DB0056 native trading deployment, grant privileges, Arm trading, or send orders. Building the pinned image may fetch locked build dependencies; the API and storage services use the internal network during operation. Actual Docker startup, volume persistence, and Windows bind-mount access need runtime acceptance on the target machine.

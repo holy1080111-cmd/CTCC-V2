@@ -11,7 +11,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-RUN addgroup --system ctcc && adduser --system --ingroup ctcc ctcc
+RUN addgroup --system ctcc \
+    && adduser --system --ingroup ctcc ctcc \
+    && install -d -m 0750 -o ctcc -g ctcc /run/ctcc-analysis \
+    && install -m 0640 -o ctcc -g ctcc /dev/null /run/ctcc-analysis/.volume
 
 COPY pyproject.toml ./
 COPY .github ./.github

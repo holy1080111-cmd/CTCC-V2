@@ -14,6 +14,7 @@ from app.domain.paper import (
     PaperTickResult,
 )
 from app.paper import PaperBrokerError, PaperPersistenceError
+from app.paper.execution_service import PaperPersistenceOutcomeUnknown
 from app.paper.service import paper_service
 
 router = APIRouter(
@@ -24,6 +25,11 @@ router = APIRouter(
 
 
 def _handle(exc: PaperBrokerError | PaperPersistenceError) -> HTTPException:
+    if isinstance(exc, PaperPersistenceOutcomeUnknown):
+        return HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="paper_persistence_outcome_unknown",
+        )
     code = (
         status.HTTP_404_NOT_FOUND
         if str(exc) in {"order_not_found", "position_not_found"}
@@ -90,12 +96,18 @@ async def close_position(
 
 @router.get("/account", response_model=PaperAccountView)
 async def get_account() -> PaperAccountView:
-    return paper_service.account()
+    try:
+        return paper_service.account()
+    except PaperPersistenceOutcomeUnknown as exc:
+        raise _handle(exc) from exc
 
 
 @router.get("/state", response_model=PaperStateView)
 async def get_state() -> PaperStateView:
-    return paper_service.state()
+    try:
+        return paper_service.state()
+    except PaperPersistenceOutcomeUnknown as exc:
+        raise _handle(exc) from exc
 
 
 @router.post("/reset", response_model=PaperStateView)

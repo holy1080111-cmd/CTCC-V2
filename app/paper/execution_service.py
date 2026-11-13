@@ -7,7 +7,12 @@ from decimal import Decimal
 from typing import TypeVar
 from uuid import UUID
 
-from app.database.repositories.persistence import PersistenceRepository, state_checksum
+from app.database.repositories.persistence import (
+    PaperCommitOutcomeUnknown,
+    PaperStateReadbackError,
+    PersistenceRepository,
+    state_checksum,
+)
 from app.domain.paper import (
     PaperAccountView,
     PaperOrderRequest,
@@ -26,12 +31,17 @@ class PaperPersistenceError(RuntimeError):
     pass
 
 
+class PaperPersistenceOutcomeUnknown(PaperPersistenceError):
+    def __init__(self) -> None:
+        super().__init__("paper_persistence_outcome_unknown")
+
+
 class PaperExecutionService:
     """Atomic paper mutations with optional PostgreSQL persistence.
 
     The deterministic broker remains synchronous and storage-agnostic. This
-    service serializes mutations and restores the previous in-memory snapshot
-    if a broker operation or persistence fails.
+    service serializes mutations, restores failed operations, and fences a
+    save with an unknown commit outcome until process restart and readback.
     """
 
     def __init__(
@@ -51,6 +61,11 @@ class PaperExecutionService:
         self._last_persisted_at: datetime | None = None
         self._last_mark_persist_at: datetime | None = None
         self._last_error: str | None = None
+        self._persistence_outcome_unknown = False
+
+    def require_confirmed_state(self) -> None:
+        if self._persistence_outcome_unknown:
+            raise PaperPersistenceOutcomeUnknown()
 
     async def recover(self) -> RecoveryStatus:
         if self.repository is None:
@@ -59,6 +74,7 @@ class PaperExecutionService:
             return await self.recovery_status()
 
         async with self._lock:
+            self.require_confirmed_state()
             try:
                 loaded = await self.repository.load_paper_state()
                 if loaded is None:
@@ -79,6 +95,12 @@ class PaperExecutionService:
                     self._recovered = True
                 self._initialized = True
                 self._last_error = None
+            except PaperPersistenceOutcomeUnknown:
+                raise
+            except PaperStateReadbackError:
+                self._persistence_outcome_unknown = True
+                self._last_error = "paper_state_recovery_failed"
+                raise PaperPersistenceError("paper_state_recovery_failed") from None
             except Exception as exc:
                 self._last_error = f"{exc.__class__.__name__}: {exc}"
                 raise PaperPersistenceError("paper_state_recovery_failed") from exc
@@ -106,6 +128,7 @@ class PaperExecutionService:
         timestamp: datetime | None = None,
     ) -> PaperTickResult:
         async with self._lock:
+            self.require_confirmed_state()
             before = self.broker.state()
             result = self._apply_broker_mutation(
                 before,
@@ -159,6 +182,8 @@ class PaperExecutionService:
         if self.repository is None:
             return None
         async with self._lock:
+            if self._persistence_outcome_unknown:
+                return None
             return await self._persist(action)
 
     async def reconcile(self, action: str) -> RecoveryStatus:
@@ -167,6 +192,7 @@ class PaperExecutionService:
         if self.repository is None:
             raise PaperPersistenceError("paper_persistence_disabled")
         async with self._lock:
+            self.require_confirmed_state()
             if action == "restore_from_database":
                 loaded = await self.repository.load_paper_state()
                 if loaded is None:
@@ -181,6 +207,7 @@ class PaperExecutionService:
         return await self.recovery_status()
 
     async def recovery_status(self) -> RecoveryStatus:
+        self.require_confirmed_state()
         memory = self.broker.state()
         memory_sum = state_checksum(memory)
         database_sum: str | None = None
@@ -198,6 +225,7 @@ class PaperExecutionService:
                 counts = await self.repository.counts()
             except Exception as exc:  # noqa: BLE001 - IO safety boundary retains failure status; arbitrary adapter errors must not grant authority.
                 self._last_error = f"{exc.__class__.__name__}: {exc}"
+        self.require_confirmed_state()
         return RecoveryStatus(
             persistence_enabled=self.repository is not None,
             initialized=self._initialized,
@@ -222,15 +250,19 @@ class PaperExecutionService:
         )
 
     def get_order(self, order_id: UUID) -> PaperOrderView:
+        self.require_confirmed_state()
         return self.broker.get_order(order_id)
 
     def get_position(self, position_id: UUID) -> PaperPositionView:
+        self.require_confirmed_state()
         return self.broker.get_position(position_id)
 
     def state(self) -> PaperStateView:
+        self.require_confirmed_state()
         return self.broker.state()
 
     def account(self) -> PaperAccountView:
+        self.require_confirmed_state()
         return self.broker.account()
 
     async def _mutate(
@@ -242,6 +274,7 @@ class PaperExecutionService:
         details: dict[str, str] | None = None,
     ) -> T:
         async with self._lock:
+            self.require_confirmed_state()
             before = self.broker.state()
             result = self._apply_broker_mutation(before, operation)
             if self.repository is not None:
@@ -290,6 +323,11 @@ class PaperExecutionService:
                 break
         try:
             pending.result()
+        except PaperPersistenceOutcomeUnknown:
+            self.broker.restore(before)
+            if cancelled is not None:
+                raise cancelled from None
+            raise
         except asyncio.CancelledError:
             self.broker.restore(before)
             raise
@@ -313,12 +351,17 @@ class PaperExecutionService:
     ) -> str:
         if self.repository is None:
             return state_checksum(self.broker.state())
-        checksum = await self.repository.save_paper_state(
-            self.broker.state(),
-            action=action,
-            resource_id=resource_id,
-            details=details,
-        )
+        try:
+            checksum = await self.repository.save_paper_state(
+                self.broker.state(),
+                action=action,
+                resource_id=resource_id,
+                details=details,
+            )
+        except PaperCommitOutcomeUnknown:
+            self._persistence_outcome_unknown = True
+            self._last_error = "paper_persistence_outcome_unknown"
+            raise PaperPersistenceOutcomeUnknown() from None
         self._last_persisted_at = datetime.now(UTC)
         self._last_error = None
         return checksum

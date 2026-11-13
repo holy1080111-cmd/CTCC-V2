@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -28,6 +29,16 @@ from app.domain.paper import (
     PaperStateView,
 )
 from app.domain.recovery import AuditEntryView
+
+_PAPER_STATE_LOCK = 0x4354434350415045
+
+
+class PaperCommitOutcomeUnknown(RuntimeError):
+    """A Paper save reached COMMIT but did not receive a definitive outcome."""
+
+
+class PaperStateReadbackError(RuntimeError):
+    """The committed Paper rows do not match their retained checksum."""
 
 
 def _canonical(value: Any) -> Any:
@@ -100,10 +111,45 @@ class PersistenceRepository:
         actor: str = "ctcc-system",
         details: dict[str, Any] | None = None,
     ) -> str:
+        committing = False
+
+        def mark_committing() -> None:
+            nonlocal committing
+            committing = True
+
+        try:
+            return await self._save_paper_state(
+                state,
+                action=action,
+                resource_id=resource_id,
+                actor=actor,
+                details=details,
+                mark_committing=mark_committing,
+            )
+        except BaseException:
+            if committing:
+                raise PaperCommitOutcomeUnknown(
+                    "paper_persistence_outcome_unknown"
+                ) from None
+            raise
+
+    async def _save_paper_state(
+        self,
+        state: PaperStateView,
+        *,
+        action: str,
+        resource_id: str | None,
+        actor: str,
+        details: dict[str, Any] | None,
+        mark_committing: Callable[[], None],
+    ) -> str:
         checksum = state_checksum(state)
         now = datetime.now(UTC)
         async with self.session_factory() as session:  # noqa: SIM117 - Keep database session and transaction lifetimes explicit at the durable boundary.
             async with session.begin():
+                await session.execute(
+                    select(func.pg_advisory_xact_lock(_PAPER_STATE_LOCK))
+                )
                 account_values = {
                     "id": 1,
                     "starting_balance": state.account.starting_balance,
@@ -266,10 +312,20 @@ class PersistenceRepository:
                         },
                     )
                 )
+                await session.flush()
+                mark_committing()
         return checksum
 
     async def load_paper_state(self) -> PaperStateView | None:
-        async with self.session_factory() as session:
+        async with self.session_factory() as session, session.begin():
+            # Wait for a Paper writer to finish before issuing fresh READ
+            # COMMITTED reads. The writer holds the same transaction lock.
+            isolation = await session.scalar(
+                select(func.current_setting("transaction_isolation"))
+            )
+            if isolation != "read committed":
+                raise PaperStateReadbackError("paper_state_readback_isolation_invalid")
+            await session.execute(select(func.pg_advisory_xact_lock(_PAPER_STATE_LOCK)))
             account = await session.get(PaperAccountState, 1)
             if account is None:
                 return None
@@ -290,7 +346,7 @@ class PersistenceRepository:
                 ).all()
             )
 
-        return PaperStateView(
+        state = PaperStateView(
             account=PaperAccountView(
                 starting_balance=account.starting_balance,
                 cash_balance=account.cash_balance,
@@ -347,6 +403,9 @@ class PersistenceRepository:
                 for row in positions
             ],
         )
+        if state_checksum(state) != account.state_checksum:
+            raise PaperStateReadbackError("paper_state_readback_invalid")
+        return state
 
     async def save_orchestrator_run(
         self, run: OrchestratorRunResult, *, history_limit: int

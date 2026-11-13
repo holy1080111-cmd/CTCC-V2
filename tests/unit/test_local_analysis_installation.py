@@ -43,11 +43,34 @@ def test_rendered_compose_is_local_analysis_only(monkeypatch, tmp_path: Path) ->
     compose_raw = (root / "compose.yaml").read_bytes()
     compose = yaml.safe_load(compose_raw)
     assert compose["name"] == "ctcc-analysis-" + "1" * 32
-    assert set(compose["services"]) == {"api", "postgres", "redis"}
-    api = compose["services"]["api"]
-    assert api["ports"] == ["127.0.0.1:18100:8000"]
-    assert api["networks"] == ["analysis_internal"]
+    services = compose["services"]
+    assert set(services) == {"api", "ingress", "postgres", "redis"}
+    api = services["api"]
+    for name in ("api", "postgres", "redis"):
+        assert "ports" not in services[name]
+        assert services[name]["networks"] == ["analysis_internal"]
+    assert api["volumes"] == ["analysis_socket:/run/ctcc-analysis"]
+    assert (
+        "uvicorn app.main:app --uds /run/ctcc-analysis/api.sock " in api["command"][0]
+    )
     assert compose["networks"]["analysis_internal"]["internal"] is True
+    assert compose["networks"]["analysis_ingress"] == {"driver": "bridge"}
+    ingress = services["ingress"]
+    assert ingress["image"] == api["image"]
+    assert ingress["ports"] == ["127.0.0.1:18100:8000"]
+    assert ingress["networks"] == ["analysis_ingress"]
+    assert ingress["volumes"] == ["analysis_socket:/run/ctcc-analysis:ro"]
+    assert ingress["entrypoint"] == [
+        "python",
+        "-B",
+        "-m",
+        "scripts.local_analysis_ingress",
+    ]
+    assert ingress["command"] == []
+    assert ingress["read_only"] is True
+    assert ingress["cap_drop"] == ["ALL"]
+    assert ingress["security_opt"] == ["no-new-privileges:true"]
+    assert not ({"environment", "secrets", "env_file"} & ingress.keys())
     assert api["environment"]["TRADING_MODE"] == "analysis_only"
     assert api["environment"]["CTCC_NATIVE_ONLY_LIFESPAN_V1"] == "false"
     assert api["environment"]["PAPER_PERSISTENCE_ENABLED"] == "true"
@@ -83,7 +106,7 @@ def test_rendered_compose_is_local_analysis_only(monkeypatch, tmp_path: Path) ->
         "postgres:17-alpine@sha256:"
     )
     assert compose["services"]["redis"]["image"].startswith("redis:8-alpine@sha256:")
-    assert set(compose["volumes"]) == {"postgres_data", "redis_data"}
+    assert set(compose["volumes"]) == {"analysis_socket", "postgres_data", "redis_data"}
     for name, value in api["environment"].items():
         monkeypatch.setenv(name, str(value))
     monkeypatch.setenv(
