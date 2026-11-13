@@ -1,8 +1,8 @@
 # DB0056 owner target plan
 
-Run this separately from the API, from a complete extraction of the reviewed
-archive on a configured PostgreSQL 17 owner target. Keep the archive itself,
-configuration, virtual environment and generated files outside that extraction.
+Run this separately from the API on a configured PostgreSQL 17 owner target.
+The installed source must match the reviewed archive byte for byte. Source
+inventory follows the existing manifest rules for build outputs and metadata.
 The target must already be at DB0056 with the original three restricted roles
 present and their 42 inherited grants absent.
 
