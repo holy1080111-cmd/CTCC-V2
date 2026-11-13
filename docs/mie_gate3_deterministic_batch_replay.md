@@ -219,3 +219,16 @@ This report describes uncertainty in the normalized series. A declared plan
 date does not establish independent preregistration, and the diagnostic does not
 authenticate market sources or report execution latency, realized trades, or
 economic OOS acceptance. All execution and acceptance flags remain false.
+
+## Order reshuffle stress diagnostic
+
+`order_reshuffle_net_outcomes_v1` replays the pinned baseline cost model, then
+permutes its net period observations without replacement. Every replication
+preserves every original costed observation exactly once. The separately
+pinned plan fixes the candidate, cost plan, window, row count, seed and
+drawdown threshold before the declared window. A deterministic replay checks
+all permutation digests, the empirical upper drawdown and threshold breaches.
+
+This measures drawdown sensitivity when observation order changes. Costs stay
+with their original observations. The reshuffle breaks serial dependence and
+does not estimate alternative fills, latency, or economic acceptance.
