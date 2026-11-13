@@ -219,6 +219,7 @@ async def test_two_readbacks_produce_only_redacted_diagnostic(
     assert receipt["startup_admission"] is False
     assert receipt["execution_authority"] is False
     assert receipt["schema_drift_verified"] is False
+    assert receipt["password_authentication_verified"] is False
     assert _SECRET not in str(receipt)
     assert "db.example.invalid" not in str(receipt)
 
@@ -260,6 +261,39 @@ async def test_between_readback_identity_change_refused(
         await subject.preflight_owner_route_0056_v1(
             pins, owner_dsn_file=secret, ca_file=ca
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["create", "dispose"])
+async def test_engine_failure_never_exposes_private_detail(
+    prepared_files, monkeypatch, stage
+):
+    pins, secret, ca, _ = prepared_files
+
+    class FakeEngine:
+        async def dispose(self):
+            raise RuntimeError(_SECRET)
+
+    def create(*args, **kwargs):
+        if stage == "create":
+            raise RuntimeError(_SECRET)
+        return FakeEngine()
+
+    async def read_one(*args):
+        return (
+            pins.cluster_system_identifier_sha256,
+            pins.database_oid,
+            pins.owner_oid,
+        )
+
+    monkeypatch.setattr(subject, "create_async_engine", create)
+    monkeypatch.setattr(subject, "_read_one", read_one)
+    with pytest.raises(subject.OwnerRoutePreflightError) as caught:
+        await subject.preflight_owner_route_0056_v1(
+            pins, owner_dsn_file=secret, ca_file=ca
+        )
+    assert str(caught.value) == "native_owner_route_preflight_refused"
+    assert _SECRET not in str(caught.value)
 
 
 @pytest.mark.asyncio

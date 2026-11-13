@@ -67,6 +67,10 @@ _FITTED_CASES = (
     ),
     (
         fitted_measurement.CASE[0],
+        "test_actual0056_password_bearing_owner_route_preflight_is_readonly",
+    ),
+    (
+        fitted_measurement.CASE[0],
         "test_actual0056_configured_product_tls_child_is_source_pinned_and_read_back",
     ),
     (

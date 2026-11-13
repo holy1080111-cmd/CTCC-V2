@@ -248,6 +248,7 @@ async def preflight_owner_route_0056_v1(
         "ca_sha256": pins.ca_sha256,
         "independent_readonly_observations": 2,
         "database_owner_verified": True,
+        "password_authentication_verified": False,
         "schema_object_ownership_verified": False,
         "schema_drift_verified": False,
         "owner_provision_verified": False,

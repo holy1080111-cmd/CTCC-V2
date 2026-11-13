@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import re
+import secrets
 import socket
 import ssl
 import sys
@@ -70,6 +71,7 @@ from scripts import current0056_native_owner_pregrant_v1 as owner_pregrant
 from scripts import current0056_postgrant_acl_measurement_v1 as postgrant_acl
 from scripts import current_contract_source_scopes_v1 as source_scopes
 from scripts import devval_campaign_physical_catalog_v1 as devval_catalog
+from scripts import native_owner_route_preflight_0056_v1 as owner_route
 from scripts.evidence_json import read_evidence_json
 from tests.integration.test_gate3_canonical_schedule_claim import migrate, pin_record
 from tests.integration.test_gate3_committed_preregistration_seal import (
@@ -244,6 +246,208 @@ async def test_actual0056_fresh_owner_migration_has_independent_source_and_tls_r
                     )
         finally:
             await admin.dispose()
+
+
+async def test_actual0056_password_bearing_owner_route_preflight_is_readonly(
+    tmp_path, monkeypatch
+):
+    """A lab owner, owned DB, CA and two physical reads; trust is not SCRAM."""
+    url, tls = _isolated_tls_database_config()
+    identity, files, files_raw = fitted_measurement._read_hermetic_inputs()
+    source = fitted_measurement.source_identity(identity, files, files_raw)
+    admitted_manifest = os.environ.get(
+        "CTCC_DEVVAL_CUSTODY_TEST_SOURCE_MANIFEST_SHA256"
+    )
+    assert admitted_manifest == source["manifest_sha256"]
+    ca_file = Path(os.environ["CTCC_DEVVAL_CUSTODY_TEST_TLS_CA_FILE"])
+    ca_sha256 = os.environ["CTCC_DEVVAL_CUSTODY_TEST_TLS_CA_SHA256"]
+    database = f"ctcc_native_obs56_{uuid4().hex[:12]}"
+    login = f"ctcc_ownerroute56_{uuid4().hex[:12]}"
+    password = secrets.token_hex(24)
+    quoted_database = _delta56_identifier(database)
+    quoted_login = _delta56_identifier(login)
+    secret_file = tmp_path / "owner-dsn"
+    secret_file.write_bytes(
+        url.set(database=database, username=login, password=password)
+        .render_as_string(hide_password=False)
+        .encode("utf-8")
+    )
+    secret_file.chmod(0o600)
+    admin = create_async_engine(
+        url, poolclass=NullPool, connect_args={"ssl": tls}, hide_parameters=True
+    )
+    role_created = database_created = control_granted = False
+    try:
+        # The secret is a bound value in a transaction-local temp table. The
+        # fixed DO statement never places its value in client SQL or JUnit.
+        try:
+            async with admin.begin() as connection:
+                await connection.exec_driver_sql(
+                    "SET LOCAL password_encryption='scram-sha-256'"
+                )
+                await connection.exec_driver_sql(
+                    "CREATE TEMP TABLE ctcc_owner_setup "
+                    "(name text NOT NULL, password text NOT NULL) ON COMMIT DROP"
+                )
+                await connection.execute(
+                    text("""
+                    INSERT INTO pg_temp.ctcc_owner_setup(name,password)
+                    VALUES (:name,:password)
+                    """),
+                    {"name": login, "password": password},
+                )
+                await connection.exec_driver_sql(
+                    """
+                    DO $ctcc$
+                    DECLARE role_name text; role_password text;
+                    BEGIN
+                      SELECT name, password INTO STRICT role_name, role_password
+                      FROM pg_temp.ctcc_owner_setup;
+                      EXECUTE pg_catalog.format(
+                        'CREATE ROLE %I LOGIN PASSWORD %L',
+                        role_name, role_password
+                      );
+                    END $ctcc$
+                    """
+                )
+        except Exception:  # noqa: BLE001 -- private lab password redaction
+            raise AssertionError("owner_route_lab_role_setup_failed") from None
+        role_created = True
+        async with admin.connect() as connection:
+            await connection.execution_options(isolation_level="AUTOCOMMIT")
+            await connection.exec_driver_sql(
+                f"CREATE DATABASE {quoted_database} OWNER {quoted_login}"
+            )
+        database_created = True
+        migrated = await migrate_fresh_lab_owner_0056_v1(
+            owner_url=url.set(database=database),
+            ca_file=ca_file,
+            ca_sha256=ca_sha256,
+            manifest_sha256=admitted_manifest,
+        )
+        assert migrated.database_head == "0056"
+        async with admin.begin() as connection:
+            await connection.exec_driver_sql(
+                "GRANT EXECUTE ON FUNCTION pg_catalog.pg_control_system() "
+                f"TO {quoted_login}"
+            )
+        control_granted = True
+        target = create_async_engine(
+            url.set(database=database),
+            poolclass=NullPool,
+            connect_args={"ssl": tls},
+        )
+        try:
+            async with target.begin() as connection:
+                await connection.exec_driver_sql(
+                    f"GRANT USAGE ON SCHEMA public TO {quoted_login}"
+                )
+                await connection.exec_driver_sql(
+                    f"GRANT SELECT ON TABLE public.alembic_version TO {quoted_login}"
+                )
+                row = (
+                    await connection.execute(
+                        text("""
+                        SELECT d.oid::bigint, d.datdba::bigint, r.oid::bigint,
+                               r.rolsuper, r.rolcreatedb, r.rolcreaterole,
+                               EXISTS(SELECT 1 FROM pg_catalog.pg_authid a
+                                      WHERE a.oid=r.oid
+                                      AND a.rolpassword LIKE 'SCRAM-SHA-256$%'),
+                               pg_catalog.has_function_privilege(
+                                   r.oid, 'pg_catalog.pg_control_system()', 'EXECUTE'
+                               ),
+                               (SELECT system_identifier::text
+                                FROM pg_catalog.pg_control_system())
+                        FROM pg_catalog.pg_database d
+                        JOIN pg_catalog.pg_roles r ON r.rolname=:role
+                        WHERE d.datname=:database
+                        """),
+                        {"role": login, "database": database},
+                    )
+                ).one()
+        finally:
+            await target.dispose()
+        db_oid, db_owner_oid, role_oid = row[:3]
+        assert db_owner_oid == role_oid
+        assert row[3:8] == (False, False, False, True, True)
+        cluster_id = row[8]
+        assert type(cluster_id) is str and cluster_id.isdecimal()
+        pins = owner_route.OwnerRoutePinsV1(
+            source_manifest_sha256=admitted_manifest,
+            ca_sha256=ca_sha256,
+            cluster_system_identifier_sha256=sha(cluster_id.encode("ascii")),
+            host=url.host,
+            port=url.port,
+            database=database,
+            owner=login,
+            database_oid=db_oid,
+            owner_oid=role_oid,
+            database_head="0056",
+        )
+        physical = []
+        original_create = owner_route.create_async_engine
+
+        def traced_create(*args, **kwargs):
+            engine = original_create(*args, **kwargs)
+
+            @event.listens_for(engine.sync_engine, "connect")
+            def capture(dbapi_connection, _record):
+                physical.append(dbapi_connection)
+
+            return engine
+
+        with monkeypatch.context() as patch:
+            patch.setattr(owner_route, "create_async_engine", traced_create)
+            receipt = await owner_route.preflight_owner_route_0056_v1(
+                pins, owner_dsn_file=secret_file, ca_file=ca_file
+            )
+        assert len(physical) == 2 and physical[0] is not physical[1]
+        assert receipt["status"] == "PASS"
+        assert receipt["source_manifest_sha256"] == admitted_manifest
+        assert receipt["database_owner_verified"] is True
+        assert receipt["independent_readonly_observations"] == 2
+        assert receipt["password_authentication_verified"] is False
+        assert receipt["schema_drift_verified"] is False
+        assert receipt["startup_admission"] is receipt["execution_authority"] is False
+        assert password not in json.dumps(receipt)
+        with pytest.raises(owner_route.OwnerRoutePreflightError):
+            await owner_route.preflight_owner_route_0056_v1(
+                replace(pins, cluster_system_identifier_sha256="0" * 64),
+                owner_dsn_file=secret_file,
+                ca_file=ca_file,
+            )
+        with pytest.raises(owner_route.OwnerRoutePreflightError):
+            await owner_route.preflight_owner_route_0056_v1(
+                replace(pins, owner_oid=role_oid + 1),
+                owner_dsn_file=secret_file,
+                ca_file=ca_file,
+            )
+        with pytest.raises(owner_route.OwnerRoutePreflightError):
+            await owner_route.preflight_owner_route_0056_v1(
+                replace(pins, ca_sha256="0" * 64),
+                owner_dsn_file=secret_file,
+                ca_file=ca_file,
+            )
+    finally:
+        try:
+            if database_created:
+                async with admin.connect() as connection:
+                    await connection.execution_options(isolation_level="AUTOCOMMIT")
+                    await connection.exec_driver_sql(
+                        f"DROP DATABASE {quoted_database} WITH (FORCE)"
+                    )
+            if control_granted:
+                async with admin.begin() as connection:
+                    await connection.exec_driver_sql(
+                        "REVOKE EXECUTE ON FUNCTION pg_catalog.pg_control_system() "
+                        f"FROM {quoted_login}"
+                    )
+            if role_created:
+                async with admin.begin() as connection:
+                    await connection.exec_driver_sql(f"DROP ROLE {quoted_login}")
+        finally:
+            await admin.dispose()
+            secret_file.unlink(missing_ok=True)
 
 
 @pytest.fixture
