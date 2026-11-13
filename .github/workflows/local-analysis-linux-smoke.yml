@@ -156,15 +156,23 @@ jobs:
                   time.sleep(2)
               raise RuntimeError("readiness_timeout")
 
-          phase = "runtime_identity"
+          phase = "host_readiness"
+          substep = "await_ready"
           try:
+              ready()
+              phase = "runtime_identity"
+              substep = "compose_ps_api"
               api_id = subprocess.run(
-                  [*compose, "ps", "-q", "api"], check=True,
+                  [*compose, "ps", "-a", "-q", "api"], check=True,
                   capture_output=True, timeout=20, text=True,
               ).stdout.strip()
               if not api_id:
                   raise RuntimeError("api_container_missing")
+              substep = "inspect_api"
               api = json.loads(docker("container", "inspect", api_id))[0]
+              if api["State"]["Running"] is not True:
+                  raise RuntimeError("api_container_not_running")
+              substep = "inspect_image"
               image = json.loads(docker("image", "inspect", api["Image"]))[0]
               labels = image["Config"]["Labels"]
               if labels["org.opencontainers.image.revision"] != os.environ["GITHUB_SHA"]:
@@ -175,6 +183,7 @@ jobs:
               ).stdout.strip()
               if labels["org.ctcc.source.tree"] != expected_tree:
                   raise RuntimeError("image_tree_mismatch")
+              substep = "inspect_runtime_env"
               configured = dict(
                   item.split("=", 1) for item in api["Config"]["Env"] if "=" in item
               )
@@ -196,6 +205,7 @@ jobs:
                   raise RuntimeError("runtime_local_profile_missing")
               if "API_TOKEN" in configured or "DATABASE_URL" in configured:
                   raise RuntimeError("runtime_secret_config_exposed")
+              substep = "inspect_network"
               networks = api["NetworkSettings"]["Networks"]
               network_name = project + "_analysis_internal"
               if set(networks) != {network_name}:
@@ -203,25 +213,42 @@ jobs:
               network = json.loads(docker("network", "inspect", network_name))[0]
               if network["Internal"] is not True:
                   raise RuntimeError("runtime_egress_boundary_missing")
-              bindings = api["NetworkSettings"]["Ports"]["8000/tcp"]
-              if not bindings or any(
-                  item["HostIp"] != "127.0.0.1" or item["HostPort"] != os.environ["port"]
-                  for item in bindings
+              substep = "inspect_api_bindings"
+              configured_bindings = (api["HostConfig"].get("PortBindings") or {}).get("8000/tcp")
+              if not configured_bindings or any(
+                  item.get("HostIp") != "127.0.0.1" or item.get("HostPort") != os.environ["port"]
+                  for item in configured_bindings
               ):
                   raise RuntimeError("api_loopback_binding_mismatch")
+              active_bindings = (api["NetworkSettings"].get("Ports") or {}).get("8000/tcp")
+              if active_bindings is not None and (
+                  not active_bindings
+                  or any(
+                      item.get("HostIp") != "127.0.0.1" or item.get("HostPort") != os.environ["port"]
+                      for item in active_bindings
+                  )
+              ):
+                  raise RuntimeError("api_active_binding_mismatch")
+              substep = "inspect_dependencies"
               for service in ("postgres", "redis"):
                   service_id = subprocess.run(
-                      [*compose, "ps", "-q", service], check=True,
+                      [*compose, "ps", "-a", "-q", service], check=True,
                       capture_output=True, timeout=20, text=True,
                   ).stdout.strip()
+                  if not service_id:
+                      raise RuntimeError("dependency_container_missing")
                   observed = json.loads(docker("container", "inspect", service_id))[0]
+                  if observed["State"]["Running"] is not True:
+                      raise RuntimeError("dependency_not_running")
                   if set(observed["NetworkSettings"]["Networks"]) != {network_name}:
                       raise RuntimeError("service_network_mismatch")
-                  if any(observed["NetworkSettings"]["Ports"].values()):
+                  if any((observed["NetworkSettings"].get("Ports") or {}).values()):
+                      raise RuntimeError("service_host_port_present")
+                  if any((observed["HostConfig"].get("PortBindings") or {}).values()):
                       raise RuntimeError("service_host_port_present")
 
-              phase = "host_readiness"
-              ready()
+              phase = "local_http"
+              substep = "route_checks"
               status, dashboard = request("/dashboard")
               if status != 200 or b"CTCC" not in dashboard:
                   raise RuntimeError("dashboard_refused")
@@ -334,6 +361,8 @@ jobs:
               )
           except Exception as exc:
               allowed = {
+                  "api_container_missing", "api_container_not_running",
+                  "image_commit_mismatch", "image_tree_mismatch",
                   "readiness_timeout", "readiness_detail_refused", "dashboard_refused",
                   "local_page_refused", "legacy_route_exposed", "write_route_exposed",
                   "paper_unauthorized_guard_refused", "paper_unauthorized_guard_missing",
@@ -344,10 +373,46 @@ jobs:
                   "runtime_execution_flag_mismatch", "runtime_paper_persistence_missing",
                   "runtime_secret_config_exposed", "api_network_mismatch",
                   "runtime_egress_boundary_missing", "api_loopback_binding_mismatch",
-                  "service_network_mismatch", "service_host_port_present",
+                  "api_active_binding_mismatch", "dependency_container_missing",
+                  "dependency_not_running", "service_network_mismatch",
+                  "service_host_port_present",
               }
               code = exc.args[0] if type(exc) is RuntimeError and exc.args and exc.args[0] in allowed else "unexpected_refusal"
-              print("LOCAL_ANALYSIS_SMOKE_REFUSED", phase, code)
+              fixed_substeps = {
+                  "await_ready", "compose_ps_api", "inspect_api", "inspect_image",
+                  "inspect_runtime_env", "inspect_network", "inspect_api_bindings",
+                  "inspect_dependencies", "route_checks",
+              }
+              fixed_kinds = {
+                  "RuntimeError", "KeyError", "TypeError", "AttributeError",
+                  "CalledProcessError", "TimeoutExpired", "JSONDecodeError",
+                  "HTTPError", "URLError", "IndexError", "ValueError",
+              }
+              kind = type(exc).__name__
+              if kind not in fixed_kinds:
+                  kind = "other"
+              state, health, exit_code = "unknown", "unknown", "unknown"
+              try:
+                  diagnostic_id = subprocess.run(
+                      [*compose, "ps", "-a", "-q", "api"], check=True,
+                      capture_output=True, timeout=10, text=True,
+                  ).stdout.strip()
+                  if diagnostic_id:
+                      diagnostic = json.loads(docker("container", "inspect", diagnostic_id))[0]
+                      observed = diagnostic.get("State") or {}
+                      if observed.get("Status") in {"created", "running", "restarting", "exited", "paused", "dead", "removing"}:
+                          state = observed["Status"]
+                      if (observed.get("Health") or {}).get("Status") in {"starting", "healthy", "unhealthy"}:
+                          health = observed["Health"]["Status"]
+                      if type(observed.get("ExitCode")) is int and 0 <= observed["ExitCode"] <= 255:
+                          exit_code = str(observed["ExitCode"])
+              except Exception:
+                  pass
+              print(
+                  "LOCAL_ANALYSIS_SMOKE_REFUSED", phase,
+                  substep if substep in fixed_substeps else "unknown_substep",
+                  code, kind, state, health, exit_code,
+              )
               raise SystemExit(1) from None
           PY
 

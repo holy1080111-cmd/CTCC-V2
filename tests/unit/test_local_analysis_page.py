@@ -47,7 +47,7 @@ def test_local_analysis_page_only_posts_exact_file_to_existing_offline_api() -> 
     assert paths["/api/paper/ticks"].methods == {"POST"}
     assert 'paperPost("/api/paper/orders", token' in html
     assert 'paperPost("/api/paper/ticks", token' in html
-    assert "paperLimitWrap.hidden = paperMode.value !== \"limit\";" in html
+    assert 'paperLimitWrap.hidden = paperMode.value !== "limit";' in html
     assert "client_order_id: pendingPaperOrder.id" in html
     assert "if (pendingPaperOrder.uncertain)" in html
     assert "paperConfirm.checked = false;" in html
