@@ -2829,3 +2829,92 @@ async def test_actual0056_restricted_account_control_read_replays_exact_scope(
                 "ALTER TABLE public.demo_control_journal DISABLE ROW LEVEL SECURITY"
             )
     assert (await read(first_scope)).control.event_sha256 == first.event_sha256
+
+
+async def test_actual0056_restricted_writer_control_replays_and_holds_uid_lock(
+    _actual_0056_role_observation_lab,
+):
+    from app.core import native_locked_demo_control_0056_v1 as locked56
+    from app.database.repositories.demo_control import DemoControlRepository
+    from app.trade_qualification.demo_control import ControlScope, account_lock_key
+
+    owner, owner_factory, selected, _ = _actual_0056_role_observation_lab
+    seed = DemoControlRepository(owner_factory, clock=lambda: datetime.now(UTC))
+    first_scope = ControlScope("demo", "000001")
+    second_scope = ControlScope("demo", "1")
+    await seed.latch_stop(first_scope, command_id="a" * 64)
+    first = await seed.latch_stop(first_scope, command_id="b" * 64)
+    second = await seed.latch_stop(second_scope, command_id="c" * 64)
+
+    async def try_lock(connection, scope):
+        return await connection.scalar(
+            text("SELECT pg_catalog.pg_try_advisory_xact_lock(:key)"),
+            {"key": account_lock_key(scope)},
+        )
+
+    async with selected.writer_factory() as session, session.begin():
+        transaction = session.sync_session.get_transaction()
+        actual = await locked56.read_locked_demo_control_0056_v1(
+            selected, session, first_scope
+        )
+        assert actual.control.state == first.state and first.state.revision == 2
+        assert actual.control.event_sha256 == first.event_sha256
+        assert actual.control.state.emergency_stop is True
+        assert actual.control.observed_at >= first.state.updated_at
+        assert actual.database_head == "0056"
+        assert actual.issuance_authority is actual.execution_authority is False
+        assert session.sync_session.get_transaction() is transaction
+        async with owner.begin() as competing:
+            assert await try_lock(competing, first_scope) is False
+            assert await try_lock(competing, second_scope) is True
+            assert (
+                await competing.scalar(
+                    text("""
+                SELECT account_id FROM public.demo_account_controls
+                WHERE environment='demo' AND account_id=:uid
+                FOR UPDATE SKIP LOCKED
+                """),
+                    {"uid": first_scope.account_id},
+                )
+                is None
+            )
+
+    async with owner.begin() as competing:
+        assert await try_lock(competing, first_scope) is True
+    async with selected.writer_factory() as session, session.begin():
+        observed_second = await locked56.read_locked_demo_control_0056_v1(
+            selected, session, second_scope
+        )
+        assert observed_second.control.state == second.state
+        assert observed_second.control.event_sha256 != actual.control.event_sha256
+        assert (
+            observed_second.server_incarnation_sha256
+            == actual.server_incarnation_sha256
+        )
+
+    async with owner_factory() as owner_session, owner_session.begin():
+        with pytest.raises(locked56.NativeLockedDemoControl0056Error):
+            await locked56.read_locked_demo_control_0056_v1(
+                selected, owner_session, first_scope
+            )
+    with pytest.raises(locked56.NativeLockedDemoControl0056Error):
+        async with selected.writer_factory() as session, session.begin():
+            await session.execute(text("SET TRANSACTION READ ONLY"))
+            await locked56.read_locked_demo_control_0056_v1(
+                selected, session, first_scope
+            )
+    with pytest.raises(locked56.NativeLockedDemoControl0056Error):
+        async with selected.writer_factory() as session, session.begin():
+            await locked56.read_locked_demo_control_0056_v1(
+                selected, session, ControlScope("demo", "000002")
+            )
+
+    async with owner.begin() as connection:
+        await connection.exec_driver_sql(
+            "ALTER TABLE public.demo_control_journal ENABLE ROW LEVEL SECURITY"
+        )
+    with pytest.raises(locked56.NativeLockedDemoControl0056Error):
+        async with selected.writer_factory() as session, session.begin():
+            await locked56.read_locked_demo_control_0056_v1(
+                selected, session, first_scope
+            )
