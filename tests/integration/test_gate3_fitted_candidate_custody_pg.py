@@ -121,6 +121,9 @@ _CANDIDATE_0056_SOURCE_PINS = {
 _STABLE_ROLE_IDENTITY_V2_SOURCE_SHA256 = (
     "e309e6847ca4cd0d94e932fe837fb70b95e184d6d8d30f822ca0cfed72e59290"
 )
+_STATIC_CUSTODY_V2_SOURCE_SHA256 = (
+    "8b6c03d5a9ce40c9506f8253b375c5d51bb0527411769862db9b141b415f0171"
+)
 _READ = "gate3_fitted_binding_read(text)"
 _ACK_READ = "gate3_fitted_binding_ack_read(text)"
 _ROLES = {
@@ -2493,6 +2496,74 @@ async def test_actual0056_stable_role_identity_on_distinct_connections(
     with pytest.raises(stable56.NativeRoleIdentity0056Error):
         stable56.compare_static_role_identity_0056_v2(
             first, **{**expected, "expected_role_oids": changed}
+        )
+
+
+async def test_actual0056_static_custody_view_requires_fresh_strict_catalog(
+    _actual_0056_role_observation_lab,
+):
+    from app.core import native_static_custody_0056_v2 as static56
+
+    _, _, selected, _ = _actual_0056_role_observation_lab
+    identity, files, files_raw = fitted_measurement._read_hermetic_inputs()
+    source = fitted_measurement.source_identity(identity, files, files_raw)
+    relative = "app/core/native_static_custody_0056_v2.py"
+    assert files[relative]["sha256"] == _STATIC_CUSTODY_V2_SOURCE_SHA256
+    assert sha((_SOURCE_ROOT / relative).read_bytes()) == (
+        _STATIC_CUSTODY_V2_SOURCE_SHA256
+    )
+    assert source["manifest_sha256"] == sha(
+        (_SOURCE_ROOT / "MANIFEST.sha256").read_bytes()
+    )
+    observed = await static56.observe_static_custody_0056_v2(
+        selected, source=_SOURCE_ROOT
+    )
+    route = observation.selectors._database_route(
+        selected.custody_factory.kw["bind"].url
+    )
+    async with selected.custody_factory() as session, session.begin():
+        await observation.current55._session_settings(session, frame=False)
+        actor = await observation._identity_at_0056(
+            session, selected.custody_factory.kw["bind"].url.username
+        )
+        table_owner_oid = await session.scalar(
+            text(
+                "SELECT relowner::bigint FROM pg_catalog.pg_class "
+                "WHERE oid=pg_catalog.to_regclass('public.public_runtime_raw_bundles_v1')"
+            )
+        )
+    assert observed.database_oid == actor[4]
+    assert observed.custody_role_oid == actor[3]
+    assert observed.table_owner_oid == table_owner_oid
+    assert observed.database_name == route[3]
+    assert observed.route == route
+    assert observed.inherited_native_definitions_sha256 == _N234_INHERITED_NATIVE_SHA256
+    assert (
+        observed.granted_inherited_acl_shape_sha256 == _N234_POSTGRANT_ACL_SHAPE_SHA256
+    )
+    assert len(observed.full_current_catalog_sha256) == 64
+    expected = {
+        "expected_database_oid": observed.database_oid,
+        "expected_database_name": observed.database_name,
+        "expected_custody_role_name": observed.custody_role_name,
+        "expected_custody_role_oid": observed.custody_role_oid,
+        "expected_table_owner_oid": observed.table_owner_oid,
+        "expected_route": observed.route,
+        "expected_inherited_native_definitions_sha256": (
+            observed.inherited_native_definitions_sha256
+        ),
+        "expected_granted_inherited_acl_shape_sha256": (
+            observed.granted_inherited_acl_shape_sha256
+        ),
+        "expected_static_identity_sha256": observed.static_identity_sha256,
+    }
+    matched = static56.compare_static_custody_0056_v2(observed, **expected)
+    assert matched["admission"] == "DENY"
+    assert matched["startup_admission"] is matched["execution_authority"] is False
+    with pytest.raises(static56.NativeStaticCustody0056Error):
+        static56.compare_static_custody_0056_v2(
+            observed,
+            **{**expected, "expected_custody_role_oid": observed.custody_role_oid + 1},
         )
 
 

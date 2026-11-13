@@ -100,6 +100,10 @@ _FITTED_CASES = (
     ),
     (
         fitted_measurement.CASE[0],
+        "test_actual0056_static_custody_view_requires_fresh_strict_catalog",
+    ),
+    (
+        fitted_measurement.CASE[0],
         "test_actual0056_lab_only_recovery_cas_after_fresh_restricted_observations",
     ),
     (
