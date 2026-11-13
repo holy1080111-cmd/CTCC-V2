@@ -35,6 +35,38 @@ Public failures use only `raw_forensics_reconstruction_invalid` or
 Process-control exceptions are not caught. Bytes and pin types are exact, bounded
 and checked before decoding; custom Python serializers/iterators are not invoked.
 
+## Replay a retained case offline
+
+The operator command uses the same evaluator. Put `submission.json`,
+`account.json`, `attribution.json` and, if present, `holding-path.json` in an
+existing owner-private directory outside the source checkout. Keep the original
+collection or export hashes. The canonical `source-pins.json` is compact,
+key-sorted JSON without a trailing newline. It has exactly these keys:
+
+- `schema` with value `ctcc.raw_trade_forensics_replay_source_pins.v1`.
+- `submission_report_sha256`, `account_packet_sha256`, `account_plan_sha256`,
+  and `attribution_sha256`, all lowercase SHA-256. The account plan hash is
+  the original capture's plan digest.
+- `holding_path_sha256`, either the original path digest or JSON `null`.
+
+Use the independently retained SHA-256 of that pins file. Reconstruction
+creates `forensics-receipt.json` without replacing any existing file. The
+command then reopens the directory, reads the original sources and receipt,
+and reruns the computation.
+
+```text
+python -B -m scripts.replay_raw_trade_forensics --source-directory /private/case --source-pins-sha256 <original pins digest> --reconstruct
+python -B -m scripts.replay_raw_trade_forensics --source-directory /private/case --source-pins-sha256 <original pins digest> --verify-receipt-sha256 <retained receipt digest>
+```
+
+Keep the receipt private. It contains account-linked forensic data. The
+terminal prints the receipt digest and fixed authority flags. Exit `0`
+reports a verified offline replay. Bad or changed inputs, a publication
+conflict or a failed readback produce a fixed refusal with exit `1`. If a
+late failure left a receipt file, retain it and use verify mode against its
+original source bytes. Successful replay leaves exchange authenticity,
+coverage and trading authority unverified.
+
 The submission must be an explicitly acknowledged Demo report. A previously
 uncertain submission needs the upstream reconciliation workflow first; this module
 does not rewrite its state. Replaying an acknowledgement still proves neither a
