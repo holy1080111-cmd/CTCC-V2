@@ -1,0 +1,122 @@
+# Render with scripts/prepare_local_analysis_installation.py. The rendered file
+# contains only private secret paths, never secret values or exchange keys.
+name: ctcc-analysis-__INSTALL_ID__
+
+services:
+  api:
+    image: ctcc-analysis-__INSTALL_ID__:__SOURCE_SHORT__
+    build:
+      context: __SOURCE_ROOT_JSON__
+      dockerfile: Dockerfile
+      args:
+        CTCC_SOURCE_COMMIT: __SOURCE_COMMIT__
+        CTCC_SOURCE_TREE: __SOURCE_TREE__
+    pull_policy: build
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |-
+        DATABASE_URL="$$(cat /run/secrets/analysis_database_url)"
+        API_TOKEN="$$(cat /run/secrets/analysis_api_token)"
+        export DATABASE_URL API_TOKEN
+        alembic upgrade head
+        exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
+    environment:
+      ENVIRONMENT: production
+      TRADING_MODE: analysis_only
+      WEB_CONCURRENCY: "1"
+      AUTO_TRADE: "false"
+      LIVE_TRADING: "false"
+      CTCC_NATIVE_ONLY_LIFESPAN_V1: "false"
+      OKX_WS_ENABLED: "false"
+      OKX_DEMO_ENABLED: "false"
+      OKX_DEMO_ALLOW_ORDER_WRITES: "false"
+      OKX_DEMO_AUTO_EXECUTION: "false"
+      OKX_DEMO_AUTO_RECONCILE_ON_START: "false"
+      OKX_DEMO_OBSERVABILITY_ENABLED: "false"
+      OKX_DEMO_SOAK_ENABLED: "false"
+      OKX_DEMO_SOAK_ALLOW_EXECUTE: "false"
+      OKX_DEMO_CONTINUOUS_SESSION_ENABLED: "false"
+      OKX_LIVE_ENABLED: "false"
+      OKX_LIVE_ALLOW_ORDER_WRITES: "false"
+      OKX_LIVE_AUTO_EXECUTION: "false"
+      OKX_LIVE_AUTO_RECONCILE_ON_START: "false"
+      PAPER_AUTO_TICKS: "false"
+      PAPER_AUTO_EXECUTION: "false"
+      PAPER_PERSISTENCE_ENABLED: "true"
+      NOTION_OUTBOX_ENABLED: "false"
+      SUBMISSION_OUTBOX_ENABLED: "false"
+      READINESS_REQUIRE_DATABASE: "true"
+      READINESS_REQUIRE_REDIS: "true"
+      REDIS_URL: redis://redis:6379/0
+    secrets:
+      - analysis_database_url
+      - analysis_api_token
+    ports:
+      - __LOOPBACK_PORT_JSON__
+    networks: [analysis_internal]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    cpus: "0.75"
+    mem_limit: 1g
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/readiness', timeout=3)"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  postgres:
+    image: postgres:17-alpine@sha256:f02121de6f74d30d8a94cd1d9584125e2178d7e6c377d8130112d4e52d867995
+    environment:
+      POSTGRES_USER: ctcc
+      POSTGRES_DB: ctcc
+      POSTGRES_PASSWORD_FILE: /run/secrets/analysis_postgres_password
+    secrets:
+      - analysis_postgres_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks: [analysis_internal]
+    restart: unless-stopped
+    cpus: "0.75"
+    mem_limit: 768m
+    healthcheck:
+      test: ["CMD-SHELL", "password=$$(cat /run/secrets/analysis_postgres_password) && test -n \"$$password\" && result=$$(PGPASSWORD=\"$$password\" psql -X -w -h 127.0.0.1 -U ctcc -d ctcc -tA -v ON_ERROR_STOP=1 -c 'SELECT 1') && test \"$$result\" = 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:8-alpine@sha256:bd999b5cfee25fb24b8320a31fddbd69f462df44c8138c66e369582937beebc0
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    networks: [analysis_internal]
+    restart: unless-stopped
+    cpus: "0.25"
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+networks:
+  analysis_internal:
+    internal: true
+
+volumes:
+  postgres_data:
+  redis_data:
+
+secrets:
+  analysis_postgres_password:
+    file: __POSTGRES_PASSWORD_PATH_JSON__
+  analysis_database_url:
+    file: __DATABASE_URL_PATH_JSON__
+  analysis_api_token:
+    file: __API_TOKEN_PATH_JSON__

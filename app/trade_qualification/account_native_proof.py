@@ -424,6 +424,18 @@ def scope_sha256(scope):
 
 
 def _source(chain, scope, *, proof_schema=SCHEMA):
+    return _verify_source(chain, scope, proof_schema=proof_schema, include_joins=True)
+
+
+def _original_source_reference(chain, scope):
+    """Verify an original source without serializing discarded proof joins."""
+    reference, _, _, _ = _verify_source(
+        chain, scope, proof_schema=SCHEMA, include_joins=False
+    )
+    return reference
+
+
+def _verify_source(chain, scope, *, proof_schema, include_joins):
     checked_bootstrap(scope, LedgerScope)
     if (
         type(chain) is not tuple
@@ -562,6 +574,8 @@ def _source(chain, scope, *, proof_schema=SCHEMA):
             raise NativeAccountProofError(
                 "native_account_original_tls_hostname_invalid"
             )
+        if not include_joins:
+            continue
         joins.append(
             {
                 "request_index": index,

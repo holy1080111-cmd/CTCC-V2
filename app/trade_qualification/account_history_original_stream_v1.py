@@ -221,8 +221,7 @@ def original_history_page_sha256_v1(page):
 
 
 def _source(chain, scope):
-    reference, _, _, _ = proof._source(chain, scope)
-    return reference
+    return proof._original_source_reference(chain, scope)
 
 
 def _blocker_codes(values, *, allowed=ORIGINAL_BLOCKER_CODES):
@@ -323,15 +322,18 @@ def _original_receipt(frame, document, scope, index):
         ((frame.chain, reference),), scope=scope, window=window
     )
     facts, coverage = _membership(single)
-    replayed = lifecycle._json(
-        observed._replay(
+    # With one source there is no previous capture for the adjacency policy.
+    # The same replay supplies membership and receipt comparisons in that case.
+    combined = single
+    if prior:
+        combined = observed._replay(
             (*prior, (frame.chain, reference)),
             scope,
             window,
             observed.POLICY_SHA256,
             adjacent=False,
-        ).receipt_json
-    )
+        )
+    replayed = lifecycle._json(combined.receipt_json)
     for name in (
         "captures",
         "source_index",

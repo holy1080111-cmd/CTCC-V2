@@ -1002,14 +1002,14 @@ def _closed_original_source_leaf(error):
 
 _DIAGNOSTIC_SOURCE_LOCATORS = (
     ("PAGE_MEMO", "app/trade_qualification/account_original_page_memo_v1.py", 332),
-    ("STREAM", "app/trade_qualification/account_history_original_stream_v1.py", 1073),
+    ("STREAM", "app/trade_qualification/account_history_original_stream_v1.py", 1075),
     ("WIRE", "app/database/repositories/account_history_original_frame_v1.py", 489),
     (
         "PG_NATIVE",
         "app/database/repositories/account_history_original_native_read_v1.py",
         374,
     ),
-    ("NATIVE_PROOF", "app/trade_qualification/account_native_proof.py", 1145),
+    ("NATIVE_PROOF", "app/trade_qualification/account_native_proof.py", 1159),
     ("OBSERVED", "app/trade_qualification/account_observation_index.py", 786),
     ("LIFECYCLE", "app/trade_qualification/account_lifecycle_history.py", 865),
     ("PARTITION", "app/domain/account_history_partition_v1.py", 723),

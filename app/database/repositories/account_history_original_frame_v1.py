@@ -336,7 +336,7 @@ def _decode_chain(value, scope, received_at):
         rows.append(readback)
         previous, prior_recorded = journal.digest(readback.event.event_json), recorded
     chain = tuple(rows)
-    reference, _, _, _ = proof._source(chain, scope)
+    reference = proof._original_source_reference(chain, scope)
     if observed.reference_document(reference) != value["reference"]:
         _deny("original_frame_original_chain_reference_changed")
     return chain

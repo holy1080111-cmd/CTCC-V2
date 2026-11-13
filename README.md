@@ -7,6 +7,9 @@ Live remains default OFF and requires contemporaneous operator authorization.
 
 ## Use CTCC analysis with a saved market snapshot
 
+The [local analysis installation](docs/local_analysis_installation.md) runs
+the dashboard and persists manual Paper state on this PC.
+
 The regular app exposes `POST /api/analysis/snapshot` in `/docs`. Authorize
 with the local CTCC API token, then provide the unmodified MarketSnapshot JSON
 saved from `GET /api/market/snapshot/{symbol}` on a connected CTCC instance.

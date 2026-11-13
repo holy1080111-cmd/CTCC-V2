@@ -22,6 +22,7 @@ from tests.unit.test_account_history_original_stream_v1 import (
     original_chain,
     originals,
 )
+from tests.unit.test_account_history_query_verifier_contracts import rewrite
 from tests.unit.test_qualification_account_capture import NOW
 
 RECEIVED = NOW + timedelta(days=1)
@@ -263,6 +264,53 @@ async def test_same_chain_native_proof_retains_reference_and_records(original_wi
     )
 
 
+async def test_reference_verification_omits_only_unused_proof_joins(
+    original_wire, monkeypatch
+):
+    frames, _, _ = original_wire
+    chain = frames[-1].chain
+    existing, packet, _, joins = proof._source(chain, LEDGER_SCOPE)
+    assert len(joins) == len(packet.observations) > 0
+    real_canonical = journal.canonical
+
+    def reject_unused_phase_serialization(value):
+        if type(value) is dict and value.get("version") == (
+            "ctcc.demo_account_ingestion_event.v1"
+        ):
+            pytest.fail("reference-only verification rebuilt an unused proof join")
+        return real_canonical(value)
+
+    monkeypatch.setattr(journal, "canonical", reject_unused_phase_serialization)
+    reference = proof._original_source_reference(chain, LEDGER_SCOPE)
+    assert observed.reference_document(reference) == observed.reference_document(
+        existing
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "changed", "reason"),
+    (
+        ("tls_provenance", "synthetic_transport", "original_tls_required"),
+        ("tls_hostname", "different.invalid", "original_tls_hostname_invalid"),
+    ),
+)
+async def test_reference_verification_denies_changed_tls_lineage(
+    original_wire, field, changed, reason
+):
+    frames, _, _ = original_wire
+
+    def change(record, _raw, _packet):
+        if record["kind"] in ("page_validated", "raw_finalized"):
+            record["data"][field] = changed
+
+    chain = tuple(rewrite(frames[-1].chain, change))
+    for verify in (proof._source, proof._original_source_reference):
+        with pytest.raises(
+            proof.NativeAccountProofError, match=f"^native_account_{reason}$"
+        ):
+            verify(chain, LEDGER_SCOPE)
+
+
 @pytest.mark.parametrize(
     "field",
     (
@@ -273,8 +321,9 @@ async def test_same_chain_native_proof_retains_reference_and_records(original_wi
         "readback_at",
     ),
 )
+@pytest.mark.parametrize("verify", (proof._source, proof._original_source_reference))
 async def test_same_chain_native_proof_denies_intermediate_event_swap(
-    original_wire, monkeypatch, field
+    original_wire, monkeypatch, field, verify
 ):
     frames, _, _ = original_wire
     chain = frames[-1].chain
@@ -299,7 +348,7 @@ async def test_same_chain_native_proof_denies_intermediate_event_swap(
     with pytest.raises(
         proof.NativeAccountProofError, match="exact_source_chain_required"
     ):
-        proof._source(chain, LEDGER_SCOPE)
+        verify(chain, LEDGER_SCOPE)
 
 
 @pytest.mark.parametrize(

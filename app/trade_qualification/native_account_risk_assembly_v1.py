@@ -3153,6 +3153,8 @@ _V3_DECLARED_BINDINGS = (
             "_stamp",
             "scope_sha256",
             "_source",
+            "_original_source_reference",
+            "_verify_source",
             "_time_trace",
             "_clocks",
             "_replay",
@@ -5178,6 +5180,7 @@ _V4_PIN_FUNCTIONS = tuple(
                 "_finish_financial_stream_v3",
                 "_financial_stream_policy_bytes_v3",
                 "_original_receipt",
+                "_source",
             ),
         ),
         (
@@ -5228,9 +5231,9 @@ _V4_PIN_DATA = tuple(
         ),
         (history, ("_PARTITION_CURRENT_V2",)),
         (history.current_bundle, ("SCHEMA", "POLICY_SHA256")),
-        (_v4_wire, ("journal",)),
+        (_v4_wire, ("journal", "proof")),
         (_v4_wire.journal, ("_ISSUER", "_JournalEvent")),
-        (_v4_stream, ("POLICY_SHA256",)),
+        (_v4_stream, ("POLICY_SHA256", "proof")),
         (_v4_financial, ("POLICY_SHA256",)),
         (
             _hwm_measurement,

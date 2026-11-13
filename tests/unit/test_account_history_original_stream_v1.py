@@ -220,6 +220,31 @@ def replay(frames, *, supplied_pages=None, **changes):
     )
 
 
+async def test_single_source_membership_and_receipt_share_one_exact_replay(
+    monkeypatch,
+):
+    frames = originals(await original_chain(monkeypatch), count=2, witness_at={2: (1,)})
+    original_replay = observed._replay
+    chain = frames[0].chain
+    reference = observed.source_reference(chain)
+    arguments = (((chain, reference),), LEDGER_SCOPE, WINDOW, observed.POLICY_SHA256)
+    assert (
+        original_replay(*arguments).receipt_json
+        == original_replay(*arguments, adjacent=False).receipt_json
+    )
+
+    calls = []
+
+    def count_sources(sources, *args, **kwargs):
+        calls.append(len(sources))
+        return original_replay(sources, *args, **kwargs)
+
+    monkeypatch.setattr(observed, "_replay", count_sources)
+    result = replay(frames)
+    assert calls == [1, 1, 2]
+    assert json.loads(result.receipt_json)["full_original_genesis_sources_replayed"]
+
+
 @pytest.mark.asyncio
 async def test_full_original32_then33_replays_every_raw_source_and_preserves_genesis(
     monkeypatch,
