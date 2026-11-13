@@ -47,6 +47,10 @@ _EXACT_HOST_HELPERS = (
 )
 _PARENT_HEAD_SQL = "SELECT version_num FROM public.alembic_version"
 _FITTED_JUNIT = "test-results/fitted-catalog-diagnostic.xml"
+PREDICTION_DIAGNOSTIC_CASE = (
+    "tests.integration.test_devval_prediction_custody_diagnostic_pg_v1",
+    "test_native_tls_validation_prediction_schedule_slot_and_independent_ack",
+)
 _FITTED_CASES = (
     contract.devval_catalog.HERMETIC_CATALOG_CASE,
     fitted_measurement.CASE,
@@ -76,6 +80,7 @@ _FITTED_CASES = (
         "test_uncertain_and_expired_intent_read_is_audit_only_and_hold_remains",
     ),
     contract.PREDICTION_CUSTODY_CASE,
+    PREDICTION_DIAGNOSTIC_CASE,
 )
 
 

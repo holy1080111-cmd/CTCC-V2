@@ -311,10 +311,11 @@ def test_actual_post_common_finally_refuses_unknown_cleanup_and_retains_failure_
 
 def test_pg2_owns_every_whole_module_and_keeps_both_stateful_anchors_on_zero():
     owned = [selection.postgres_paths(index) for index in range(2)]
-    assert len(selection.POSTGRES_TEST_PATHS) == 88
-    assert [len(paths) for paths in owned] == [40, 48]
+    assert len(selection.POSTGRES_TEST_PATHS) == 89
+    assert [len(paths) for paths in owned] == [40, 49]
     assert selection.DEVVAL_CUSTODY_TEST_PATH in owned[1]
     assert selection.FITTED_CUSTODY_TEST_PATH in owned[1]
+    assert selection.DEVVAL_PREDICTION_DIAGNOSTIC_TEST_PATH in owned[1]
     assert not owned[0] & owned[1]
     assert owned[0] | owned[1] == selection.POSTGRES_TEST_PATHS
     assert selection.POSTGRES_ANCHOR_PATHS <= owned[0]
@@ -330,7 +331,10 @@ def test_pg2_owns_every_whole_module_and_keeps_both_stateful_anchors_on_zero():
     for path in selection.POSTGRES_TEST_PATHS:
         if path in selection.POSTGRES_ANCHOR_PATHS:
             expected = 0
-        elif path == selection.FITTED_CUSTODY_TEST_PATH:
+        elif path in (
+            selection.FITTED_CUSTODY_TEST_PATH,
+            selection.DEVVAL_PREDICTION_DIAGNOSTIC_TEST_PATH,
+        ):
             expected = 1
         else:
             expected = (
@@ -507,11 +511,15 @@ def test_fitted_diagnostic_is_explicit_and_cases_only(
     if accepted:
         args, observed = current56._arguments()
         assert args.fitted_catalog_diagnostic is True and observed == 1
-        assert len(current56._FITTED_CASES) == 10
+        assert len(current56._FITTED_CASES) == 11
         assert current56_contract.devval_catalog.HERMETIC_CATALOG_CASE in (
             current56._FITTED_CASES
         )
         assert current56_contract.PREDICTION_CUSTODY_CASE in current56._FITTED_CASES
+        assert current56.PREDICTION_DIAGNOSTIC_CASE in current56._FITTED_CASES
+        assert current56.PREDICTION_DIAGNOSTIC_CASE not in (
+            current56_contract.CURRENT56_PG1_REQUIRED_CASES
+        )
         for name in (
             "test_actual0056_native_lifespan_denies_before_recovery_cas",
             "test_actual0056_owner_grant_lock_and_rollback",

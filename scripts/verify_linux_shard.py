@@ -13,10 +13,14 @@ import os
 from pathlib import Path
 
 DEVVAL_CUSTODY_TEST_PATH = "tests/integration/test_devval_campaign_custody_pg_v1.py"
+DEVVAL_PREDICTION_DIAGNOSTIC_TEST_PATH = (
+    "tests/integration/test_devval_prediction_custody_diagnostic_pg_v1.py"
+)
 FITTED_CUSTODY_TEST_PATH = "tests/integration/test_gate3_fitted_candidate_custody_pg.py"
 POSTGRES_TEST_PATHS = frozenset(
     {
         DEVVAL_CUSTODY_TEST_PATH,
+        DEVVAL_PREDICTION_DIAGNOSTIC_TEST_PATH,
         FITTED_CUSTODY_TEST_PATH,
         "tests/integration/test_qualification_ledger_repository.py",
         "tests/integration/test_qualification_ledger_restricted_role_repository.py",
@@ -219,7 +223,7 @@ def postgres_component(path: str) -> int:
         raise ValueError("postgres_component_path_invalid")
     if path in POSTGRES_ANCHOR_PATHS:
         return 0
-    if path == FITTED_CUSTODY_TEST_PATH:
+    if path in (FITTED_CUSTODY_TEST_PATH, DEVVAL_PREDICTION_DIAGNOSTIC_TEST_PATH):
         return 1
     return (
         int.from_bytes(hashlib.sha256(path.encode("utf-8")).digest()[:8], "big")
