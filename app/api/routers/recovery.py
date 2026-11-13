@@ -4,6 +4,7 @@ from app.api.security import require_ctcc_token
 from app.domain.recovery import AuditEntryView, RecoveryRequest, RecoveryStatus
 from app.orchestrator.runtime import auto_paper_orchestrator
 from app.paper import PaperPersistenceError
+from app.paper.execution_service import PaperPersistenceOutcomeUnknown
 from app.paper.service import paper_service, persistence_repository
 
 router = APIRouter(
@@ -15,7 +16,12 @@ router = APIRouter(
 
 @router.get("/status", response_model=RecoveryStatus)
 async def recovery_status() -> RecoveryStatus:
-    return await paper_service.recovery_status()
+    try:
+        return await paper_service.recovery_status()
+    except PaperPersistenceOutcomeUnknown as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+        ) from exc
 
 
 @router.post("/reconcile", response_model=RecoveryStatus)
@@ -28,6 +34,10 @@ async def reconcile(request: RecoveryRequest) -> RecoveryStatus:
         )
     try:
         return await paper_service.reconcile(request.action)
+    except PaperPersistenceOutcomeUnknown as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+        ) from exc
     except PaperPersistenceError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail=str(exc)

@@ -1,13 +1,27 @@
 import asyncio
 from decimal import Decimal
+from unittest.mock import AsyncMock
+from uuid import uuid4
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from app.database.repositories.persistence import state_checksum
+from app.api.routers import paper as paper_api
+from app.api.security import require_ctcc_token
+from app.database.repositories.persistence import (
+    PaperCommitOutcomeUnknown,
+    PersistenceRepository,
+    state_checksum,
+)
 from app.domain.paper import ManualCloseRequest, MarketTickRequest, PaperOrderRequest
 from app.paper.engine import PaperBroker, PaperBrokerError
-from app.paper.execution_service import PaperExecutionService, PaperPersistenceError
+from app.paper.execution_service import (
+    PaperExecutionService,
+    PaperPersistenceError,
+    PaperPersistenceOutcomeUnknown,
+)
 
 
 class FakeRepository:
@@ -81,6 +95,108 @@ async def test_persistence_failure_rolls_back_memory() -> None:
 
     assert service.state() == before
     assert repository.state == before
+    repository.fail = False
+    assert (await service.submit(request())).status == "filled"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("committing", [False, True])
+async def test_repository_distinguishes_failure_before_commit_boundary(
+    monkeypatch, committing: bool
+) -> None:
+    repository = PersistenceRepository(None)
+    underlying = RuntimeError("private connection failure")
+
+    async def fail(*_args, mark_committing, **_kwargs):
+        if committing:
+            mark_committing()
+        raise underlying
+
+    save = AsyncMock(side_effect=fail)
+    monkeypatch.setattr(repository, "_save_paper_state", save)
+    if committing:
+        with pytest.raises(
+            PaperCommitOutcomeUnknown, match="^paper_persistence_outcome_unknown$"
+        ):
+            await repository.save_paper_state(PaperBroker().state(), action="test")
+    else:
+        with pytest.raises(RuntimeError) as raised:
+            await repository.save_paper_state(PaperBroker().state(), action="test")
+        assert raised.value is underlying
+    save.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_committed_but_unacknowledged_save_fences_until_fresh_recovery() -> None:
+    class CommittedThenLostRepository(FakeRepository):
+        async def save_paper_state(self, state, *, action, **kwargs):
+            written = await super().save_paper_state(state, action=action, **kwargs)
+            if action == "paper_order_submitted":
+                raise PaperCommitOutcomeUnknown("do not expose private driver details")
+            return written
+
+    repository = CommittedThenLostRepository()
+    broker = PaperBroker()
+    service = PaperExecutionService(broker, repository)
+    await service.recover()
+    before = broker.state()
+    with pytest.raises(
+        PaperPersistenceOutcomeUnknown, match="^paper_persistence_outcome_unknown$"
+    ):
+        await service.submit(request())
+    assert broker.state() == before
+    assert len(repository.state.orders) == 1
+    for action in (
+        lambda: service.submit(request()),
+        lambda: service.cancel(uuid4()),
+        lambda: service.close(uuid4(), price=Decimal(100)),
+        lambda: service.tick(symbol=request().symbol, price=Decimal(100)),
+        service.reset,
+        service.recover,
+        lambda: service.reconcile("persist_memory"),
+        lambda: service.reconcile("restore_from_database"),
+        service.recovery_status,
+    ):
+        with pytest.raises(PaperPersistenceOutcomeUnknown):
+            await action()
+    for load in (service.state, service.account):
+        with pytest.raises(PaperPersistenceOutcomeUnknown):
+            load()
+    assert await service.persist_now("paper_state_shutdown_checkpoint") is None
+    assert repository.actions == ["paper_state_initialized", "paper_order_submitted"]
+    fresh_process = PaperExecutionService(PaperBroker(), repository)
+    assert (await fresh_process.recover()).recovered
+    assert fresh_process.state() == repository.state
+    assert repository.actions == ["paper_state_initialized", "paper_order_submitted"]
+
+
+def test_local_paper_response_is_fixed_when_commit_outcome_is_unknown(monkeypatch):
+    class UnacknowledgedRepository(FakeRepository):
+        async def save_paper_state(self, state, *, action, **kwargs):
+            await super().save_paper_state(state, action=action, **kwargs)
+            raise PaperCommitOutcomeUnknown("private failure detail")
+
+    repository = UnacknowledgedRepository()
+    service = PaperExecutionService(PaperBroker(), repository)
+    monkeypatch.setattr(paper_api, "paper_service", service)
+    app = FastAPI()
+    app.include_router(paper_api.router)
+    app.dependency_overrides[require_ctcc_token] = lambda: None
+    with TestClient(app) as client:
+        for action in (
+            lambda: client.post(
+                "/api/paper/orders", json=request().model_dump(mode="json")
+            ),
+            lambda: client.get("/api/paper/state"),
+            lambda: client.get("/api/paper/account"),
+            lambda: client.post(
+                "/api/paper/orders", json=request().model_dump(mode="json")
+            ),
+        ):
+            response = action()
+            assert response.status_code == 503
+            assert response.json() == {"detail": "paper_persistence_outcome_unknown"}
+    assert repository.actions == ["paper_order_submitted"]
 
 
 @pytest.mark.asyncio
