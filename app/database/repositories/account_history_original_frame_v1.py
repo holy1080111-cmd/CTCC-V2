@@ -316,13 +316,15 @@ def _preflight(value, request, received_at):
 def _decode_chain(value, scope, received_at):
     rows, previous, prior_recorded = [], None, None
     for number, row in enumerate(value["rows"], 1):
-        event, sequence, predecessor = journal._original_wire_event(
+        recorded = _wire_time(row["db_recorded_at"], received_at)
+        readback, sequence, predecessor = journal._original_wire_readback(
             journal._ISSUER,
             _unhex(row["event_hex"]),
             _unhex(row["raw_hex"], optional=True),
             _unhex(row["packet_hex"], optional=True),
+            recorded,
+            received_at,
         )
-        recorded = _wire_time(row["db_recorded_at"], received_at)
         if (
             sequence != number
             or predecessor != previous
@@ -331,8 +333,8 @@ def _decode_chain(value, scope, received_at):
             _deny("original_frame_original_chain_changed")
         # The new client receipt is measured separately; original event/source
         # timestamps and original DB recording timestamps remain untouched.
-        rows.append(journal.JournalReadback(event, recorded, received_at))
-        previous, prior_recorded = journal.digest(event.event_json), recorded
+        rows.append(readback)
+        previous, prior_recorded = journal.digest(readback.event.event_json), recorded
     chain = tuple(rows)
     reference, _, _, _ = proof._source(chain, scope)
     if observed.reference_document(reference) != value["reference"]:

@@ -243,6 +243,31 @@ def checked_event(value):
     return record
 
 
+def _checked_readback_clocks(record, db_recorded_at, readback_at):
+    """Apply the original readback clock predicate to an already checked event."""
+    from datetime import datetime
+
+    recorded = capture._utc(db_recorded_at)
+    readback = capture._utc(readback_at)
+    clocks = [record["observed_at"]]
+    clocks.extend(
+        record["data"].get(key)
+        for key in (
+            "request_started_at",
+            "headers_received_at",
+            "body_completed_at",
+            "source_observed_at",
+            "previous_source_observed_at",
+        )
+    )
+    if recorded > readback or any(
+        capture._utc(datetime.fromisoformat(value)) > recorded
+        for value in clocks
+        if value is not None
+    ):
+        raise AccountJournalError("journal_receipt_clock_order")
+
+
 @dataclass(frozen=True, slots=True, repr=False)
 class JournalReadback:
     event: _JournalEvent
@@ -250,28 +275,9 @@ class JournalReadback:
     readback_at: object
 
     def __post_init__(self):
-        from datetime import datetime
-
-        record = checked_event(self.event)
-        recorded = capture._utc(self.db_recorded_at)
-        readback = capture._utc(self.readback_at)
-        clocks = [record["observed_at"]]
-        clocks.extend(
-            record["data"].get(key)
-            for key in (
-                "request_started_at",
-                "headers_received_at",
-                "body_completed_at",
-                "source_observed_at",
-                "previous_source_observed_at",
-            )
+        _checked_readback_clocks(
+            checked_event(self.event), self.db_recorded_at, self.readback_at
         )
-        if recorded > readback or any(
-            capture._utc(datetime.fromisoformat(value)) > recorded
-            for value in clocks
-            if value is not None
-        ):
-            raise AccountJournalError("journal_receipt_clock_order")
 
     @property
     def receipt_json(self):
@@ -831,3 +837,26 @@ def _original_wire_event(issuer, event_json, raw_body, packet_payload):
     object.__setattr__(event, "packet_payload", packet_payload)
     record = checked_event(event)
     return event, record["sequence"], record["previous_sha256"]
+
+
+def _original_wire_readback(
+    issuer, event_json, raw_body, packet_payload, db_recorded_at, readback_at
+):
+    """One immediate original-wire validation and identical readback clock check.
+
+    The parsed record is local to this trusted construction; no caller can
+    supply a prevalidated record or skip the full raw/packet event check.
+    """
+    if issuer is not _ISSUER:
+        raise AccountJournalError("owned_journal_event_required")
+    event = object.__new__(_JournalEvent)
+    object.__setattr__(event, "event_json", event_json)
+    object.__setattr__(event, "raw_body", raw_body)
+    object.__setattr__(event, "packet_payload", packet_payload)
+    record = checked_event(event)
+    _checked_readback_clocks(record, db_recorded_at, readback_at)
+    readback = object.__new__(JournalReadback)
+    object.__setattr__(readback, "event", event)
+    object.__setattr__(readback, "db_recorded_at", db_recorded_at)
+    object.__setattr__(readback, "readback_at", readback_at)
+    return readback, record["sequence"], record["previous_sha256"]
