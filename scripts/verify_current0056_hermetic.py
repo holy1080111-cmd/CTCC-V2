@@ -821,6 +821,21 @@ def verify_original_financial_diagnostic(root, raw, files):
     ):
         raise ValueError("original_financial_diagnostic_runtime_changed")
     contract._cleanup(contract._read(root, "cleanup.json"), prefix, anchor=False)
+    _verify_original_financial_collection(root, identity)
+    redacted = read_evidence_json(contract._read(root, _ORIGINAL_FINANCIAL_REDACTED))
+    if (
+        redacted
+        != original_diagnostic.redacted_diagnostic(
+            contract._read(root, "test-results/postgres-progress.log"),
+            contract._read(root, _ORIGINAL_FINANCIAL_JUNIT),
+        )
+        or redacted["status"] != "PASS_DIAGNOSTIC_ONLY"
+    ):
+        raise ValueError("original_financial_diagnostic_redacted_changed")
+    return redacted
+
+
+def _verify_original_financial_collection(root, identity):
     collection = read_evidence_json(
         contract._read(root, _ORIGINAL_FINANCIAL_COLLECTION)
     )
@@ -845,19 +860,9 @@ def verify_original_financial_diagnostic(root, raw, files):
     ):
         raise ValueError("original_financial_diagnostic_test_scope_changed")
     shared.verify_selected_junit_nodes(
-        junit_path, original_diagnostic.NODES, expected_sha256=junit["sha256"]
+        junit_path, collection["selected_nodeids"], expected_sha256=junit["sha256"]
     )
-    redacted = read_evidence_json(contract._read(root, _ORIGINAL_FINANCIAL_REDACTED))
-    if (
-        redacted
-        != original_diagnostic.redacted_diagnostic(
-            contract._read(root, "test-results/postgres-progress.log"),
-            contract._read(root, _ORIGINAL_FINANCIAL_JUNIT),
-        )
-        or redacted["status"] != "PASS_DIAGNOSTIC_ONLY"
-    ):
-        raise ValueError("original_financial_diagnostic_redacted_changed")
-    return redacted
+    return junit
 
 
 def verify_fitted_catalog_diagnostic(root, raw, files):

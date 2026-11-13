@@ -59,7 +59,11 @@ def _junit(*, first="passed", second="passed", first_code=None):
             f"{property_xml}{failure_xml}</testcase>"
         )
     return (
-        "<testsuites><testsuite>" + "".join(elements) + "</testsuite></testsuites>"
+        f'<testsuites><testsuite tests="2" errors="{(first, second).count("error")}" '
+        f'failures="{(first, second).count("failure")}" '
+        f'skipped="{(first, second).count("skipped")}">'
+        + "".join(elements)
+        + "</testsuite></testsuites>"
     ).encode()
 
 
@@ -69,6 +73,36 @@ def test_exact_pass_is_diagnostic_only_and_never_grants_authority():
     assert result["full_regression_passed"] is False
     assert result["execution_authority"] is False
     assert len(result["cases"]) == 2
+
+
+def test_exact_hosted_collection_joins_selected_nodes_to_junit(tmp_path):
+    (tmp_path / "test-results").mkdir()
+    junit = tmp_path / runner._ORIGINAL_FINANCIAL_JUNIT
+    junit.write_bytes(_junit())
+    collection = tmp_path / runner._ORIGINAL_FINANCIAL_COLLECTION
+    record = {
+        "schema": "ctcc.linux_postgres_component_collection.v1",
+        "mode": "postgres",
+        "postgres_component_index": 0,
+        "full_nodeids": list(diagnostic.NODES),
+        "selected_nodeids": list(diagnostic.NODES),
+        "observed_nodeids": list(diagnostic.NODES),
+        "pytest_exitstatus": 0,
+    }
+    collection.write_text(json.dumps(record), encoding="ascii")
+    identity = {
+        "tests": runner.shared.verify_pytest_report(
+            junit, required_cases=diagnostic.CASES
+        )
+    }
+    assert (
+        runner._verify_original_financial_collection(tmp_path, identity)
+        == identity["tests"]
+    )
+    record["selected_nodeids"].reverse()
+    collection.write_text(json.dumps(record), encoding="ascii")
+    with pytest.raises(ValueError, match="diagnostic_collection_changed"):
+        runner._verify_original_financial_collection(tmp_path, identity)
 
 
 def test_failure_and_crash_prefix_keep_only_fixed_code_and_phase():
