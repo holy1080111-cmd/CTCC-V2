@@ -534,6 +534,23 @@ both partitions' outcomes. Legacy Validation inference requires a separate
 label-free feature and raw-score input and an independently retained
 prediction receipt before opening Validation outcomes.
 
+The legacy calibration policy pins the exact scorer configuration, feature
+plan, source checkpoint and forward-return target. It specifies separate
+long and short score bins, explicit positive prior counts and a minimum
+number of distinct joint events per bin. A pair contributes at most one
+distinct event toward that minimum. Unsupported bins retain an empty
+probability. The arithmetic returns a reduced rational value and requires
+a separately verified training inventory.
+
+`build_validation_feature_projection_v1` receives only one Validation
+event's two causal feature histories. It retains exact row and feature
+JSON and binds the decision to the original market and coverage receipts.
+An incomplete event remains in the evidence without a feature pair.
+`verify_label_free_validation_inputs_v1` verifies the feature projection
+and the matching raw score event. The caller must independently retain
+the causal-prefix provenance and prediction receipt before releasing
+outcomes to the evaluator.
+
 The adapter checks the post-readback sample against the pinned summary clock,
 the capture deadline and the decision time. It requires fresh quote, book,
 mark, funding, open interest and WS observations, plus the exact 4H, 1H, 15m
