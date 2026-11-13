@@ -392,7 +392,11 @@ def scenario(monkeypatch):
     monkeypatch.setattr(
         subject.native_factories, "_factory_route", lambda f: (None, None, "pg", f.role)
     )
-    monkeypatch.setattr(subject.selectors, "_database_route", lambda url: url)
+    monkeypatch.setattr(
+        subject.selectors,
+        "_database_route",
+        lambda url: ("postgresql+asyncpg", url, 5432, "synthetic"),
+    )
     monkeypatch.setattr(subject.current55, "_session_settings", settings)
     monkeypatch.setattr(subject.current55, "_identity", identity)
     monkeypatch.setattr(subject.current55, "_exact_existing_acl", acl)
@@ -479,6 +483,42 @@ async def test_restricted_observation_uses_only_three_roles_and_never_admits(sce
     assert events.index(("custody", "raw-custody")) < events.index(
         ("writer-final", str(subject._HEAD))
     )
+
+
+@pytest.mark.asyncio
+async def test_restricted_runtime_witness_uses_held_original_roles(scenario):
+    state, selected, _owner = scenario
+    witnessed = await subject.observe_restricted_native_roles_0056_witness_v1(
+        selected, source=Path("synthetic")
+    )
+    assert witnessed.observation.database_head == "0056"
+    assert witnessed.observation.admission == "DENY"
+    assert witnessed.startup_admission is witnessed.execution_authority is False
+    assert subject._is_digest(witnessed.server_incarnation_sha256)
+    assert subject._is_digest(witnessed.role_route_sha256)
+    assert ("writer-final", "identity") in state["events"]
+    assert "writer" not in repr(witnessed)
+
+
+def test_runtime_witness_changes_on_restart_and_writer_role_change():
+    started = datetime(2026, 1, 1, tzinfo=UTC)
+    identity = ("writer", "writer", "none", 201, 93, started, 170011, "db", 5432)
+    names = ("writer", "custody", "frame")
+    routes = (("postgresql+asyncpg", "db", 5432, "ctcc"),) * 3
+    first = subject._runtime_witness(identity, names, routes)
+    assert (
+        first[0]
+        != subject._runtime_witness(
+            (*identity[:5], datetime(2026, 1, 2, tzinfo=UTC), *identity[6:]),
+            names,
+            routes,
+        )[0]
+    )
+    changed_role = subject._runtime_witness(
+        (*identity[:3], 202, *identity[4:]), names, routes
+    )
+    assert first[0] == changed_role[0]
+    assert first[1] != changed_role[1]
 
 
 def test_granted_acl_shape_is_role_neutral_and_bound_to_inherited_definitions():

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import ssl
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -29,6 +30,7 @@ from app.demo_automation.native_server_selectors_v2 import (
     ConfiguredNativeDemoFactoriesV2,
     _database_route,
 )
+from app.domain.source_primitives import sha
 from scripts.current0056_fitted_delta_catalog_v1 import pinned_migration
 
 _SOURCE = Path(__file__).resolve().parents[2]
@@ -56,6 +58,21 @@ class NativeStartupControl0056Error(ValueError):
 class NativeStartupControl0056ObservationV1:
     control: ExistingControl
     database_head: Literal["0056"] = field(default="0056", init=False)
+    startup_admission: Literal[False] = field(default=False, init=False)
+    execution_authority: Literal[False] = field(default=False, init=False)
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class NativeStartupControl0056WitnessV1:
+    """Control observed in the original restricted transaction."""
+
+    observation: NativeStartupControl0056ObservationV1
+    control_snapshot_sha256: str
+    server_incarnation_sha256: str
+    role_route_sha256: str
+    schema: Literal["ctcc.native_only.startup_control0056_runtime_witness.v1"] = field(
+        default="ctcc.native_only.startup_control0056_runtime_witness.v1", init=False
+    )
     startup_admission: Literal[False] = field(default=False, init=False)
     execution_authority: Literal[False] = field(default=False, init=False)
 
@@ -141,7 +158,7 @@ async def _identity(session, writer, name):
 
 
 @asynccontextmanager
-async def _restricted_read_snapshot_0056(selected):
+async def _restricted_read_snapshot_0056(selected, *, with_witness=False):
     try:
         writer_factory, writer, names, routes = _factory_pins(selected)
         pinned_migration(_SOURCE)
@@ -156,7 +173,19 @@ async def _restricted_read_snapshot_0056(selected):
             await _exact_existing_acl(await session.connection(), names, first[0][3])
             await roles56._require_no_effective_demo_fitted_execute(session, names)
             _require_session(session, writer, transaction)
-            yield session
+            if with_witness:
+                url_routes = tuple(
+                    _database_route(factory.kw["bind"].url)
+                    for factory in (
+                        selected.writer_factory,
+                        selected.custody_factory,
+                        selected.frame_reader_factory,
+                    )
+                )
+                witness = roles56._runtime_witness(first[0], names, url_routes)
+                yield session, witness
+            else:
+                yield session
             _require(await _identity(session, writer, names[0]) == first)
             _require_session(session, writer, transaction)
         _require(_factory_pins(selected) == (writer_factory, writer, names, routes))
@@ -175,3 +204,29 @@ async def observe_startup_control_0056_v1(selected):
         soak = (await session.execute(_RUNNING_SOAK_SQL)).scalar_one_or_none()
         control = _checked_control(None if row is None else dict(row), soak)
     return NativeStartupControl0056ObservationV1(control)
+
+
+async def observe_startup_control_0056_witness_v1(selected):
+    """Bind the old control read to its actual server and configured route."""
+    async with _restricted_read_snapshot_0056(selected, with_witness=True) as held:
+        session, witness = held
+        row = (await session.execute(_CONTROL_SQL)).mappings().one_or_none()
+        soak = (await session.execute(_RUNNING_SOAK_SQL)).scalar_one_or_none()
+        original = None if row is None else dict(row)
+        control = _checked_control(original, soak)
+        raw = json.dumps(
+            {
+                "schema": "ctcc.native_only.startup_control0056_raw_snapshot.v1",
+                "control": original,
+                "running_soak": soak,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("ascii")
+        _require(0 < len(raw) <= 1_048_576)
+        snapshot_sha = sha(raw)
+    return NativeStartupControl0056WitnessV1(
+        NativeStartupControl0056ObservationV1(control), snapshot_sha, *witness
+    )
