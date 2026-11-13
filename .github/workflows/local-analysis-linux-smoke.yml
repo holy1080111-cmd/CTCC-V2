@@ -1,0 +1,432 @@
+name: Local analysis isolated Linux smoke
+
+on:
+  push:
+    branches:
+      - work/n267-local-analysis-exact-smoke-20261113
+
+permissions:
+  contents: read
+
+jobs:
+  local-analysis:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Build and check isolated analysis service
+        shell: bash
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+          COMPOSE_DISABLE_ENV_FILE: "true"
+        run: |
+          set -euo pipefail
+          umask 077
+          install_root="$(mktemp -d "$RUNNER_TEMP/ctcc-analysis-smoke.XXXXXXXX")"
+          install_id="$(python3 -c 'import uuid; print(uuid.uuid4().hex)')"
+          project="ctcc-analysis-$install_id"
+          port=38177
+          export install_root install_id project port
+
+          compose=(docker compose --env-file "$install_root/compose.env" --project-directory "$install_root" -p "$project" -f "$install_root/compose.yaml")
+          cleanup() {
+            if [[ "$project" =~ ^ctcc-analysis-[0-9a-f]{32}$ && "$install_root" == "$RUNNER_TEMP"/ctcc-analysis-smoke.* ]]; then
+              "${compose[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
+            fi
+          }
+          trap cleanup EXIT
+
+          python3 - <<'PY'
+          import os
+          import secrets
+          import sys
+          from pathlib import Path
+
+          from scripts.prepare_local_analysis_installation import (
+              _render,
+              _source_identity,
+          )
+
+          if sys.version_info[:2] != (3, 12):
+              raise SystemExit("python_version_refused")
+          root = Path(os.environ["install_root"]).resolve(strict=True)
+          if root.parent != Path(os.environ["RUNNER_TEMP"]).resolve(strict=True):
+              raise SystemExit("smoke_root_scope_refused")
+          if root.stat().st_mode & 0o077:
+              raise SystemExit("smoke_root_mode_refused")
+          manifest_sha, template, commit, tree = _source_identity()
+          if commit != os.environ["GITHUB_SHA"]:
+              raise SystemExit("source_commit_refused")
+          password = secrets.token_hex(32).encode("ascii")
+          token = secrets.token_urlsafe(48).encode("ascii")
+          files = {
+              "postgres_password": password,
+              "database_url": b"postgresql+asyncpg://ctcc:" + password + b"@postgres:5432/ctcc",
+              "api_token": token,
+              "compose.env": b"",
+          }
+          for name, raw in files.items():
+              path = root / name
+              with path.open("xb") as handle:
+                  handle.write(raw)
+              path.chmod(0o644)
+          compose = _render(
+              template,
+              root=root,
+              install_id=os.environ["install_id"],
+              source_manifest_sha256=manifest_sha,
+              source_commit=commit,
+              source_tree=tree,
+              host_port=int(os.environ["port"]),
+          )
+          with (root / "compose.yaml").open("xb") as handle:
+              handle.write(compose)
+          PY
+
+          "${compose[@]}" config --quiet
+          "${compose[@]}" build --quiet
+          "${compose[@]}" up -d --no-build
+
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import subprocess
+          import time
+          import urllib.error
+          import urllib.request
+          from pathlib import Path
+
+          root = Path(os.environ["install_root"])
+          project = os.environ["project"]
+          base = f"http://127.0.0.1:{os.environ['port']}"
+          token = (root / "api_token").read_text("ascii")
+          compose = [
+              "docker", "compose", "--env-file", str(root / "compose.env"),
+              "--project-directory", str(root), "-p", project,
+              "-f", str(root / "compose.yaml"),
+          ]
+
+          def docker(*args: str) -> str:
+              return subprocess.run(
+                  ["docker", *args], check=True, capture_output=True,
+                  timeout=30, text=True,
+              ).stdout.strip()
+
+          def request(
+              path: str,
+              *,
+              payload: dict | None = None,
+              raw_body: bytes | None = None,
+              auth: bool = False,
+          ):
+              headers = {"Content-Type": "application/json"}
+              if auth:
+                  headers["X-CTCC-Token"] = token
+              if payload is not None and raw_body is not None:
+                  raise RuntimeError("request_body_conflict")
+              data = raw_body if raw_body is not None else (
+                  None if payload is None else json.dumps(payload).encode("ascii")
+              )
+              item = urllib.request.Request(base + path, data=data, headers=headers)
+              with urllib.request.urlopen(item, timeout=4) as response:
+                  body = response.read(1_000_000)
+                  return response.status, body
+
+          def ready() -> dict:
+              for _ in range(120):
+                  try:
+                      status, raw = request("/readiness")
+                      if status == 200:
+                          detail = json.loads(raw)
+                          if (
+                              detail.get("status") != "ready"
+                              or detail.get("blockers") != []
+                              or detail.get("database", {}).get("ok") is not True
+                              or detail.get("redis", {}).get("ok") is not True
+                          ):
+                              raise RuntimeError("readiness_detail_refused")
+                          return detail
+                  except (OSError, urllib.error.HTTPError):
+                      pass
+                  time.sleep(2)
+              raise RuntimeError("readiness_timeout")
+
+          phase = "runtime_identity"
+          try:
+              api_id = subprocess.run(
+                  [*compose, "ps", "-q", "api"], check=True,
+                  capture_output=True, timeout=20, text=True,
+              ).stdout.strip()
+              if not api_id:
+                  raise RuntimeError("api_container_missing")
+              api = json.loads(docker("container", "inspect", api_id))[0]
+              image = json.loads(docker("image", "inspect", api["Image"]))[0]
+              labels = image["Config"]["Labels"]
+              if labels["org.opencontainers.image.revision"] != os.environ["GITHUB_SHA"]:
+                  raise RuntimeError("image_commit_mismatch")
+              expected_tree = subprocess.run(
+                  ["git", "rev-parse", "HEAD^{tree}"], check=True,
+                  capture_output=True, timeout=10, text=True,
+              ).stdout.strip()
+              if labels["org.ctcc.source.tree"] != expected_tree:
+                  raise RuntimeError("image_tree_mismatch")
+              configured = dict(
+                  item.split("=", 1) for item in api["Config"]["Env"] if "=" in item
+              )
+              if configured.get("ENVIRONMENT") != "production" or configured.get("TRADING_MODE") != "analysis_only":
+                  raise RuntimeError("runtime_mode_mismatch")
+              for flag in (
+                  "AUTO_TRADE", "LIVE_TRADING", "OKX_DEMO_ENABLED",
+                  "OKX_DEMO_ALLOW_ORDER_WRITES", "OKX_DEMO_AUTO_EXECUTION",
+                  "OKX_LIVE_ENABLED", "OKX_LIVE_ALLOW_ORDER_WRITES",
+                  "OKX_LIVE_AUTO_EXECUTION", "OKX_WS_ENABLED",
+                  "PAPER_AUTO_EXECUTION", "NOTION_OUTBOX_ENABLED",
+                  "SUBMISSION_OUTBOX_ENABLED",
+              ):
+                  if configured.get(flag) != "false":
+                      raise RuntimeError("runtime_execution_flag_mismatch")
+              if configured.get("PAPER_PERSISTENCE_ENABLED") != "true":
+                  raise RuntimeError("runtime_paper_persistence_missing")
+              if configured.get("CTCC_LOCAL_ANALYSIS_ONLY_V1") != "true":
+                  raise RuntimeError("runtime_local_profile_missing")
+              if "API_TOKEN" in configured or "DATABASE_URL" in configured:
+                  raise RuntimeError("runtime_secret_config_exposed")
+              networks = api["NetworkSettings"]["Networks"]
+              network_name = project + "_analysis_internal"
+              if set(networks) != {network_name}:
+                  raise RuntimeError("api_network_mismatch")
+              network = json.loads(docker("network", "inspect", network_name))[0]
+              if network["Internal"] is not True:
+                  raise RuntimeError("runtime_egress_boundary_missing")
+              bindings = api["NetworkSettings"]["Ports"]["8000/tcp"]
+              if not bindings or any(
+                  item["HostIp"] != "127.0.0.1" or item["HostPort"] != os.environ["port"]
+                  for item in bindings
+              ):
+                  raise RuntimeError("api_loopback_binding_mismatch")
+              for service in ("postgres", "redis"):
+                  service_id = subprocess.run(
+                      [*compose, "ps", "-q", service], check=True,
+                      capture_output=True, timeout=20, text=True,
+                  ).stdout.strip()
+                  observed = json.loads(docker("container", "inspect", service_id))[0]
+                  if set(observed["NetworkSettings"]["Networks"]) != {network_name}:
+                      raise RuntimeError("service_network_mismatch")
+                  if any(observed["NetworkSettings"]["Ports"].values()):
+                      raise RuntimeError("service_host_port_present")
+
+              phase = "host_readiness"
+              ready()
+              status, dashboard = request("/dashboard")
+              if status != 200 or b"CTCC" not in dashboard:
+                  raise RuntimeError("dashboard_refused")
+              status, local_page = request("/dashboard/local-analysis")
+              if status != 200 or b"MarketSnapshot" not in local_page:
+                  raise RuntimeError("local_page_refused")
+              for path in (
+                  "/docs", "/openapi.json", "/api/okx-demo/status",
+                  "/api/okx-live/status", "/api/analysis/BTC-USDT-SWAP",
+              ):
+                  try:
+                      request(path)
+                  except urllib.error.HTTPError as exc:
+                      if exc.code != 404:
+                          raise RuntimeError("legacy_route_exposed") from None
+                  else:
+                      raise RuntimeError("legacy_route_exposed")
+              for path in ("/api/paper/reset", "/api/okx-demo/orders"):
+                  try:
+                      request(path, payload={}, auth=True)
+                  except urllib.error.HTTPError as exc:
+                      if exc.code != 404:
+                          raise RuntimeError("write_route_exposed") from None
+                  else:
+                      raise RuntimeError("write_route_exposed")
+              try:
+                  request("/api/paper/account")
+              except urllib.error.HTTPError as exc:
+                  if exc.code != 401:
+                      raise RuntimeError("paper_unauthorized_guard_refused") from None
+              else:
+                  raise RuntimeError("paper_unauthorized_guard_missing")
+
+              phase = "offline_snapshot"
+              fixture_command = (
+                  "from tests.unit.test_qualification_data import market; "
+                  "print(market.__wrapped__().model_dump_json())"
+              )
+              fixture_result = subprocess.run(
+                  [*compose, "exec", "-T", "api", "python", "-B", "-c", fixture_command],
+                  check=True, capture_output=True, timeout=40,
+              )
+              fixture = fixture_result.stdout.strip()
+              if not fixture or len(fixture) > 1_000_000:
+                  raise RuntimeError("synthetic_snapshot_size_refused")
+              status, raw = request(
+                  "/api/analysis/snapshot", raw_body=fixture, auth=True
+              )
+              snapshot = json.loads(raw)
+              if (
+                  status != 200
+                  or snapshot.get("input_sha256") != hashlib.sha256(fixture).hexdigest()
+                  or snapshot.get("source_authenticity_verified") is not False
+                  or snapshot.get("execution_authority") is not False
+                  or snapshot.get("analysis", {}).get("trade_ready") is not False
+                  or "imported_snapshot_unverified" not in snapshot.get("analysis", {}).get("blockers", [])
+                  or set(snapshot.get("analysis", {}).get("timeframe_analyses", {})) != {"4H", "1H", "15m", "5m"}
+              ):
+                  raise RuntimeError("offline_snapshot_contract_refused")
+
+              phase = "paper_persistence"
+              status, raw = request(
+                  "/api/paper/orders",
+                  payload={
+                      "symbol": "BTC-USDT-SWAP", "side": "long",
+                      "quantity": "0.1", "reference_price": "100",
+                      "stop_loss": "95", "take_profit": "110",
+                      "order_type": "market", "risk_decision": "approved",
+                      "strategy": "local_analysis_smoke", "score": 80,
+                  },
+                  auth=True,
+              )
+              order = json.loads(raw)
+              if status != 201 or order["status"] != "filled":
+                  raise RuntimeError("paper_order_refused")
+              order_id = order["id"]
+              subprocess.run(
+                  [*compose, "restart", "api"], check=True,
+                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=45,
+              )
+              ready()
+              status, raw = request(f"/api/paper/orders/{order_id}", auth=True)
+              replay = json.loads(raw)
+              if status != 200 or replay["id"] != order_id or replay["status"] != "filled":
+                  raise RuntimeError("paper_restart_recovery_refused")
+              status, raw = request("/api/paper/account", auth=True)
+              if status != 200 or json.loads(raw).get("open_positions") != 1:
+                  raise RuntimeError("paper_account_recovery_refused")
+
+              result = {
+                  "schema": "ctcc.local_analysis.linux_compose_smoke.v1",
+                  "status": "CANDIDATE_AWAITING_CLEANUP",
+                  "source_commit": os.environ["GITHUB_SHA"],
+                  "source_tree": expected_tree,
+                  "manifest_sha256": hashlib.sha256(Path("MANIFEST.sha256").read_bytes()).hexdigest(),
+                  "image_id": api["Image"],
+                  "loopback_host_reachable": True,
+                  "internal_network_verified": True,
+                  "paper_auth_guard_verified": True,
+                  "paper_restart_recovery_verified": True,
+                  "offline_snapshot_sha256": hashlib.sha256(fixture).hexdigest(),
+                  "offline_execution_authority": False,
+                  "legacy_routes_denied": True,
+                  "exchange_credentials_used": False,
+                  "paper_orders_created": 1,
+              }
+              (root / "smoke-candidate.json").write_text(
+                  json.dumps(result, sort_keys=True, separators=(",", ":")) + "\n",
+                  encoding="ascii",
+              )
+          except Exception as exc:
+              allowed = {
+                  "readiness_timeout", "readiness_detail_refused", "dashboard_refused",
+                  "local_page_refused", "legacy_route_exposed", "write_route_exposed",
+                  "paper_unauthorized_guard_refused", "paper_unauthorized_guard_missing",
+                  "synthetic_snapshot_size_refused", "offline_snapshot_contract_refused",
+                  "paper_order_refused", "paper_restart_recovery_refused",
+                  "paper_account_recovery_refused",
+                  "runtime_mode_mismatch", "runtime_local_profile_missing",
+                  "runtime_execution_flag_mismatch", "runtime_paper_persistence_missing",
+                  "runtime_secret_config_exposed", "api_network_mismatch",
+                  "runtime_egress_boundary_missing", "api_loopback_binding_mismatch",
+                  "service_network_mismatch", "service_host_port_present",
+              }
+              code = exc.args[0] if type(exc) is RuntimeError and exc.args and exc.args[0] in allowed else "unexpected_refusal"
+              print("LOCAL_ANALYSIS_SMOKE_REFUSED", phase, code)
+              raise SystemExit(1) from None
+          PY
+
+          "${compose[@]}" down --volumes --remove-orphans
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import shutil
+          import subprocess
+          from pathlib import Path
+
+          root = Path(os.environ["install_root"])
+          runner_temp = Path(os.environ["RUNNER_TEMP"]).resolve(strict=True)
+          project = os.environ["project"]
+          if (
+              root.resolve(strict=True).parent != runner_temp
+              or not re.fullmatch(r"ctcc-analysis-[0-9a-f]{32}", project)
+              or not root.name.startswith("ctcc-analysis-smoke.")
+              or root.is_symlink()
+          ):
+              raise SystemExit("cleanup_scope_refused")
+
+          def docker(*args: str) -> set[str]:
+              output = subprocess.run(
+                  ["docker", *args], check=True, capture_output=True,
+                  timeout=20, text=True,
+              ).stdout
+              return set(output.splitlines())
+
+          containers = docker(
+              "ps", "-a", "--filter", f"label=com.docker.compose.project={project}",
+              "--format", "{{.ID}}",
+          )
+          volumes = docker("volume", "ls", "--format", "{{.Name}}")
+          networks = docker("network", "ls", "--format", "{{.Name}}")
+          if (
+              containers
+              or project + "_postgres_data" in volumes
+              or project + "_redis_data" in volumes
+              or project + "_analysis_internal" in networks
+          ):
+              raise SystemExit("owned_cleanup_refused")
+
+          members = {
+              "postgres_password", "database_url", "api_token", "compose.env",
+              "compose.yaml", "smoke-candidate.json",
+          }
+          if {item.name for item in root.iterdir()} != members:
+              raise SystemExit("private_root_members_refused")
+          if any(item.is_symlink() or not item.is_file() for item in root.iterdir()):
+              raise SystemExit("private_root_member_identity_refused")
+          candidate = json.loads((root / "smoke-candidate.json").read_bytes())
+          if (
+              candidate.get("schema") != "ctcc.local_analysis.linux_compose_smoke.v1"
+              or candidate.get("status") != "CANDIDATE_AWAITING_CLEANUP"
+              or candidate.get("source_commit") != os.environ["GITHUB_SHA"]
+              or candidate.get("internal_network_verified") is not True
+              or candidate.get("paper_restart_recovery_verified") is not True
+              or candidate.get("offline_execution_authority") is not False
+          ):
+              raise SystemExit("candidate_readback_refused")
+          shutil.rmtree(root)
+          if root.exists():
+              raise SystemExit("private_root_cleanup_refused")
+          candidate.update(
+              status="PASS", owned_container_volume_network_cleanup_verified=True,
+              synthetic_secret_files_removed=True,
+          )
+          proof = runner_temp / "ctcc-local-analysis-smoke-proof.json"
+          with proof.open("x", encoding="ascii") as handle:
+              handle.write(json.dumps(candidate, sort_keys=True, separators=(",", ":")) + "\n")
+          print("LOCAL_ANALYSIS_SMOKE_PASS")
+          PY
+
+      - name: Upload redacted smoke proof
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ctcc-local-analysis-smoke-${{ github.sha }}
+          path: ${{ runner.temp }}/ctcc-local-analysis-smoke-proof.json
+          if-no-files-found: ignore
