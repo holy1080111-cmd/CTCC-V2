@@ -19,6 +19,9 @@ from app.domain.source_primitives import canonical, decode, sha
 from app.trade_evidence.native_private_root_v2 import require_private_evidence_base_v2
 from app.trade_qualification import account_capture as capture
 from app.trade_qualification import account_current_source_verifier as verifier
+from app.trade_qualification.native_protection_observation_0056_v1 import (
+    observe_position_brackets,
+)
 from app.trade_qualification.reservations import LedgerScope
 
 _NAME = "db0056-restart-inventory-observation.json"
@@ -139,7 +142,7 @@ def _checked_exchange(raw: bytes, plan, source) -> dict:
         and all(type(count) is int and count >= 0 for count in counts.values()),
         "db0056_restart_inventory_exchange_inventory_refused",
     )
-    return counts
+    return value
 
 
 def _inventory_document(source, operands, plan, local_before, local_after):
@@ -153,7 +156,8 @@ def _inventory_document(source, operands, plan, local_before, local_after):
         ),
         "db0056_restart_inventory_local_exposure_changed",
     )
-    counts = _checked_exchange(operands.current_receipt_json, plan, source)
+    exchange = _checked_exchange(operands.current_receipt_json, plan, source)
+    counts = exchange["inventory_row_counts"]
     return {
         **source,
         "schema": "ctcc.demo.db0056.restart_inventory_observation.v1",
@@ -163,6 +167,9 @@ def _inventory_document(source, operands, plan, local_before, local_after):
         "exchange_observed_algo_order_rows_by_query": {
             key: count for key, count in counts.items() if key.startswith("algo_")
         },
+        "exchange_position_bracket_observations": observe_position_brackets(
+            operands.packet, exchange
+        ),
         "local_checkpoint_sha256": None if second is None else local_after.state_sha256,
         "local_exposure_observation": (
             "UNKNOWN"

@@ -210,6 +210,20 @@ def _check_runtime_settings(settings, descriptor: _Descriptor) -> None:
     )
 
 
+def _check_restricted_role_observation(actual, descriptor: _Descriptor) -> None:
+    _need(
+        type(actual) is identity.NativeRoleIdentity0056V2
+        and actual.stable_identity_sha256 == descriptor.restricted_role_identity_sha256
+        and actual.inherited_native_definitions_sha256
+        == descriptor.inherited_native_definitions_sha256
+        and actual.granted_inherited_acl_shape_sha256
+        == descriptor.granted_inherited_acl_shape_sha256
+        and actual.deployment_reference_authenticated is False
+        and actual.startup_admission is actual.execution_authority is False
+        and actual.admission == "DENY"
+    )
+
+
 async def verify_restricted_deployment_descriptor_0056_v1(
     *,
     descriptor_file: Path,
@@ -226,18 +240,7 @@ async def verify_restricted_deployment_descriptor_0056_v1(
         actual = await identity.observe_restricted_role_identity_0056_v2(
             selected, source=_SOURCE
         )
-        _need(
-            type(actual) is identity.NativeRoleIdentity0056V2
-            and actual.stable_identity_sha256
-            == descriptor.restricted_role_identity_sha256
-            and actual.inherited_native_definitions_sha256
-            == descriptor.inherited_native_definitions_sha256
-            and actual.granted_inherited_acl_shape_sha256
-            == descriptor.granted_inherited_acl_shape_sha256
-            and actual.deployment_reference_authenticated is False
-            and actual.startup_admission is actual.execution_authority is False
-            and actual.admission == "DENY"
-        )
+        _check_restricted_role_observation(actual, descriptor)
     finally:
         await selectors._dispose_failed_selection_factories_v2(selected)
     _need(get_settings() is settings)

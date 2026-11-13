@@ -32,6 +32,9 @@ def test_standalone_routes_are_local_and_analysis_only() -> None:
         assert "default-src 'none'" in page.headers["content-security-policy"]
         assert page.headers["cache-control"] == "no-store"
         assert "匯入資料來源未經驗證" in page.text
+        assert 'id="analysisSection" hidden' in page.text
+        assert "四個週期的分析" in page.text
+        assert "完整 JSON 結果" in page.text
         assert "<script src=" not in page.text
         assert "https://" not in page.text and "http://" not in page.text
         assert "/api/paper" not in page.text and "/api/okx" not in page.text
@@ -90,6 +93,13 @@ def test_standalone_auth_origin_and_exact_source_are_enforced(
         assert value["execution_authority"] is False
         assert value["analysis"]["trade_ready"] is False
         assert "imported_snapshot_unverified" in value["analysis"]["blockers"]
+        assert isinstance(value["analysis"]["price"], str)
+        assert value["analysis"]["generated_at"].endswith("Z")
+        for interval in ("4H", "1H", "15m", "5m"):
+            assert (
+                value["analysis"]["timeframe_analyses"][interval]["timeframe"]
+                == interval
+            )
         oversized = client.post(
             path,
             content=b" " * (MAX_RAW + 1),

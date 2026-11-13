@@ -60,6 +60,11 @@ The command reopens the stopped Control lineage and local exposure checkpoint
 in restricted transactions on both sides of the new exchange reads. A changed
 local checkpoint or Control revision refuses the report. The usual source
 capture initialization can retain a missing local scope at revision zero,
-which stays unknown. The private receipt records row counts by
-query without adding or clearing positions, orders, protection or intents.
-The receipt cannot establish a flat start or grant execution.
+which stays unknown. The private receipt records row counts by query and
+fingerprints the position rows. `OBSERVED_FULL_BRACKET_UNATTRIBUTED` adds the
+fingerprint of a unique live exchange OCO row with matching instrument, margin,
+closing side, exact contract size and mark-based TP/SL. Missing, overlapping
+or conflicting evidence stays `UNKNOWN`. The receipt includes the number of
+position rows omitted from the bounded detail list. Verified protection still
+requires the durable intent and fill lineage. Restart inventory leaves the
+stop latched and denies flat-start and execution permission.

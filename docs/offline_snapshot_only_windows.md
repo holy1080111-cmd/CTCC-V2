@@ -26,7 +26,10 @@ Open the printed `http://127.0.0.1:<port>/dashboard` address while `--serve`
 is running. As the same Windows user, open the installation's private
 `api_token` file and enter its contents into the page. Select an exported
 MarketSnapshot JSON file. The page sends its exact bytes to the local analysis
-route and displays the recomputed result. The token is not stored in browser
+route and displays the capture time, contract, price, market regime and the
+recomputed direction, volatility and data quality for all four timeframes.
+Expand **完整 JSON 結果** to inspect the complete response.
+The token is not stored in browser
 storage. Keep it out of chat, screenshots and reports.
 
 Press Ctrl+C in the launcher window to stop. The viewer stores no analysis or

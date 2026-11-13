@@ -42,6 +42,13 @@ OFFLINE_SNAPSHOT_ONLY_HTML = (
     button { margin-top: 16px; padding: 10px 17px; border: 1px solid #78acfa;
              border-radius: 8px; background: #224978; color: white; cursor: pointer; }
     button:disabled { cursor: wait; opacity: 0.6; }
+    dl { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+         gap: 12px; }
+    dt { color: #bfd0e2; font-size: .9rem; }
+    dd { margin: 5px 0 0; font-weight: 650; overflow-wrap: anywhere; }
+    table { width: 100%; border-collapse: collapse; margin: 12px 0 22px; }
+    th, td { text-align: left; border-bottom: 1px solid #30445b; padding: 10px 4px; }
+    summary { cursor: pointer; color: #8dbfff; }
     pre { overflow: auto; max-height: 65vh; white-space: pre-wrap; word-break: break-word;
           padding: 16px; border: 1px solid #30445b; border-radius: 8px;
           background: #08131e; color: #e6f0ff; }
@@ -65,7 +72,21 @@ OFFLINE_SNAPSHOT_ONLY_HTML = (
     <button id="analyze" type="button">開始離線分析</button>
     <p id="status" role="status" aria-live="polite">尚未分析。</p>
   </section>
-  <section aria-label="分析結果"><h2>分析結果</h2><pre id="result" hidden></pre></section>
+  <section id="analysisSection" hidden aria-labelledby="analysisHeading">
+    <h2 id="analysisHeading">分析結果</h2>
+    <p>快照時間（UTC） <time id="captureTime"></time></p>
+    <dl>
+      <div><dt>合約</dt><dd id="contract"></dd></div>
+      <div><dt>快照價格</dt><dd id="capturePrice"></dd></div>
+      <div><dt>市場型態</dt><dd id="regime"></dd></div>
+      <div><dt>綜合方向</dt><dd id="bias"></dd></div>
+    </dl>
+    <table aria-label="四個週期的分析">
+      <thead><tr><th scope="col">週期</th><th scope="col">方向</th><th scope="col">波動</th><th scope="col">資料檢查</th></tr></thead>
+      <tbody id="timeframes"></tbody>
+    </table>
+    <details><summary>完整 JSON 結果</summary><pre id="result"></pre></details>
+  </section>
   <p>Token 僅用於本次請求，不儲存在瀏覽器。此頁不載入外部字型、程式或圖片。</p>
 </main>
 <script>
@@ -78,29 +99,83 @@ const tokenInput = document.getElementById("token");
 const fileInput = document.getElementById("snapshot");
 const button = document.getElementById("analyze");
 const status = document.getElementById("status");
+const analysisSection = document.getElementById("analysisSection");
 const result = document.getElementById("result");
+const intervals = ["4H", "1H", "15m", "5m"];
+const directionLabels = {long: "偏多", short: "偏空", neutral: "中性"};
+const volatilityLabels = {low: "低", normal: "正常", high: "高", extreme: "極高"};
+const regimeLabels = {insufficient_data: "資料不足", unstable_transition: "不穩定轉折",
+  high_volatility: "高波動", bull_trend: "多頭趨勢", bear_trend: "空頭趨勢",
+  compression: "波動收斂", range_or_transition: "盤整或轉折"};
+
+function clearResult() {
+  analysisSection.hidden = true;
+  result.textContent = "";
+}
 
 function fail(message) {
-  result.textContent = "";
-  result.hidden = true;
+  clearResult();
   status.textContent = message;
 }
 
 function accepted(value) {
-  return value !== null && typeof value === "object" &&
+  const analysis = value?.analysis;
+  return value !== null && typeof value === "object" && analysis &&
     value.schema_version === "ctcc.offline_snapshot_analysis.v1" &&
     /^[a-f0-9]{64}$/.test(value.input_sha256) &&
     value.source_authenticity_verified === false &&
     value.execution_authority === false &&
-    value.analysis !== null && typeof value.analysis === "object" &&
-    value.analysis.trade_ready === false &&
-    Array.isArray(value.analysis.blockers) &&
-    value.analysis.blockers.includes("imported_snapshot_unverified");
+    analysis.trade_ready === false &&
+    Array.isArray(analysis.blockers) &&
+    analysis.blockers.includes("imported_snapshot_unverified") &&
+    typeof analysis.instrument_id === "string" &&
+    typeof analysis.price === "string" &&
+    typeof analysis.regime === "string" &&
+    typeof analysis.generated_at === "string" &&
+    analysis.generated_at.endsWith("Z") &&
+    Object.hasOwn(directionLabels, analysis.overall_bias) &&
+    intervals.every(name => {
+      const row = analysis.timeframe_analyses?.[name];
+      return row && row.timeframe === name &&
+        Object.hasOwn(directionLabels, row.directional_bias) &&
+        Object.hasOwn(volatilityLabels, row.volatility) &&
+        typeof row.data_quality_ok === "boolean";
+    });
+}
+
+function showAnalysis(value) {
+  const analysis = value.analysis;
+  const captureTime = document.getElementById("captureTime");
+  captureTime.dateTime = analysis.generated_at;
+  captureTime.textContent = analysis.generated_at.slice(0, -1).replace("T", " ");
+  document.getElementById("contract").textContent = analysis.instrument_id;
+  document.getElementById("capturePrice").textContent = analysis.price;
+  document.getElementById("regime").textContent =
+    Object.hasOwn(regimeLabels, analysis.regime) ? regimeLabels[analysis.regime] : analysis.regime;
+  document.getElementById("bias").textContent = directionLabels[analysis.overall_bias];
+  const rows = intervals.map(name => {
+    const reading = analysis.timeframe_analyses[name];
+    const row = document.createElement("tr");
+    const title = document.createElement("th");
+    title.scope = "row";
+    title.textContent = name;
+    row.append(title);
+    for (const label of [directionLabels[reading.directional_bias],
+                         volatilityLabels[reading.volatility],
+                         reading.data_quality_ok ? "通過" : "有缺漏或異常"]) {
+      const cell = document.createElement("td");
+      cell.textContent = label;
+      row.append(cell);
+    }
+    return row;
+  });
+  document.getElementById("timeframes").replaceChildren(...rows);
+  result.textContent = JSON.stringify(value, null, 2);
+  analysisSection.hidden = false;
 }
 
 button.addEventListener("click", async () => {
-  result.textContent = "";
-  result.hidden = true;
+  clearResult();
   const token = tokenInput.value.trim();
   tokenInput.value = "";
   const chosen = selectSnapshotFiles(fileInput.files);
@@ -139,8 +214,7 @@ button.addEventListener("click", async () => {
     if (!accepted(value) || (digest && digest !== value.input_sha256)) {
       fail("分析結果格式或檔案雜湊不符，未顯示資料。"); return;
     }
-    result.textContent = JSON.stringify(value, null, 2);
-    result.hidden = false;
+    showAnalysis(value);
     status.textContent = snapshotAnalysisFinished(digest);
   } catch {
     fail("本機分析連線中斷或逾時。");
