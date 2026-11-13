@@ -637,6 +637,25 @@ def make_service(
 
 
 @pytest.mark.asyncio
+async def test_native_recovery_refuses_to_write_after_control_revision_changes():
+    service = make_service(FakeDemo())
+    repository = service.repository
+    assert repository is not None
+    await service.recover()
+    prior = await repository.load_state()
+    assert prior is not None
+    current = dict(prior, _control_revision=prior["_control_revision"] + 1)
+    await repository.save_state(current)
+
+    with pytest.raises(DemoAutomationSafetyError, match="control_revision_conflict"):
+        await service.recover(
+            require_existing=True, expected_revision=prior["_control_revision"]
+        )
+
+    assert await repository.load_state() == current
+
+
+@pytest.mark.asyncio
 async def test_dry_run_never_places_demo_order() -> None:
     demo = FakeDemo()
     service = make_service(demo)

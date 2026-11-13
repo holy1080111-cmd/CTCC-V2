@@ -109,8 +109,8 @@ class _Automation:
     async def _load_state(self):
         return self.after
 
-    async def recover(self, *, require_existing=False):
-        self.recover_calls.append(require_existing)
+    async def recover(self, *, require_existing=False, expected_revision=None):
+        self.recover_calls.append((require_existing, expected_revision))
 
     async def status(self):
         return self.observed_status
@@ -183,7 +183,7 @@ async def test_real_recovery_requested_and_separate_readback_confirmed():
         status=SimpleNamespace(recovered=True, armed=False, emergency_stop=True),
     )
     await native.start_native_only(_settings(), factory, automation)
-    assert automation.recover_calls == [True]
+    assert automation.recover_calls == [(True, 7)]
 
 
 @pytest.mark.asyncio
@@ -194,7 +194,7 @@ async def test_ambiguous_recovery_readback_denied():
     )
     with pytest.raises(native.NativeOnlyLifespanError, match="readback_unconfirmed"):
         await native.start_native_only(_settings(), factory, automation)
-    assert automation.recover_calls == [True]
+    assert automation.recover_calls == [(True, 7)]
 
 
 def test_existing_estop_requires_persisted_restart_latch_after_recovery():

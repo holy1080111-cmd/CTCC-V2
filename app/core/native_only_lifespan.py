@@ -153,10 +153,10 @@ async def start_native_only(settings, session_factory, automation) -> None:
         before = await inspect_existing_control(session_factory)
         if automation.repository is None:
             raise NativeOnlyLifespanError("native_only_control_repository_missing")
-        # The source snapshot above can race another writer. The real
-        # recovery must independently refuse a missing row before it can
-        # execute its historical default-state insert path.
-        await automation.recover(require_existing=True)
+        # Bind the recovery CAS to the exact admitted control revision.
+        await automation.recover(
+            require_existing=True, expected_revision=before.revision
+        )
         after = await automation.repository.load_state()
         status = await automation.status()
         _check_recovery(before, after, status)

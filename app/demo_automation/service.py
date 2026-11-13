@@ -186,11 +186,19 @@ class SafeDemoAutomation:
     def running(self) -> bool:
         return self._task is not None and not self._task.done()
 
-    async def recover(self, *, require_existing: bool = False) -> None:
+    async def recover(
+        self, *, require_existing: bool = False, expected_revision: int | None = None
+    ) -> None:
         if type(require_existing) is not bool or (
             require_existing and self.repository is None
         ):
             raise DemoAutomationSafetyError("demo_automation_control_state_missing")
+        if expected_revision is not None and (
+            not require_existing
+            or type(expected_revision) is not int
+            or expected_revision < 1
+        ):
+            raise DemoAutomationSafetyError("demo_automation_control_metadata_invalid")
         if self.repository is not None:
             stored = await self.repository.load_state()
             if require_existing and (
@@ -201,6 +209,13 @@ class SafeDemoAutomation:
                 # Never bootstrap an empty legacy control row in the
                 # native-only profile, even if the prior probe raced.
                 raise DemoAutomationSafetyError("demo_automation_control_state_missing")
+            if (
+                expected_revision is not None
+                and stored["_control_revision"] != expected_revision
+            ):
+                raise DemoAutomationSafetyError(
+                    "demo_automation_control_revision_conflict"
+                )
             if stored:
                 stored = dict(stored)
                 revision = stored.pop("_control_revision", 0)
