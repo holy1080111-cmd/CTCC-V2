@@ -109,6 +109,15 @@ _N234_POSTGRANT_ACL_SHAPE_SHA256 = (
 _N234_ROLE_OBSERVER_SOURCE_SHA256 = (
     "0d8984cddbc46a724f5d93dba88af7392276eb0a42e560334914686ce0717aa9"
 )
+# The newer inert candidate has separate exact source pins. N234 remains intact.
+_CANDIDATE_0056_SOURCE_PINS = {
+    "app/core/native_role_witness_0056_v1.py": (
+        "164ba609ecff5e7df4d77689dcfdf34c4ff0506ff5587b7494cd1e15a833488a"
+    ),
+    "app/core/native_startup_candidate_0056_v1.py": (
+        "69458555dea8f36c6b7773dfe86fd7598222b69220c1b6a6a64bc8ca632eef48"
+    ),
+}
 _READ = "gate3_fitted_binding_read(text)"
 _ACK_READ = "gate3_fitted_binding_ack_read(text)"
 _ROLES = {
@@ -2297,6 +2306,7 @@ async def test_actual0056_native_lifespan_denies_before_recovery_cas(
         is False
     )
     assert await read_control() == before
+
     settings = Settings(
         _env_file=None,
         ctcc_native_only_lifespan_v1=True,
@@ -2331,6 +2341,79 @@ async def test_actual0056_native_lifespan_denies_before_recovery_cas(
     assert instance.state.native_only_recovery_confirmed is False
     forbidden_recovery.assert_not_awaited()
     assert await read_control() == before
+
+
+async def test_actual0056_inert_startup_candidate_binds_source_roles_and_control(
+    _actual_0056_role_observation_lab,
+):
+    from app.core import native_role_witness_0056_v1 as witness56
+    from app.core import native_startup_candidate_0056_v1 as candidate56
+    from app.core import native_startup_control_observation_0056_v1 as startup56
+    from app.database.models.demo_automation import DemoAutomationState
+
+    _, owner_factory, selected, _ = _actual_0056_role_observation_lab
+    identity, files, files_raw = fitted_measurement._read_hermetic_inputs()
+    source = fitted_measurement.source_identity(identity, files, files_raw)
+    for relative, expected in _CANDIDATE_0056_SOURCE_PINS.items():
+        assert files[relative]["sha256"] == expected
+        assert sha((_SOURCE_ROOT / relative).read_bytes()) == expected
+    assert (
+        sha((_SOURCE_ROOT / "MANIFEST.sha256").read_bytes())
+        == source["manifest_sha256"]
+    )
+    assert (
+        sha(
+            (
+                _SOURCE_ROOT
+                / "app/core/native_role_preflight_0056_full_diagnostic_v1.py"
+            ).read_bytes()
+        )
+        == _N234_ROLE_OBSERVER_SOURCE_SHA256
+    )
+
+    instant = datetime(2026, 1, 1, tzinfo=UTC)
+    async with owner_factory.begin() as session:
+        session.add(
+            DemoAutomationState(
+                id=1,
+                control_revision=7,
+                session_date=instant.date(),
+                armed=True,
+                restart_latch_required=True,
+                active_trades={"synthetic-tracked-position": {"retained": True}},
+                updated_at=instant,
+            )
+        )
+    # These independent lab reads supply diagnostic inputs only.
+    measured = await witness56.observe_restricted_native_roles_0056_witness_v1(
+        selected, source=_SOURCE_ROOT
+    )
+    measured_control = await startup56.observe_startup_control_0056_witness_v1(selected)
+    assert (
+        measured.server_incarnation_sha256 == measured_control.server_incarnation_sha256
+    )
+    assert measured.role_route_sha256 == measured_control.role_route_sha256
+    pins = candidate56.NativeStartupCandidate0056PinsV1(
+        source["manifest_sha256"],
+        _N234_INHERITED_NATIVE_SHA256,
+        _N234_POSTGRANT_ACL_SHAPE_SHA256,
+        measured.observation.frame_writer_observation_sha256,
+        measured.observation.raw_custody_catalog_sha256,
+        measured.server_incarnation_sha256,
+        measured.role_route_sha256,
+    )
+    result = await candidate56.observe_selected_native_startup_candidate_0056_v1(
+        selected, source=_SOURCE_ROOT, pins=pins
+    )
+    assert result.control_revision == 7
+    assert result.admission == "DENY"
+    assert result.independent_reference_authenticated is False
+    assert result.startup_admission is result.execution_authority is False
+    assert (
+        result.deployment_server_incarnation_sha256
+        == measured.server_incarnation_sha256
+    )
+    assert result.deployment_role_route_sha256 == measured.role_route_sha256
 
 
 async def test_actual0056_lab_only_recovery_cas_after_fresh_restricted_observations(

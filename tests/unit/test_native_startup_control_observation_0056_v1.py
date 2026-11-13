@@ -178,6 +178,21 @@ async def test_observes_control_and_soak_once_in_same_restricted_snapshot(scenar
 
 
 @pytest.mark.asyncio
+async def test_control_runtime_witness_hashes_full_original_row(scenario):
+    first = await subject.observe_startup_control_0056_witness_v1(scenario.selected)
+    assert first.observation.control.revision == 7
+    assert first.startup_admission is first.execution_authority is False
+    assert subject.roles56._is_digest(first.control_snapshot_sha256)
+    assert subject.roles56._is_digest(first.server_incarnation_sha256)
+    assert subject.roles56._is_digest(first.role_route_sha256)
+    scenario.control["active_trades"]["private-synthetic"]["new"] = 1
+    changed = await subject.observe_startup_control_0056_witness_v1(scenario.selected)
+    assert first.observation == changed.observation
+    assert first.control_snapshot_sha256 != changed.control_snapshot_sha256
+    assert "private-synthetic" not in repr(first)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "fault",
     [

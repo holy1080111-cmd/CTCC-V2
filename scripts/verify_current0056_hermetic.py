@@ -92,6 +92,10 @@ _FITTED_CASES = (
     ),
     (
         fitted_measurement.CASE[0],
+        "test_actual0056_inert_startup_candidate_binds_source_roles_and_control",
+    ),
+    (
+        fitted_measurement.CASE[0],
         "test_actual0056_lab_only_recovery_cas_after_fresh_restricted_observations",
     ),
     (
