@@ -1,0 +1,65 @@
+name: CTCC DB0056 operator tools Linux isolation
+
+on:
+  push:
+    branches: [work/db0056-tool-linux-n301-diagnostic]
+
+permissions:
+  contents: read
+
+jobs:
+  operator-tools:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - name: Check out exact diagnostic source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Verify parent product scope and prepare exact product inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          product=7c036ef08b3fef778e9b6f0c442c5b97a6717d70
+          test "$(git rev-parse HEAD^)" = "$product"
+          test "$(git diff --name-only "$product" HEAD)" = $'.github/workflows/db0056-tool-linux-n301.yml\nMANIFEST.sha256'
+          destination="$RUNNER_TEMP/operator-tools"
+          mkdir "$destination" "$destination/context" "$destination/results"
+          git -c core.autocrlf=false -c core.eol=lf archive --format=tar --output="$destination/exact.tar" "$product"
+          (cd "$destination" && sha256sum exact.tar > exact.sha256)
+          test "$(cut -d ' ' -f 1 "$destination/exact.sha256")" = 84538a6f33d4627bc215b3647c5c3c20001e90b7e8c37195376ee767fa53d1eb
+          tar -xf "$destination/exact.tar" -C "$destination/context"
+      - name: Build exact product and run isolated Linux tool checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          destination="$RUNNER_TEMP/operator-tools"
+          docker build --build-arg CTCC_SOURCE_COMMIT=7c036ef08b3fef778e9b6f0c442c5b97a6717d70 --build-arg CTCC_SOURCE_TREE=86573b68edd28475426b7ce86bbf938f7edbb9c2 -t ctcc-n301-tool "$destination/context"
+          docker image inspect ctcc-n301-tool --format '{{.Id}}' > "$destination/results/image-id.txt"
+          docker run --rm --network none --user 0:0 --cap-drop ALL \
+            --cap-add SYS_CHROOT --cap-add SETUID --cap-add SETGID \
+            --mount "type=bind,src=$destination/results,dst=/output" \
+            --mount "type=bind,src=$destination/exact.tar,dst=/archive/exact.tar,readonly" \
+            ctcc-n301-tool sh -euc '
+              python -B -m pytest -o addopts= -q -p no:cacheprovider \
+                --junitxml /output/linux-operator-tools.xml \
+                tests/unit/test_native_startup_trust_0056_v1.py \
+                tests/unit/test_native_control_status_0056_v1.py \
+                tests/unit/test_native_deployment_descriptor_0056_v1.py \
+                tests/unit/test_verify_offline_chaos_subset_v1.py \
+                tests/unit/test_offline_snapshot_only_launcher.py
+              python -B -m scripts.verify_offline_chaos_subset_v1 \
+                --archive /archive/exact.tar \
+                --archive-sha256 84538a6f33d4627bc215b3647c5c3c20001e90b7e8c37195376ee767fa53d1eb \
+                --output /output/component-chaos'
+      - name: Retain exact-source diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ctcc-n301-linux-tool-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/operator-tools/exact.sha256
+            ${{ runner.temp }}/operator-tools/results/
+          if-no-files-found: error
+          retention-days: 30
