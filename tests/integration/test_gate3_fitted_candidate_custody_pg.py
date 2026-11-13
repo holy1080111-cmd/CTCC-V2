@@ -3387,6 +3387,80 @@ async def test_actual0056_restricted_writer_creates_only_exact_stopped_genesis(
     assert preserved.event_sha256 == original.event_sha256
 
 
+async def test_actual0056_policy_counter_observes_absence_under_account_lock(
+    monkeypatch, _actual_0056_role_observation_lab
+):
+    from sqlalchemy import func, select
+
+    from app.core import native_policy_counter_readback_0056_v1 as policy_counter
+    from app.core.native_role_witness_0056_v1 import (
+        observe_restricted_native_roles_0056_witness_v1,
+    )
+    from app.database.repositories.demo_control import DemoControlRepository
+    from app.trade_qualification.demo_control import ControlScope, account_lock_key
+    from app.trade_qualification.reservations import LedgerScope
+
+    _, owner_factory, factories, _ = _actual_0056_role_observation_lab
+    witness = await observe_restricted_native_roles_0056_witness_v1(
+        factories, source=_SOURCE_ROOT
+    )
+    scope = LedgerScope(account_id="730006", settlement_currency="USDT")
+    control_scope = ControlScope(scope.environment, scope.account_id)
+    repo = DemoControlRepository(owner_factory, clock=lambda: datetime.now(UTC))
+    first_control = await repo.latch_stop(control_scope, command_id="a" * 64)
+    original_read_row = policy_counter._read_counter_row
+    original_once = policy_counter._read_once
+    transactions = []
+
+    async def verify_lock(session, selected_scope, state, check_held):
+        async with owner_factory() as competing, competing.begin():
+            held = await competing.scalar(
+                select(func.pg_try_advisory_xact_lock(account_lock_key(control_scope)))
+            )
+        assert held is False
+        return await original_read_row(session, selected_scope, state, check_held)
+
+    async def record_read(*args):
+        observed = await original_once(*args)
+        transactions.append(observed.transaction_id)
+        return observed
+
+    monkeypatch.setattr(policy_counter, "_read_counter_row", verify_lock)
+    monkeypatch.setattr(policy_counter, "_read_once", record_read)
+    result = await policy_counter.observe_native_policy_counter_0056_v1(
+        factories, witness, scope
+    )
+    assert result.status == "ABSENT"
+    assert result.control_revision == first_control.state.revision
+    assert result.control_event_sha256 == first_control.event_sha256
+    assert result.counter_row_sha256 is None
+    assert result.admission == "DENY"
+    assert result.source_authenticity_verified is result.account_complete is False
+    assert result.execution_authority is False
+    assert len(set(transactions)) == 2
+
+    with pytest.raises(policy_counter.NativePolicyCounterReadback0056Error):
+        await policy_counter.observe_native_policy_counter_0056_v1(
+            factories, witness, scope.model_copy(update={"account_id": "730007"})
+        )
+
+    first = True
+
+    async def change_control_between_reads(*args):
+        nonlocal first
+        observed = await original_once(*args)
+        if first:
+            first = False
+            await repo.latch_stop(control_scope, command_id="b" * 64)
+        return observed
+
+    monkeypatch.setattr(policy_counter, "_read_once", change_control_between_reads)
+    with pytest.raises(policy_counter.NativePolicyCounterReadback0056Error):
+        await policy_counter.observe_native_policy_counter_0056_v1(
+            factories, witness, scope
+        )
+
+
 async def test_actual0056_restart_recovery_revokes_existing_account_arm(
     monkeypatch, _actual_0056_role_observation_lab
 ):
