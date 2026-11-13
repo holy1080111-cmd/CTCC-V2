@@ -14,6 +14,8 @@ adds the persistent manual Paper ledger.
 Open `/dashboard` in the local analysis installation, enter its local CTCC
 API token, and select an unmodified MarketSnapshot JSON file. A connected
 CTCC instance can export that file via `GET /api/market/snapshot/{symbol}`.
+For a public snapshot export, select its optional `snapshot-receipt.json`
+in the same dialog to check the pair before analysis.
 The import is limited to 1 MiB. The app rebuilds 4H, 1H, 15m and 5m analysis
 at the capture time and returns the original input SHA256. Source
 authenticity and order authority remain false for imported data.

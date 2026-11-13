@@ -35,5 +35,10 @@ Paper account state. Its only HTTP paths are `/dashboard`, `/readiness`, and
 are absent. An imported snapshot's source authenticity, trade readiness and
 execution authority remain false even when descriptive analysis succeeds.
 
+For an exported public snapshot with a receipt, select both files together in
+the same file dialog. The browser checks the pair before analysis and keeps
+the receipt in the browser. An invalid or mismatched receipt stops the import.
+The viewer still accepts one snapshot for unverified offline analysis.
+
 Open `/readiness` to confirm the viewer is running and see the source commit.
 Choose your installation's printed address if you prepared it with a custom port.

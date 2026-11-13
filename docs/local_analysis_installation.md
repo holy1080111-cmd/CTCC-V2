@@ -59,6 +59,15 @@ the rejected journal for diagnosis and produces no usable snapshot. A failed
 output readback may leave files in the output directory. Use files only after
 the command succeeds and the receipt hash matches the snapshot.
 
+To check the original pair in the browser, select the snapshot and
+`snapshot-receipt.json` together in the same file dialog. The copied
+`<name>.receipt.json` filename is also supported. The browser checks the exact
+snapshot SHA-256, instrument and observation time against the receipt before
+analysis. An invalid or mismatched receipt stops the import. The receipt stays
+in the browser. A snapshot selected alone still runs offline analysis and
+shows that no receipt was provided. A matching receipt does not authenticate
+the source or grant trading authority.
+
 To reproduce an existing accepted snapshot without network access, replace
 `capture` with `replay --plan-sha256 <digest> --journal-sha256 <digest>` and use
 another empty output directory. Replay retains the original observation time.

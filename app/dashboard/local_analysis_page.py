@@ -1,6 +1,9 @@
 """Self-contained browser page for the offline, untrusted snapshot analysis API."""
 
-LOCAL_ANALYSIS_HTML = r"""<!doctype html>
+from app.dashboard.snapshot_receipt import SNAPSHOT_RECEIPT_SCRIPT
+
+LOCAL_ANALYSIS_HTML = (
+    r"""<!doctype html>
 <html lang="zh-Hant">
 <head>
   <meta charset="utf-8">
@@ -50,8 +53,9 @@ LOCAL_ANALYSIS_HTML = r"""<!doctype html>
   <div class="panel">
     <label for="token">本機 CTCC API Token</label>
     <input id="token" type="password" autocomplete="off" spellcheck="false">
-    <label for="snapshot">MarketSnapshot JSON 檔案（最多 1 MiB）</label>
-    <input id="snapshot" type="file" accept=".json,application/json">
+    <label for="snapshot">MarketSnapshot JSON（最多 1 MiB）與選填的匯出核對單</label>
+    <input id="snapshot" type="file" accept=".json,application/json" multiple aria-describedby="snapshotHint">
+    <p id="snapshotHint">有核對單時，在同一個視窗選取兩個檔案。</p>
     <button id="analyze" type="button">開始本機分析</button>
     <p id="status" role="status" aria-live="polite">尚未分析。</p>
   </div>
@@ -122,6 +126,9 @@ LOCAL_ANALYSIS_HTML = r"""<!doctype html>
 </main>
 <script>
 "use strict";
+"""
+    + SNAPSHOT_RECEIPT_SCRIPT
+    + r"""
 const MAX_SNAPSHOT_BYTES = 1024 * 1024;
 const PAPER_RESTART_MESSAGE = "本機 Paper 寫入結果未明，已暫停所有模擬操作。請重啟同一個本機服務，再重新讀取帳本核對。";
 const tokenInput = document.getElementById("token");
@@ -181,20 +188,27 @@ button.addEventListener("click", async () => {
   result.hidden = true;
   const token = tokenInput.value.trim();
   tokenInput.value = "";
-  const file = fileInput.files && fileInput.files[0];
+  const chosen = selectSnapshotFiles(fileInput.files);
   if (!token) {
     showFailure("請輸入本機 API Token。");
     return;
   }
-  if (!file || file.size === 0 || file.size > MAX_SNAPSHOT_BYTES) {
-    showFailure("請選取 1 MiB 以下的非空 JSON 檔案。");
+  if (!chosen || chosen.snapshot.size === 0 || chosen.snapshot.size > MAX_SNAPSHOT_BYTES) {
+    showFailure("請選取一個 1 MiB 以下的非空快照。核對單最多一份。");
     return;
   }
   button.disabled = true;
+  fileInput.disabled = true;
   status.textContent = "本機分析中…";
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 30000);
   try {
+    const checked = await checkSnapshotReceipt(chosen.snapshot, chosen.receipt).catch(() => null);
+    if (!checked) {
+      showFailure("快照與核對單檢查未通過，未送出分析。");
+      return;
+    }
+    const {file, digest} = checked;
     const response = await fetch("/api/analysis/snapshot", {
       method: "POST",
       headers: {
@@ -225,18 +239,19 @@ button.addEventListener("click", async () => {
       return;
     }
     const value = await response.json();
-    if (!acceptedOfflineResult(value)) {
-      showFailure("分析結果格式不符，未顯示資料。");
+    if (!acceptedOfflineResult(value) || (digest && digest !== value.input_sha256)) {
+      showFailure("分析結果格式或檔案雜湊不符，未顯示資料。");
       return;
     }
     result.textContent = JSON.stringify(value, null, 2);
     result.hidden = false;
-    status.textContent = "分析完成。匯入來源仍未驗證，交易資格維持拒絕。";
+    status.textContent = snapshotAnalysisFinished(digest);
   } catch {
     showFailure("本機分析連線中斷或逾時。");
   } finally {
     clearTimeout(timer);
     button.disabled = false;
+    fileInput.disabled = false;
   }
 });
 
@@ -604,3 +619,4 @@ renderPaperControls();
 </body>
 </html>
 """
+)
