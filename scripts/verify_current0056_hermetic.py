@@ -54,6 +54,14 @@ _FITTED_CASES = (
         fitted_measurement.CASE[0],
         "test_actual0056_full_native_role_rejects_swapped_roles_and_extra_grant",
     ),
+    (
+        fitted_measurement.CASE[0],
+        "test_actual0056_native_lifespan_denies_before_recovery_cas",
+    ),
+    (
+        fitted_measurement.CASE[0],
+        "test_actual0056_owner_grant_lock_and_rollback",
+    ),
 )
 
 

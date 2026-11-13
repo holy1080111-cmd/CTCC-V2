@@ -55,6 +55,8 @@ CURRENT56_NATIVE_ROLE_CASES = tuple(
     for name in (
         "test_actual0056_full_native_role_observation_tls",
         "test_actual0056_full_native_role_rejects_swapped_roles_and_extra_grant",
+        "test_actual0056_native_lifespan_denies_before_recovery_cas",
+        "test_actual0056_owner_grant_lock_and_rollback",
     )
 )
 CURRENT56_PG1_REQUIRED_CASES = (*CURRENT56_CUSTODY_CASES, *CURRENT56_NATIVE_ROLE_CASES)

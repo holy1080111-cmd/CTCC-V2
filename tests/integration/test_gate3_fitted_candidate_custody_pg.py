@@ -7,7 +7,7 @@ import json
 import os
 import re
 import ssl
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from importlib import import_module
@@ -19,7 +19,7 @@ from alembic.config import Config
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from alembic.script import ScriptDirectory
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -59,8 +59,6 @@ from app.mie.validation.prospective_devval_campaign_plan_v1 import (
 from app.mie.validation.prospective_devval_fitted_binding_v1 import (
     build_devval_candidate_binding,
 )
-from scripts import current0055_native_account_source_acl_v1 as account_acl
-from scripts import current0055_native_lifecycle_acl_v1 as lifecycle_acl
 from scripts import current0055_runtime_grants as core_acl
 from scripts import current0056_fitted_catalog_measurement_v1 as fitted_measurement
 from scripts import current0056_fitted_delta_catalog_v1 as fitted_delta
@@ -1005,35 +1003,117 @@ SELECT current_user::text, session_user::text,
 _ROLE_OBS56_REFUSAL = "^native_roles_0056_observation_unavailable$"
 
 
+_GRANT_LOCK_0056 = text("SELECT pg_catalog.pg_advisory_xact_lock(5883109675522810055)")
+_GRANT_TX_SETTINGS = (
+    "SET TRANSACTION ISOLATION LEVEL READ COMMITTED",
+    "SET TRANSACTION READ WRITE",
+    *owner_pregrant._OWNER_SETTINGS[2:],
+)
+
+
+async def _read_test_fitted_write_graph(connection, owner_name, demo):
+    await connection.exec_driver_sql("SET LOCAL search_path TO pg_catalog, pg_temp")
+    document = await connection.scalar(text(fitted_delta.OWNER_READWRITE_CATALOG_SQL))
+    fitted_delta.inspect_owner_readwrite_catalog(
+        document, owner=owner_name, demo_roles=demo
+    )
+    await connection.exec_driver_sql(
+        "SET LOCAL search_path TO pg_catalog, public, pg_temp"
+    )
+    # Compare only physical facts across profiles after validating each actual
+    # transaction separately. Neither digest becomes a startup reference.
+    return {
+        key: value
+        for key, value in document.items()
+        if key not in {"read_only", "read_committed"}
+    }
+
+
 async def _install_test_demo_grants(owner, demo):
     names = dict(zip(("writer", "custody", "frame_reader"), demo, strict=True))
     sql = owner_pregrant.exact_42_grant_sql_0056(**names)
-    core, account = account_acl._plans(**names)
-    previous, lifecycle = lifecycle_acl._plans(**names)
-    assert core == core_acl._plan(**names) and previous == core + account
-    assert (len(core), len(account), len(lifecycle)) == (28, 11, 3)
-    plan = previous + lifecycle
-    assert sql == tuple(grant.sql() for grant in plan)
+    owner_name = owner.url.username
+    assert re.fullmatch(r"ctcc_native_obs56_[0-9a-f]{12}", owner.url.database)
+    fitted_delta.pinned_migration(_SOURCE_ROOT)
+    owner_factory = async_sessionmaker(owner, autoflush=False, expire_on_commit=False)
+    async with owner_factory() as session, session.begin():
+        for setting in observation._OWNER_SETTINGS:
+            await session.execute(text(setting))
+        read_identity = await observation._identity_at_0056(session, owner_name)
+        read_graph = await observation._catalog(session, fitted_delta.CATALOG_SQL)
+        fitted_delta.inspect_catalog_document(
+            read_graph, owner=owner_name, demo_roles=demo, fitted_roles=None
+        )
+    fitted_physical = {
+        key: value
+        for key, value in read_graph.items()
+        if key not in {"read_only", "repeatable"}
+    }
+    plan = owner_pregrant._grant_objects(**names)
+    relations = ", ".join(
+        f"public.{name}"
+        for name in sorted(
+            {item.target for item in plan if item.kind == "TABLE"} | fitted_delta.TABLES
+        )
+    )
 
     async with owner.begin() as connection:
-        owner_oid = await connection.scalar(observation.current55._OWNER_OID_SQL)
-        assert type(owner_oid) is int and owner_oid > 0
-        role_oids = await core_acl._roles(connection, demo, owner_oid)
-        expected = core_acl._expected_acl(plan, role_oids, owner_oid)
-        before = await core_acl._target_oids(
-            connection, expected, owner_oid, granted=False
+        for setting in _GRANT_TX_SETTINGS:
+            await connection.exec_driver_sql(setting)
+        await connection.execute(_GRANT_LOCK_0056)
+        assert (
+            await observation._identity_at_0056(connection, owner_name) == read_identity
         )
-        await core_acl._access(
-            connection, plan, role_oids, granted=False, targets=before
+        await connection.exec_driver_sql(
+            f"LOCK TABLE {relations} IN ACCESS EXCLUSIVE MODE NOWAIT"
+        )
+        owner_oid = read_identity[3]
+        assert (
+            await connection.scalar(observation.current55._OWNER_OID_SQL) == owner_oid
+        )
+        assert tuple(
+            (
+                await connection.execute(
+                    core_acl._OWNER_POLICY_SQL, {"owner": owner_oid}
+                )
+            ).one()
+        ) == (True, True)
+        inherited = (
+            owner_pregrant.inherited56.observe_owner_readwrite_installation_0056(
+                await connection.scalar(
+                    text(owner_pregrant.inherited56.OWNER_CATALOG_SQL)
+                )
+            )
+        )
+        assert inherited["role_oid"] == owner_oid
+        assert inherited["native_definitions_sha256"] == (
+            "6243338abe9cfcbb4eb613bc3d21cd7adbaf8059644e8b7a1c2df9755ac340c7"
+        )
+        assert (
+            await _read_test_fitted_write_graph(connection, owner_name, demo)
+            == fitted_physical
+        )
+        role_oids = await core_acl._roles(connection, demo, owner_oid)
+        await observation._require_no_effective_demo_fitted_execute(connection, demo)
+        before = await owner_pregrant._exact_acl_phase(
+            connection, role_oids, owner_oid, **names, granted=False
         )
         for statement in sql:
             await connection.exec_driver_sql(statement)
         assert (
-            await core_acl._target_oids(connection, expected, owner_oid, granted=True)
+            await owner_pregrant._exact_acl_phase(
+                connection, role_oids, owner_oid, **names, granted=True
+            )
             == before
         )
-        await core_acl._access(
-            connection, plan, role_oids, granted=True, targets=before
+        await observation._require_no_effective_demo_fitted_execute(connection, demo)
+        assert (
+            await _read_test_fitted_write_graph(connection, owner_name, demo)
+            == fitted_physical
+        )
+        assert await core_acl._roles(connection, demo, owner_oid) == role_oids
+        assert (
+            await observation._identity_at_0056(connection, owner_name) == read_identity
         )
 
 
@@ -1056,8 +1136,8 @@ async def _verify_actual_tls_roles(engines):
     assert len({row[7:] for row in observed}) == 1
 
 
-@pytest.fixture
-async def _actual_0056_role_observation_lab():
+@asynccontextmanager
+async def _open_actual_0056_role_observation_lab(*, grant_demo: bool):
     url, tls = _isolated_tls_database_config()
     assert (url.username, url.database, url.port) == ("ctcc", "ctcc", 5432)
     assert tls.check_hostname and tls.verify_mode == ssl.CERT_REQUIRED
@@ -1108,7 +1188,8 @@ async def _actual_0056_role_observation_lab():
                 custody=demo[1],
                 frame_reader=demo[2],
             )
-        await _install_test_demo_grants(owner, demo)
+        if grant_demo:
+            await _install_test_demo_grants(owner, demo)
         await _verify_actual_tls_roles((owner, *role_engines))
         factories = tuple(
             async_sessionmaker(bound, autoflush=False, expire_on_commit=False)
@@ -1150,6 +1231,77 @@ async def _actual_0056_role_observation_lab():
                                 )
                 finally:
                     await admin.dispose()
+
+
+@pytest.fixture
+async def _actual_0056_role_observation_lab():
+    async with _open_actual_0056_role_observation_lab(grant_demo=True) as lab:
+        yield lab
+
+
+@pytest.fixture
+async def _actual_0056_ungranted_lab():
+    async with _open_actual_0056_role_observation_lab(grant_demo=False) as lab:
+        yield lab
+
+
+async def test_actual0056_owner_grant_lock_and_rollback(
+    _actual_0056_ungranted_lab,
+):
+    owner, owner_factory, selected, _ = _actual_0056_ungranted_lab
+    demo = tuple(
+        factory.kw["bind"].url.username
+        for factory in (
+            selected.writer_factory,
+            selected.custody_factory,
+            selected.frame_reader_factory,
+        )
+    )
+    names = dict(zip(("writer", "custody", "frame_reader"), demo, strict=True))
+    before = await owner_pregrant.observe_owner_pregrant_diagnostic_0056(
+        owner_factory, source=_SOURCE_ROOT, **names
+    )
+    async with owner.begin() as competing:
+        await competing.execute(_GRANT_LOCK_0056)
+        with pytest.raises(DBAPIError) as locked:
+            await _install_test_demo_grants(owner, demo)
+        assert locked.value.orig.sqlstate == "55P03"
+
+    executed_grants = []
+
+    def fail_last_grant(_conn, _cursor, statement, parameters, _ctx, _many):
+        if statement.startswith("GRANT "):
+            executed_grants.append(statement)
+            if len(executed_grants) == 42:
+                return "SELECT 1/0", parameters
+        return statement, parameters
+
+    event.listen(
+        owner.sync_engine, "before_cursor_execute", fail_last_grant, retval=True
+    )
+    try:
+        with pytest.raises(DBAPIError) as failed:
+            await _install_test_demo_grants(owner, demo)
+        assert failed.value.orig.sqlstate == "22012"
+        assert tuple(executed_grants) == owner_pregrant.exact_42_grant_sql_0056(**names)
+    finally:
+        event.remove(owner.sync_engine, "before_cursor_execute", fail_last_grant)
+    assert (
+        await owner_pregrant.observe_owner_pregrant_diagnostic_0056(
+            owner_factory, source=_SOURCE_ROOT, **names
+        )
+        == before
+    )
+
+    await _install_test_demo_grants(owner, demo)
+    readback = await observation.observe_restricted_native_roles_0056_v1(
+        selected, source=_SOURCE_ROOT
+    )
+    assert (
+        readback.inherited_native_definitions_sha256
+        == before.inherited_native_definitions_sha256
+    )
+    assert readback.startup_admission is readback.execution_authority is False
 
 
 async def test_actual0056_full_native_role_observation_tls(
@@ -1297,3 +1449,84 @@ async def test_actual0056_full_native_role_rejects_swapped_roles_and_extra_grant
                 f"REVOKE EXECUTE ON FUNCTION {routine} FROM PUBLIC"
             )
     assert await observation.observe_native_roles_0056_v1(selected, **args) == baseline
+
+
+async def test_actual0056_native_lifespan_denies_before_recovery_cas(
+    _actual_0056_role_observation_lab, monkeypatch
+):
+    from unittest.mock import AsyncMock
+
+    from app import main as app_main
+    from app.config.settings import Settings
+    from app.core import native_only_lifespan
+    from app.core.native_role_preflight_v1 import NativeRolePreflightError
+    from app.database.models.demo_automation import DemoAutomationState
+
+    _, owner_factory, selected, _ = _actual_0056_role_observation_lab
+    writer_factory = selected.writer_factory
+    writer_engine = writer_factory.kw["bind"]
+    observed = await observation.observe_restricted_native_roles_0056_v1(
+        selected, source=_SOURCE_ROOT
+    )
+    assert observed.database_head == "0056"
+    assert observed.startup_admission is observed.execution_authority is False
+
+    instant = datetime(2026, 1, 1, tzinfo=UTC)
+    async with owner_factory.begin() as session:
+        session.add(
+            DemoAutomationState(
+                id=1,
+                control_revision=7,
+                session_date=instant.date(),
+                armed=True,
+                restart_latch_required=True,
+                active_trades={"synthetic-tracked-position": {"retained": True}},
+                updated_at=instant,
+            )
+        )
+
+    async def read_control():
+        async with writer_factory() as session:
+            return await session.scalar(
+                text(
+                    "SELECT pg_catalog.to_jsonb(s)::text FROM public.demo_automation_state s WHERE s.id=1"
+                )
+            )
+
+    before = await read_control()
+    before_state = json.loads(before)
+    assert before_state["control_revision"] == 7 and before_state["armed"] is True
+    settings = Settings(
+        _env_file=None,
+        ctcc_native_only_lifespan_v1=True,
+        environment="production",
+        trading_mode="okx_demo",
+        web_concurrency=1,
+        okx_demo_enabled=True,
+        okx_demo_api_key="",
+        okx_demo_api_secret="",
+        okx_demo_api_passphrase="",
+        **dict.fromkeys(native_only_lifespan._MUST_BE_FALSE, False),
+    )
+    forbidden_recovery = AsyncMock(side_effect=AssertionError("unexpected recovery"))
+    automation = object()
+    monkeypatch.setattr(app_main, "settings", settings)
+    monkeypatch.setattr(app_main, "AsyncSessionFactory", writer_factory)
+    monkeypatch.setattr(app_main, "engine", writer_engine)
+    monkeypatch.setattr(app_main, "safe_demo_automation", automation)
+    monkeypatch.setattr(app_main, "start_native_only", forbidden_recovery)
+    monkeypatch.setattr(
+        observation.selectors,
+        "select_configured_native_demo_factories_v2",
+        lambda: selected,
+    )
+
+    instance = app_main._build_app()
+    with pytest.raises(
+        NativeRolePreflightError, match="^native_role_preflight_unavailable$"
+    ):
+        async with app_main.lifespan(instance):
+            pytest.fail("DB0056 unexpectedly served without startup admission")
+    assert instance.state.native_only_recovery_confirmed is False
+    forbidden_recovery.assert_not_awaited()
+    assert await read_control() == before

@@ -371,6 +371,8 @@ def test_pg2_keeps_all_required_cases_and_modules_once_across_both_roles():
     [
         "test_actual0056_full_native_role_observation_tls",
         "test_actual0056_full_native_role_rejects_swapped_roles_and_extra_grant",
+        "test_actual0056_native_lifespan_denies_before_recovery_cas",
+        "test_actual0056_owner_grant_lock_and_rollback",
     ],
 )
 def test_current56_pg1_readback_refuses_missing_native_role_case(
@@ -380,6 +382,8 @@ def test_current56_pg1_readback_refuses_missing_native_role_case(
     cases = [name for _, name in current56_contract.CURRENT56_CUSTODY_CASES] + [
         "test_actual0056_full_native_role_observation_tls",
         "test_actual0056_full_native_role_rejects_swapped_roles_and_extra_grant",
+        "test_actual0056_native_lifespan_denies_before_recovery_cas",
+        "test_actual0056_owner_grant_lock_and_rollback",
     ]
     report_path, _ = current56_contract.component_report_paths("postgres", 1)
     report = tmp_path / report_path
@@ -501,7 +505,15 @@ def test_fitted_diagnostic_is_explicit_and_cases_only(
     if accepted:
         args, observed = current56._arguments()
         assert args.fitted_catalog_diagnostic is True and observed == 1
-        assert len(current56._FITTED_CASES) == 3
+        assert len(current56._FITTED_CASES) == 5
+        for name in (
+            "test_actual0056_native_lifespan_denies_before_recovery_cas",
+            "test_actual0056_owner_grant_lock_and_rollback",
+        ):
+            assert (
+                "tests.integration.test_gate3_fitted_candidate_custody_pg",
+                name,
+            ) in current56._FITTED_CASES
         assert current56._FITTED_JUNIT not in current56_contract.component_artifacts(
             "postgres", 1
         )

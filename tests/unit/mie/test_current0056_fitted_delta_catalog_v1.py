@@ -17,6 +17,27 @@ FITTED = {
 ROLES = {"owner": OWNER, "demo_roles": DEMO, "fitted_roles": FITTED}
 
 
+def test_owner_readwrite_profile_cannot_be_used_as_readonly_evidence():
+    document = synthetic_catalog()
+    document["function_grants"] = []
+    names = {"owner": OWNER, "demo_roles": DEMO}
+    readonly = catalog.inspect_catalog_document(document, fitted_roles=None, **names)
+    document.pop("repeatable")
+    document["read_only"] = False
+    document["read_committed"] = True
+    readwrite = catalog.inspect_owner_readwrite_catalog(document, **names)
+    assert readwrite != readonly
+    with unittest.TestCase().assertRaisesRegex(
+        catalog.CatalogRefusal, "fitted_catalog_identity_changed"
+    ):
+        catalog.inspect_catalog_document(document, fitted_roles=None, **names)
+    document["read_committed"] = False
+    with unittest.TestCase().assertRaisesRegex(
+        catalog.CatalogRefusal, "fitted_catalog_identity_changed"
+    ):
+        catalog.inspect_owner_readwrite_catalog(document, **names)
+
+
 def synthetic_catalog() -> dict:
     functions = []
     for signature in sorted(catalog.INTERNAL | catalog.APIS.keys()):

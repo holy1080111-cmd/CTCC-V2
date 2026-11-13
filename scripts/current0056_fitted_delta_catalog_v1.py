@@ -128,9 +128,9 @@ def pinned_migration(source: Path) -> None:
     )
 
 
-# A fixed, read-only PostgreSQL catalog query. The surrounding owner session
-# must set REPEATABLE READ READ ONLY, pg_catalog/pg_temp search_path, TLS, and
-# verify source/server identity before this query. No caller SQL is interpolated.
+# A fixed PostgreSQL catalog SELECT. The default profile is REPEATABLE READ
+# READ ONLY with a pg_catalog/pg_temp search path. The isolated owner grant
+# test explicitly validates its distinct READ COMMITTED READ WRITE context.
 CATALOG_SQL = """
 SELECT pg_catalog.jsonb_build_object(
  'schema','ctcc.current0056.fitted_delta.physical_catalog.inert.v1',
@@ -292,13 +292,19 @@ SELECT pg_catalog.jsonb_build_object(
 ) AS catalog
 """
 
+OWNER_READWRITE_CATALOG_SQL = CATALOG_SQL.replace(
+    "'repeatable',pg_catalog.current_setting('transaction_isolation')='repeatable read'",
+    "'read_committed',pg_catalog.current_setting('transaction_isolation')='read committed'",
+)
 
-def inspect_catalog_document(
+
+def _inspect_catalog_document(
     document: dict,
     *,
     owner: str,
     demo_roles: tuple[str, ...],
     fitted_roles: dict[str, str] | None,
+    owner_readwrite: bool,
 ) -> str:
     """Pure shape/role check; digest is diagnostic and never native authority."""
     _need(
@@ -306,13 +312,16 @@ def inspect_catalog_document(
         "fitted_catalog_document_invalid",
     )
     _need(
-        document.get("schema") == SCHEMA
+        type(owner_readwrite) is bool
+        and (not owner_readwrite or fitted_roles is None)
+        and document.get("schema") == SCHEMA
         and document.get("head") == "0056"
         and document.get("server_version") == "170011"
         and document.get("actor") == document.get("login") == owner
         and document.get("tls") is True
-        and document.get("read_only") is True
-        and document.get("repeatable") is True
+        and document.get("read_only") is (not owner_readwrite)
+        and document.get("read_committed" if owner_readwrite else "repeatable") is True
+        and ("repeatable" if owner_readwrite else "read_committed") not in document
         and document.get("durable") is True
         and document.get("search_path") == "pg_catalog, pg_temp"
         and type(document.get("server_build")) is str
@@ -561,6 +570,35 @@ def inspect_catalog_document(
     # the diagnostic fingerprint. A separately observed native reference is
     # still mandatory; this function never returns a positive startup seal.
     return hashlib.sha256(_canonical(document)).hexdigest()
+
+
+def inspect_catalog_document(
+    document: dict,
+    *,
+    owner: str,
+    demo_roles: tuple[str, ...],
+    fitted_roles: dict[str, str] | None,
+) -> str:
+    return _inspect_catalog_document(
+        document,
+        owner=owner,
+        demo_roles=demo_roles,
+        fitted_roles=fitted_roles,
+        owner_readwrite=False,
+    )
+
+
+def inspect_owner_readwrite_catalog(
+    document: dict, *, owner: str, demo_roles: tuple[str, str, str]
+) -> str:
+    """Validate the separate owner write context for isolated grant tests."""
+    return _inspect_catalog_document(
+        document,
+        owner=owner,
+        demo_roles=demo_roles,
+        fitted_roles=None,
+        owner_readwrite=True,
+    )
 
 
 def require_native_reference(document: dict, **roles: object) -> str:
