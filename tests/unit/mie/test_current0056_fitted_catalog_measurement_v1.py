@@ -223,6 +223,79 @@ def test_two_separate_cluster_receipts_pair_without_startup_authority(monkeypatc
         )
 
 
+def test_complete_reference_pair_requires_matching_inherited_catalogs_and_cluster_pins(
+    monkeypatch,
+):
+    inputs = _inputs(monkeypatch)
+    identity, files, raw_map, catalog, roles = inputs
+    second_identity = {**identity, "run_id": "c" * 12}
+    first = _build(inputs)
+    second = capture.build_measurement(
+        identity=second_identity,
+        source_files=files,
+        source_files_raw=raw_map,
+        catalog=catalog,
+        **roles,
+        cluster_system_identifier="98765432109876543210",
+        database_name="ctcc_g3fcat_abcdef123456",
+        database_oid=12990,
+    )
+    first_cluster = json.loads(first)["cluster_system_identifier_sha256"]
+    second_cluster = json.loads(second)["cluster_system_identifier_sha256"]
+    definitions = {field: "a" * 64 for field in capture._INHERITED_PORTABLE_FIELDS}
+    first_inherited = capture._canonical(
+        capture._inherited_receipt(
+            identity,
+            files,
+            first_cluster,
+            {**definitions, "owner_pregrant_fitted_raw_sha256": "b" * 64},
+        )
+    )
+
+    def inherited_second(cluster=second_cluster, normalized="a" * 64):
+        return capture._canonical(
+            capture._inherited_receipt(
+                second_identity,
+                files,
+                cluster,
+                {
+                    **definitions,
+                    "owner_pregrant_fitted_raw_sha256": "c" * 64,
+                    "owner_pregrant_fitted_normalized_sha256": normalized,
+                },
+            )
+        )
+
+    valid = inherited_second()
+
+    def verify(second_inherited, expected=None):
+        return capture.compare_retained_native_reference_evidence(
+            first,
+            second,
+            first_identity=identity,
+            first_source_files=files,
+            first_expected_sha256=capture._sha(first),
+            first_inherited_raw=first_inherited,
+            first_inherited_expected_sha256=capture._sha(first_inherited),
+            second_identity=second_identity,
+            second_source_files=files,
+            second_expected_sha256=capture._sha(second),
+            second_inherited_raw=second_inherited,
+            second_inherited_expected_sha256=expected or capture._sha(second_inherited),
+        )
+
+    proof = verify(valid)
+    assert proof["portable_inherited_definitions"] == definitions
+    assert proof["admission"] == "DENY" and proof["startup_admission"] is False
+    assert proof["native_reference_sealed"] is False
+    with pytest.raises(capture.FittedMeasurementRefusal, match="external_pin"):
+        verify(valid + b" ", expected=capture._sha(valid))
+    with pytest.raises(capture.FittedMeasurementRefusal, match="cluster_mismatch"):
+        verify(inherited_second(cluster=first_cluster))
+    with pytest.raises(capture.FittedMeasurementRefusal, match="pair_mismatch"):
+        verify(inherited_second(normalized="d" * 64))
+
+
 @pytest.mark.parametrize(
     "case_name, skipped", [("wrong_case", False), (capture.CASE[1], True)]
 )

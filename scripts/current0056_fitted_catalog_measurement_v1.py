@@ -39,6 +39,15 @@ _GIT = re.compile(r"[0-9a-f]{40}\Z")
 _RUN = re.compile(r"[0-9a-f]{12}\Z")
 _IDENTITY = Path("/ctcc-run-identity.json")
 _SOURCE_FILES = Path("/ctcc-source-files.json")
+_INHERITED_PORTABLE_FIELDS = frozenset(
+    {
+        "owner_pregrant_inherited_sha256",
+        "owner_pregrant_readwrite_inherited_sha256",
+        "owner_pregrant_fitted_normalized_sha256",
+        "postgrant_readonly_inherited_sha256",
+        "postgrant_readwrite_inherited_sha256",
+    }
+)
 _REQUIRED_FILES = (
     "MANIFEST.sha256",
     "pyproject.toml",
@@ -324,6 +333,88 @@ def compare_retained_measurements(
     }
 
 
+def compare_retained_native_reference_evidence(
+    first_raw: bytes,
+    second_raw: bytes,
+    *,
+    first_identity: dict,
+    first_source_files: dict,
+    first_expected_sha256: str,
+    first_inherited_raw: bytes,
+    first_inherited_expected_sha256: str,
+    second_identity: dict,
+    second_source_files: dict,
+    second_expected_sha256: str,
+    second_inherited_raw: bytes,
+    second_inherited_expected_sha256: str,
+) -> dict:
+    """Replay both complete cluster proofs, keeping the result inert."""
+    fitted_pair = compare_retained_measurements(
+        first_raw,
+        second_raw,
+        first_identity=first_identity,
+        first_source_files=first_source_files,
+        first_expected_sha256=first_expected_sha256,
+        second_identity=second_identity,
+        second_source_files=second_source_files,
+        second_expected_sha256=second_expected_sha256,
+    )
+    portable_definitions = []
+    inherited_pins = []
+    for fitted_raw, inherited_raw, inherited_pin, identity, files in (
+        (
+            first_raw,
+            first_inherited_raw,
+            first_inherited_expected_sha256,
+            first_identity,
+            first_source_files,
+        ),
+        (
+            second_raw,
+            second_inherited_raw,
+            second_inherited_expected_sha256,
+            second_identity,
+            second_source_files,
+        ),
+    ):
+        _need(
+            type(inherited_raw) is bytes
+            and 0 < len(inherited_raw) <= 8_192
+            and type(inherited_pin) is str
+            and _HEX.fullmatch(inherited_pin) is not None
+            and _sha(inherited_raw) == inherited_pin,
+            "inherited_measurement_external_pin",
+        )
+        inherited = verify_inherited_measurement(
+            inherited_raw, identity=identity, source_files=files
+        )
+        fitted = read_evidence_json(fitted_raw)
+        _need(
+            inherited["cluster_system_identifier_sha256"]
+            == fitted["cluster_system_identifier_sha256"]
+            and inherited["source"] == fitted["source"],
+            "inherited_measurement_cluster_mismatch",
+        )
+        portable_definitions.append(
+            {key: inherited["definitions"][key] for key in _INHERITED_PORTABLE_FIELDS}
+        )
+        inherited_pins.append(inherited_pin)
+    _need(
+        portable_definitions[0] == portable_definitions[1],
+        "inherited_measurement_pair_mismatch",
+    )
+    return {
+        "schema": "ctcc.current0056.native_reference_evidence.redacted.inert.v1",
+        "fitted_pair": fitted_pair,
+        "inherited_receipt_sha256": sorted(inherited_pins),
+        "portable_inherited_definitions": portable_definitions[0],
+        "native_reference_sealed": False,
+        "startup_admission": False,
+        "execution_authority": False,
+        "admission": "DENY",
+    }
+
+
 def retain_hermetic_measurement(
     *,
     catalog: dict,
@@ -395,14 +486,7 @@ def _inherited_receipt(
     identity, source_files, cluster_system_identifier_sha256, digests
 ):
     source = source_identity(identity, source_files, _canonical(source_files))
-    required = {
-        "owner_pregrant_inherited_sha256",
-        "owner_pregrant_readwrite_inherited_sha256",
-        "owner_pregrant_fitted_raw_sha256",
-        "owner_pregrant_fitted_normalized_sha256",
-        "postgrant_readonly_inherited_sha256",
-        "postgrant_readwrite_inherited_sha256",
-    }
+    required = _INHERITED_PORTABLE_FIELDS | {"owner_pregrant_fitted_raw_sha256"}
     _need(
         type(digests) is dict
         and type(cluster_system_identifier_sha256) is str
