@@ -458,13 +458,18 @@ def _verify_platform_skips(raw, *, mode, expected_skipped, additional_exact_skip
         raise ValueError("current55_linux_skip_count_mismatch")
 
 
-def _collection(root, mode, index, identity):
+def _collection(root, mode, index, identity, *, additional_exact_skips=()):
     junit, selected_path = component_report_paths(mode, index)
     report = shared.verify_pytest_report(root / junit, allow_unrelated_skips=True)
     junit_raw = _read(root, junit)
     if digest(junit_raw) != report["sha256"]:
         raise ValueError("current55_report_identity_mismatch")
-    _verify_platform_skips(junit_raw, mode=mode, expected_skipped=report["skipped"])
+    _verify_platform_skips(
+        junit_raw,
+        mode=mode,
+        expected_skipped=report["skipped"],
+        additional_exact_skips=additional_exact_skips,
+    )
     selection = read_evidence_json(_read(root, selected_path))
     if mode == "full":
         full = selection.get("full_nodeids")

@@ -267,3 +267,31 @@ def test_current56_linux_skip_adds_only_the_exact_native_custody_case(
             current56._verify_platform_skips(
                 raw, mode=mode, expected_skipped=expected_count
             )
+
+
+def test_current56_linux_shard_collection_applies_versioned_skip_policy(
+    tmp_path, monkeypatch
+):
+    junit, selection = current56.component_report_paths("shard", 4)
+    (tmp_path / junit).parent.mkdir()
+    (tmp_path / junit).write_text(
+        '<testsuites><testsuite tests="2" failures="0" errors="0" skipped="1">'
+        '<testcase classname="tests.unit.other" name="test_ok"/>'
+        f'<testcase classname="{_LIVE_CUSTODY_MODULE}" name="{_WINDOWS_CUSTODY_CASE}">'
+        f'<skipped type="pytest.skip" message="{_WINDOWS_ACL_REASON}"/>'
+        "</testcase></testsuite></testsuites>",
+        encoding="utf-8",
+    )
+    (tmp_path / selection).write_text('{"selected_nodeids":[]}', encoding="utf-8")
+    monkeypatch.setattr(
+        contract.shared, "verify_linux_collection", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        contract.shared, "verify_selected_junit_nodes", lambda *a, **k: None
+    )
+    identity = {"tests": contract.shared.verify_pytest_report(tmp_path / junit)}
+    assert current56._collection(tmp_path, "shard", 4, identity) == {
+        "selected_nodeids": []
+    }
+    with pytest.raises(ValueError, match="^current55_unapproved_linux_skip$"):
+        contract._collection(tmp_path, "shard", 4, identity)

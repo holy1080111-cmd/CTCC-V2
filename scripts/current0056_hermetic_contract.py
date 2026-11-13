@@ -205,6 +205,14 @@ def migration_readback(raw, expected_digest):
 
 def _collection(root, mode, index, identity):
     junit, selected_path = component_report_paths(mode, index)
+    if mode == "shard":
+        return previous._collection(
+            root,
+            mode,
+            index,
+            identity,
+            additional_exact_skips=_LINUX_PLATFORM_SKIPS_0056,
+        )
     if mode != "full":
         selection = previous._collection(root, mode, index, identity)
         if mode == "postgres" and index == 1:
