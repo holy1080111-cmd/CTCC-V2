@@ -2,7 +2,7 @@ name: DB0056 fitted catalog diagnostic
 
 on:
   push:
-    branches: [work/db0056-fitted-catalog-diagnostic]
+    branches: [work/db0056-n302-operator-diagnostic]
   workflow_dispatch:
 
 permissions:
@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   fitted-catalog:
-    if: github.ref == 'refs/heads/work/db0056-fitted-catalog-diagnostic'
+    if: github.ref == 'refs/heads/work/db0056-n302-operator-diagnostic'
     name: DB0056 isolated catalog measurement ${{ matrix.cluster }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
