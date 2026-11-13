@@ -39,6 +39,7 @@ _EXACT_HOST_HELPERS = (
     "current0056_fitted_catalog_measurement_v1.py",
     "current0056_fitted_catalog_pair_v1.py",
     "current0056_migration_pin.py",
+    "native_owner_upgrade_0056_v1.py",
     "current0056_postgrant_acl_measurement_v1.py",
     "devval_campaign_physical_catalog_v1.py",
     "devval_hermetic_tls.py",
@@ -64,6 +65,10 @@ _FITTED_CASES = (
     (
         fitted_measurement.CASE[0],
         "test_actual0056_fresh_owner_migration_has_independent_source_and_tls_readback",
+    ),
+    (
+        fitted_measurement.CASE[0],
+        "test_actual0056_non_superuser_owner_upgrades_0055_once_with_fresh_readback",
     ),
     (
         fitted_measurement.CASE[0],

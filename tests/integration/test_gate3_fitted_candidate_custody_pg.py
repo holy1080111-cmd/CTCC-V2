@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import os
 import re
@@ -10,6 +11,7 @@ import secrets
 import socket
 import ssl
 import sys
+import tarfile
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -72,6 +74,8 @@ from scripts import current0056_postgrant_acl_measurement_v1 as postgrant_acl
 from scripts import current_contract_source_scopes_v1 as source_scopes
 from scripts import devval_campaign_physical_catalog_v1 as devval_catalog
 from scripts import native_owner_route_preflight_0056_v1 as owner_route
+from scripts import native_owner_upgrade_0056_v1 as owner_upgrade
+from scripts import verify_final_hermetic as archive_checks
 from scripts.evidence_json import read_evidence_json
 from tests.integration.test_gate3_canonical_schedule_claim import migrate, pin_record
 from tests.integration.test_gate3_committed_preregistration_seal import (
@@ -246,6 +250,220 @@ async def test_actual0056_fresh_owner_migration_has_independent_source_and_tls_r
                     )
         finally:
             await admin.dispose()
+
+
+def _migrate_owned_empty_to_0055(connection):
+    scope = source_scopes.database0055_source_scope(_SOURCE_ROOT)
+    config = Config(str(_SOURCE_ROOT / "alembic.ini"))
+    config.set_main_option("path_separator", "os")
+    config.set_main_option("script_location", str(_SOURCE_ROOT / "migrations"))
+    script = ScriptDirectory.from_config(config)
+    assert tuple(script.get_heads()) == ("0056",)
+    assert script.get_revision("0056").down_revision == "0055"
+    migration = MigrationContext.configure(
+        connection,
+        opts={
+            "fn": lambda heads, _: script._upgrade_revs("0055", heads),
+            "target_metadata": Base.metadata,
+            "compare_type": True,
+        },
+    )
+    assert migration.get_current_heads() == ()
+    with Operations.context(migration), migration.begin_transaction():
+        migration.run_migrations()
+    assert (
+        source_scopes.verify_database_scope(connection, _SOURCE_ROOT, scope)[
+            "database_head"
+        ]
+        == "0055"
+    )
+
+
+def _reconstruct_owned_lab_archive(tmp_path, identity, files):
+    """Test-only exact-tree archive from admitted in-container source bytes."""
+    path = tmp_path / "source-exact-lab.tar"
+    with tarfile.open(path, "w", pax_headers={"comment": identity["commit"]}) as tar:
+        for name, item in sorted(files.items()):
+            raw = (_SOURCE_ROOT / name).read_bytes()
+            assert sha(raw) == item["sha256"]
+            header = tarfile.TarInfo(name)
+            header.mode = 0o755 if item["executable"] else 0o644
+            header.size = len(raw)
+            tar.addfile(header, io.BytesIO(raw))
+    with tarfile.open(path, "r:") as tar:
+        assert archive_checks.archive_tree(tar) == identity["tree"]
+    return path, sha(path.read_bytes())
+
+
+async def test_actual0056_non_superuser_owner_upgrades_0055_once_with_fresh_readback(
+    tmp_path,
+):
+    """One hosted TLS owner transaction, lock refusal, then no-grant readback."""
+    url, tls = _isolated_tls_database_config()
+    identity, files, files_raw = fitted_measurement._read_hermetic_inputs()
+    source = fitted_measurement.source_identity(identity, files, files_raw)
+    assert source["manifest_sha256"] == os.environ.get(
+        "CTCC_DEVVAL_CUSTODY_TEST_SOURCE_MANIFEST_SHA256"
+    )
+    archive, archive_pin = _reconstruct_owned_lab_archive(tmp_path, identity, files)
+    ca_file = Path(os.environ["CTCC_DEVVAL_CUSTODY_TEST_TLS_CA_FILE"])
+    ca_sha = os.environ["CTCC_DEVVAL_CUSTODY_TEST_TLS_CA_SHA256"]
+    database = f"ctcc_native_obs56_{uuid4().hex[:12]}"
+    login = f"ctcc_ownerroute56_{uuid4().hex[:12]}"
+    password = secrets.token_hex(24)
+    secret_file = tmp_path / "owner-dsn"
+    owner_url = url.set(database=database, username=login, password=password)
+    secret_file.write_bytes(owner_url.render_as_string(hide_password=False).encode())
+    secret_file.chmod(0o600)
+    admin = create_async_engine(
+        url, poolclass=NullPool, connect_args={"ssl": tls}, hide_parameters=True
+    )
+    owner = None
+    role_created = database_created = control_granted = False
+    try:
+        async with admin.begin() as connection:
+            await connection.exec_driver_sql(
+                "SET LOCAL password_encryption='scram-sha-256'"
+            )
+            await connection.exec_driver_sql(
+                "CREATE TEMP TABLE ctcc_owner_setup "
+                "(name text NOT NULL, password text NOT NULL) ON COMMIT DROP"
+            )
+            await connection.execute(
+                text(
+                    "INSERT INTO pg_temp.ctcc_owner_setup(name,password) "
+                    "VALUES (:name,:password)"
+                ),
+                {"name": login, "password": password},
+            )
+            await connection.exec_driver_sql(
+                """DO $ctcc$
+                DECLARE role_name text; role_password text;
+                BEGIN
+                  SELECT name,password INTO STRICT role_name,role_password
+                  FROM pg_temp.ctcc_owner_setup;
+                  EXECUTE pg_catalog.format('CREATE ROLE %I LOGIN PASSWORD %L',
+                                            role_name,role_password);
+                END $ctcc$"""
+            )
+        role_created = True
+        async with admin.connect() as connection:
+            await connection.execution_options(isolation_level="AUTOCOMMIT")
+            await connection.exec_driver_sql(
+                f"CREATE DATABASE {_delta56_identifier(database)} "
+                f"OWNER {_delta56_identifier(login)}"
+            )
+        database_created = True
+        async with admin.begin() as connection:
+            await connection.exec_driver_sql(
+                "GRANT EXECUTE ON FUNCTION pg_catalog.pg_control_system() "
+                f"TO {_delta56_identifier(login)}"
+            )
+        control_granted = True
+        owner = create_async_engine(
+            owner_url,
+            poolclass=NullPool,
+            connect_args={"ssl": tls, "timeout": 10},
+            hide_parameters=True,
+        )
+        async with owner.begin() as connection:
+            await connection.run_sync(_migrate_owned_empty_to_0055)
+        async with owner.connect() as connection:
+            row = tuple(
+                (
+                    await connection.execute(
+                        text("""SELECT d.oid::bigint,d.datdba::bigint,
+                                 r.rolsuper,r.rolcreatedb,r.rolcreaterole,
+                                 (SELECT system_identifier::text
+                                  FROM pg_catalog.pg_control_system())
+                          FROM pg_catalog.pg_database d
+                          JOIN pg_catalog.pg_roles r ON r.oid=d.datdba
+                          WHERE d.datname=pg_catalog.current_database()""")
+                    )
+                ).one()
+            )
+        assert row[2:5] == (False, False, False)
+        route = owner_route.OwnerRoutePinsV1(
+            source_manifest_sha256=source["manifest_sha256"],
+            ca_sha256=ca_sha,
+            cluster_system_identifier_sha256=sha(row[5].encode("ascii")),
+            host=url.host,
+            port=url.port,
+            database=database,
+            owner=login,
+            database_oid=row[0],
+            owner_oid=row[1],
+            database_head="0055",
+        )
+        pins = owner_upgrade.OwnerUpgradePinsV1(
+            source_commit=identity["commit"],
+            source_tree=identity["tree"],
+            source_archive_sha256=archive_pin,
+            route=route,
+        )
+        async with owner.begin() as competing:
+            await competing.execute(owner_upgrade._OWNER_LOCK)
+            with pytest.raises(owner_upgrade.NativeOwnerUpgradeRefusal):
+                await owner_upgrade.upgrade_owner_0055_to_0056_v1(
+                    pins,
+                    owner_dsn_file=secret_file,
+                    ca_file=ca_file,
+                    source_archive_file=archive,
+                )
+        async with owner.connect() as connection:
+            assert (
+                await connection.scalar(
+                    text("SELECT version_num FROM public.alembic_version")
+                )
+                == "0055"
+            )
+        result = await owner_upgrade.upgrade_owner_0055_to_0056_v1(
+            pins,
+            owner_dsn_file=secret_file,
+            ca_file=ca_file,
+            source_archive_file=archive,
+        )
+        assert result["status"] == "PASS"
+        assert result["database_head_before"] == "0055"
+        assert result["database_head_after"] == "0056"
+        assert result["independent_postcommit_readonly_observations"] == 3
+        assert result["grants_installed"] is False
+        assert result["startup_admission"] is result["execution_authority"] is False
+        assert password not in json.dumps(result)
+        with pytest.raises(owner_upgrade.NativeOwnerUpgradeRefusal):
+            await owner_upgrade.upgrade_owner_0055_to_0056_v1(
+                pins,
+                owner_dsn_file=secret_file,
+                ca_file=ca_file,
+                source_archive_file=archive,
+            )
+    finally:
+        if owner is not None:
+            await owner.dispose()
+        try:
+            if database_created:
+                async with admin.connect() as connection:
+                    await connection.execution_options(isolation_level="AUTOCOMMIT")
+                    await connection.exec_driver_sql(
+                        f"DROP DATABASE {_delta56_identifier(database)} WITH (FORCE)"
+                    )
+        finally:
+            try:
+                if control_granted:
+                    async with admin.begin() as connection:
+                        await connection.exec_driver_sql(
+                            "REVOKE EXECUTE ON FUNCTION pg_catalog.pg_control_system() "
+                            f"FROM {_delta56_identifier(login)}"
+                        )
+            finally:
+                try:
+                    if role_created:
+                        async with admin.begin() as connection:
+                            await connection.exec_driver_sql(
+                                f"DROP ROLE {_delta56_identifier(login)}"
+                            )
+                finally:
+                    await admin.dispose()
 
 
 async def test_actual0056_password_bearing_owner_route_preflight_is_readonly(
