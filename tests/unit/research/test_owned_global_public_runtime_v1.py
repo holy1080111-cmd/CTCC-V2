@@ -1,6 +1,10 @@
 """Synthetic native-owned Global component protocol, never external evidence."""
 
+import asyncio
+
+import httpx
 import pytest
+from websockets.exceptions import ConnectionClosedError
 
 from app.domain import native_clock
 from app.domain.source_primitives import PublicReceiptError, canonical, decode, sha
@@ -12,6 +16,7 @@ from tests.unit.research.test_owned_public_runtime_p1 import (
     resign_journal,
     synthetic_runtime,
 )
+from tests.unit.test_qualification_account_collector import Stream
 from tests.unit.test_qualification_market_bridge import v2_engine_source
 from tests.unit.test_qualification_one_shot import ms
 from tests.unit.test_qualification_public_market_collector import policy
@@ -160,6 +165,128 @@ async def test_unbracketed_exchange_time_denies_all_component_io(
         name.endswith(".raw") and b"1000000000000" in raw
         for name, raw in directory.content.items()
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["ws_disconnect", "rest_read_timeout"])
+async def test_global_transport_fault_joins_siblings_and_seals_rejection(
+    owned_global, tmp_path, monkeypatch, failure
+):
+    directory, harness = owned_global
+    ticker_path = "/api/v5/market/ticker"
+    quote_started = asyncio.Event()
+    ws_waiting = asyncio.Event()
+    blocked = asyncio.Event()
+    quote_cancelled = asyncio.Event()
+    ws_cancelled = asyncio.Event()
+    fault_detail = "synthetic-private-exception-text"
+    prefix = b'{"code":"0",'
+    transport_request = httpx.MockTransport.handle_async_request
+    recv = harness.socket.recv
+
+    class TimeoutStream(Stream):
+        async def __aiter__(self):
+            yield prefix
+            await ws_waiting.wait()
+            raise httpx.ReadTimeout(fault_detail)
+
+    async def request(transport, outbound):
+        response = await transport_request(transport, outbound)
+        if outbound.url.path != ticker_path:
+            return response
+        quote_started.set()
+        if failure == "rest_read_timeout":
+            original = harness.streams[-1]
+            assert response.stream is original
+            stream = TimeoutStream(prefix)
+            await original.aclose()
+            harness.streams.append(stream)
+            response.stream = stream
+            return response
+        try:
+            await blocked.wait()
+        finally:
+            await response.aclose()
+            quote_cancelled.set()
+
+    async def receive():
+        if not harness.socket.receives:
+            return await recv()
+        ws_waiting.set()
+        if failure == "ws_disconnect":
+            await quote_started.wait()
+            raise ConnectionClosedError(None, None)
+        try:
+            await blocked.wait()
+        finally:
+            ws_cancelled.set()
+
+    monkeypatch.setattr(httpx.MockTransport, "handle_async_request", request)
+    monkeypatch.setattr(harness.socket, "recv", receive)
+    market_policy = policy(counts=(240,) * 4)
+    async with asyncio.timeout(10):
+        result = await subject.capture_initial_global_public_market_v1(
+            tmp_path, instrument_id="BTC-USDT-SWAP", market_policy=market_policy
+        )
+    assert result.code == "initial_global_public_denied"
+    assert result.packet is result.post_readback_receipt_json is None
+    assert result.account_requests == result.order_writes == 0
+    assert result.execution_authority is result.qualification_performed is False
+    harness.assert_closed()
+    assert len(harness.clients) == 4
+    assert harness.connections == [journal.GLOBAL_WS_ORIGIN]
+    assert len(harness.socket.sent) == harness.socket.closes == 1
+    assert sum(item.url.path == ticker_path for item in harness.requests) == 1
+    assert all(item.method == "GET" for item in harness.requests)
+
+    plan_pin = sha(directory.content["plan.json"])
+    summary, events, packet = runtime.replay_public_runtime(
+        directory, expected_plan_sha256=plan_pin
+    )
+    assert summary["disposition"] == "rejected" and packet is None
+    assert summary["packet_sha256"] is None
+    kinds = [item["kind"] for item in events]
+    assert kinds.count("ws_ack") == 1
+    assert "ws_ticker" not in kinds and "packet" not in kinds
+    failed_roles = [
+        item["metadata"]["role"]
+        for item in events
+        if item["kind"] == "component_failed"
+    ]
+    if failure == "ws_disconnect":
+        assert quote_cancelled.is_set() and failed_roles == ["ws"]
+    else:
+        assert ws_cancelled.is_set() and failed_roles == ["quote"]
+        assert any(
+            name.endswith(".raw") and raw == prefix
+            for name, raw in directory.content.items()
+        )
+        quote_id = next(
+            item["metadata"]["id"]
+            for item in events
+            if item["kind"] == "chunk"
+            and directory.content[f"event-{item['index']:04d}.raw"] == prefix
+        )
+        quote_events = [
+            item["kind"] for item in events if item["metadata"].get("id") == quote_id
+        ]
+        assert quote_events == ["request", "headers", "chunk", "request_failed"]
+    assert all(fault_detail.encode() not in raw for raw in directory.content.values())
+
+    original = directory.content.copy()
+    observed = len(harness.requests)
+    with pytest.raises(ValueError, match="global_public_readback_unavailable"):
+        subject.read_global_public_capture_v1(
+            tmp_path,
+            expected_plan_sha256=plan_pin,
+            expected_journal_sha256=sha(original["summary.json"]),
+        )
+    repeat = await subject.capture_initial_global_public_market_v1(
+        tmp_path, instrument_id="BTC-USDT-SWAP", market_policy=market_policy
+    )
+    assert repeat.code == "initial_global_public_denied"
+    assert directory.content == original and len(harness.requests) == observed
+    assert harness.connections == [journal.GLOBAL_WS_ORIGIN]
 
 
 @pytest.mark.asyncio
