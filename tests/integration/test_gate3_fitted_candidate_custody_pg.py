@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import re
+import socket
 import ssl
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import replace
@@ -14,6 +15,7 @@ from importlib import import_module
 from pathlib import Path
 from uuid import uuid4
 
+import asyncpg
 import pytest
 from alembic.config import Config
 from alembic.migration import MigrationContext
@@ -29,6 +31,7 @@ import app.database.models  # noqa: F401 - register the full migration metadata.
 from app.core import native_role_preflight_0056_full_diagnostic_v1 as observation
 from app.core import native_writer_observation_0056_v1 as writer_observation
 from app.database.base import Base
+from app.database.native_pg_tls_v1 import verified_native_pg_tls_context_v1
 from app.database.repositories import public_runtime_bundle_custody as raw_custody
 from app.demo_automation.native_server_selectors_v2 import (
     ConfiguredNativeDemoFactoriesV2,
@@ -139,10 +142,11 @@ async def _grant(owner, names, keys):
 def _isolated_tls_database_config():
     raw_url = os.environ.get("CTCC_DEVVAL_CUSTODY_TEST_DATABASE_URL")
     ca_file = os.environ.get("CTCC_DEVVAL_CUSTODY_TEST_TLS_CA_FILE")
-    if raw_url is None and ca_file is None:
+    ca_sha256 = os.environ.get("CTCC_DEVVAL_CUSTODY_TEST_TLS_CA_SHA256")
+    if raw_url is None and ca_file is None and ca_sha256 is None:
         pytest.skip("explicit isolated Gate 3 PostgreSQL TLS lab required")
-    if not raw_url or not ca_file:
-        pytest.fail("isolated Gate 3 PostgreSQL TLS lab requires both inputs")
+    if not raw_url or not ca_file or not ca_sha256:
+        pytest.fail("isolated Gate 3 PostgreSQL TLS lab requires all inputs")
     url = make_url(raw_url)
     if (
         url.drivername != "postgresql+asyncpg"
@@ -155,7 +159,40 @@ def _isolated_tls_database_config():
         pytest.fail(
             "fitted custody acceptance requires the isolated trust-auth TLS lab"
         )
-    return url, ssl.create_default_context(cafile=ca_file)
+    return url, verified_native_pg_tls_context_v1(Path(ca_file), ca_sha256)
+
+
+async def test_actual0056_verified_ca_rejects_wrong_server_hostname():
+    """A second internal DNS alias reaches the same server but fails TLS SAN."""
+    url, tls = _isolated_tls_database_config()
+    wrong_host = f"{url.host}-wrong-host"
+    assert re.fullmatch(r"ctcc-final-[a-f0-9]{12}-postgres-wrong-host", wrong_host)
+    assert socket.gethostbyname(wrong_host) == socket.gethostbyname(url.host)
+    connection = None
+    try:
+        connection = await asyncpg.connect(
+            host=wrong_host,
+            port=url.port or 5432,
+            user=url.username,
+            database=url.database,
+            ssl=tls,
+            timeout=5,
+        )
+    except (OSError, asyncpg.PostgresError) as error:
+        cursor = error
+        while cursor is not None and not isinstance(
+            cursor, ssl.SSLCertVerificationError
+        ):
+            cursor = cursor.__cause__ or cursor.__context__
+        # OpenSSL X509_V_ERR_HOSTNAME_MISMATCH. A bad CA or expired
+        # certificate must not satisfy this specific negative check.
+        if cursor is None or cursor.verify_code != 62:
+            raise AssertionError("wrong_hostname_tls_denial_unconfirmed") from None
+    else:
+        raise AssertionError("wrong_hostname_tls_unexpectedly_accepted")
+    finally:
+        if connection is not None:
+            await connection.close()
 
 
 @pytest.fixture
@@ -1730,17 +1767,20 @@ async def test_actual0056_lab_only_recovery_cas_after_fresh_restricted_observati
         **dict.fromkeys(native_only_lifespan._MUST_BE_FALSE, False),
     )
     absent = object()
-    automation = SafeDemoAutomation(
-        settings=settings,
-        repository=repository,
-        strategy_service=absent,
-        risk_service=absent,
-        demo_service=absent,
-        public_client=absent,
-        strategy_control_repository=absent,
-        market_hub=absent,
-        market_client=absent,
-    )
+
+    def new_automation():
+        return SafeDemoAutomation(
+            settings=settings,
+            repository=DemoAutomationRepository(writer_factory),
+            strategy_service=absent,
+            risk_service=absent,
+            demo_service=absent,
+            public_client=absent,
+            strategy_control_repository=absent,
+            market_hub=absent,
+            market_client=absent,
+        )
+
     observations = []
 
     async def lab_only_preflight(expected_writer_factory):
@@ -1783,6 +1823,7 @@ async def test_actual0056_lab_only_recovery_cas_after_fresh_restricted_observati
     monkeypatch.setattr(app_main, "settings", settings)
     monkeypatch.setattr(app_main, "AsyncSessionFactory", writer_factory)
     monkeypatch.setattr(app_main, "engine", writer_engine)
+    automation = new_automation()
     monkeypatch.setattr(app_main, "safe_demo_automation", automation)
     monkeypatch.setattr(
         app_main, "preflight_configured_native_roles_v1", lab_only_preflight
@@ -1834,6 +1875,37 @@ async def test_actual0056_lab_only_recovery_cas_after_fresh_restricted_observati
         assert status.active_trades == [exposure]
     assert instance.state.native_only_recovery_confirmed is False
     assert await repository.load_state() == after
+
+    # Lifespan shutdown has disposed the writer pool. Start a fresh service
+    # and app on the same database to prove recovery uses durable state.
+    restarted_automation = new_automation()
+    monkeypatch.setattr(app_main, "safe_demo_automation", restarted_automation)
+    restarted_instance = app_main._build_app()
+    async with app_main.lifespan(restarted_instance):
+        assert len(observations) == 2
+        assert observations[1][1].control.revision == 8
+        assert observations[1][1].control.armed is False
+        assert observations[1][1].control.emergency_stop is True
+        assert restarted_instance.state.native_only_recovery_confirmed is True
+        restarted = await repository.load_state()
+        assert restarted is not None
+        assert restarted["_control_revision"] == 9
+        assert restarted["armed"] is False
+        assert (
+            restarted["emergency_stop"]
+            is restarted["locked"]
+            is restarted["_restart_latch_required"]
+            is True
+        )
+        assert restarted["lock_reasons"] == after["lock_reasons"]
+        assert restarted["active_trades"] == after["active_trades"]
+        assert await restarted_automation.history() == [run]
+        status = await restarted_automation.status()
+        assert status.recovered and status.emergency_stop and status.locked
+        assert not status.armed and not status.running
+        assert status.active_trades == [exposure]
+    assert restarted_instance.state.native_only_recovery_confirmed is False
+    assert await repository.load_state() == restarted
 
 
 async def test_actual0056_restricted_account_control_read_replays_exact_scope(

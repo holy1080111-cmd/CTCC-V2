@@ -374,6 +374,7 @@ def test_pg2_keeps_all_required_cases_and_modules_once_across_both_roles():
     "removed",
     [
         "test_actual0056_full_native_role_observation_tls",
+        "test_actual0056_verified_ca_rejects_wrong_server_hostname",
         "test_actual0056_full_native_role_rejects_swapped_roles_and_extra_grant",
         "test_actual0056_native_lifespan_denies_before_recovery_cas",
         "test_actual0056_owner_grant_lock_and_rollback",
@@ -386,6 +387,7 @@ def test_current56_pg1_readback_refuses_missing_native_role_case(
     module = selection.FITTED_CUSTODY_TEST_PATH
     cases = [name for _, name in current56_contract.CURRENT56_CUSTODY_CASES] + [
         "test_actual0056_full_native_role_observation_tls",
+        "test_actual0056_verified_ca_rejects_wrong_server_hostname",
         "test_actual0056_full_native_role_rejects_swapped_roles_and_extra_grant",
         "test_actual0056_native_lifespan_denies_before_recovery_cas",
         "test_actual0056_owner_grant_lock_and_rollback",
@@ -511,7 +513,7 @@ def test_fitted_diagnostic_is_explicit_and_cases_only(
     if accepted:
         args, observed = current56._arguments()
         assert args.fitted_catalog_diagnostic is True and observed == 1
-        assert len(current56._FITTED_CASES) == 12
+        assert len(current56._FITTED_CASES) == 13
         assert current56_contract.devval_catalog.HERMETIC_CATALOG_CASE in (
             current56._FITTED_CASES
         )
@@ -521,6 +523,7 @@ def test_fitted_diagnostic_is_explicit_and_cases_only(
             current56_contract.CURRENT56_PG1_REQUIRED_CASES
         )
         for name in (
+            "test_actual0056_verified_ca_rejects_wrong_server_hostname",
             "test_actual0056_native_lifespan_denies_before_recovery_cas",
             "test_actual0056_owner_grant_lock_and_rollback",
             "test_actual0056_restricted_account_control_read_replays_exact_scope",

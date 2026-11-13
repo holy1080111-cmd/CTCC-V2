@@ -8,6 +8,7 @@ pinned postgres image, and ordinary no-credential test container controls.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import stat
@@ -46,6 +47,7 @@ class DevvalTlsConfig:
 
     postgres_mount: tuple[str, ...]
     postgres_command: tuple[str, ...]
+    wrong_hostname_alias: str
     pytest_mount: tuple[str, ...]
     pytest_environment: tuple[str, ...]
 
@@ -137,6 +139,7 @@ def devval_tls(needed: bool, postgres_host: str) -> Iterator[DevvalTlsConfig | N
         _openssl("x509", "-in", str(certificate), "-noout", "-checkhost", postgres_host)
         if {path.name for path in root.iterdir()} != {"server.key", "server.crt"}:
             raise DevvalTlsError("devval_tls_material_invalid")
+        certificate_sha256 = hashlib.sha256(certificate.read_bytes()).hexdigest()
         yield DevvalTlsConfig(
             postgres_mount=(
                 "--mount",
@@ -145,6 +148,7 @@ def devval_tls(needed: bool, postgres_host: str) -> Iterator[DevvalTlsConfig | N
                 f"{_GUEST_PRIVATE}:rw,nosuid,nodev,noexec,size=64k,mode=0700",
             ),
             postgres_command=("sh", "-ceu", _POSTGRES_BOOT),
+            wrong_hostname_alias=f"{postgres_host}-wrong-host",
             pytest_mount=(
                 "--mount",
                 f"type=bind,source={certificate},target={_PYTEST_CA},readonly",
@@ -154,6 +158,8 @@ def devval_tls(needed: bool, postgres_host: str) -> Iterator[DevvalTlsConfig | N
                 f"CTCC_DEVVAL_CUSTODY_TEST_DATABASE_URL=postgresql+asyncpg://ctcc@{postgres_host}:5432/ctcc",
                 "-e",
                 f"CTCC_DEVVAL_CUSTODY_TEST_TLS_CA_FILE={_PYTEST_CA}",
+                "-e",
+                f"CTCC_DEVVAL_CUSTODY_TEST_TLS_CA_SHA256={certificate_sha256}",
             ),
         )
     finally:

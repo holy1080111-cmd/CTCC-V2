@@ -54,6 +54,7 @@ CURRENT56_CUSTODY_CASES = (
 CURRENT56_NATIVE_ROLE_CASES = tuple(
     (FITTED_CUSTODY_TEST_PATH.removesuffix(".py").replace("/", "."), name)
     for name in (
+        "test_actual0056_verified_ca_rejects_wrong_server_hostname",
         "test_actual0056_full_native_role_observation_tls",
         "test_actual0056_full_native_role_rejects_swapped_roles_and_extra_grant",
         "test_actual0056_native_lifespan_denies_before_recovery_cas",

@@ -59,6 +59,10 @@ _FITTED_CASES = (
     fitted_measurement.INHERITED_CASE,
     (
         fitted_measurement.CASE[0],
+        "test_actual0056_verified_ca_rejects_wrong_server_hostname",
+    ),
+    (
+        fitted_measurement.CASE[0],
         "test_actual0056_full_native_role_rejects_swapped_roles_and_extra_grant",
     ),
     (
@@ -366,6 +370,7 @@ def _run(args, index, raw, files, runner_sha, root):
             label,
             "--network",
             network,
+            *(("--network-alias", tls.wrong_hostname_alias) if tls else ()),
             "-e",
             "POSTGRES_USER=ctcc",
             "-e",
