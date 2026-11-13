@@ -2,7 +2,7 @@ name: DB0056 fitted catalog diagnostic
 
 on:
   push:
-    branches: [work/db0056-fitted-catalog-diagnostic]
+    branches: [work/db0056-n309-original-cold-diagnostic]
   workflow_dispatch:
 
 permissions:
@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   fitted-catalog:
-    if: github.ref == 'refs/heads/work/db0056-fitted-catalog-diagnostic'
+    if: github.ref == 'refs/heads/work/db0056-n309-original-cold-diagnostic'
     name: DB0056 isolated catalog measurement ${{ matrix.cluster }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -19,21 +19,27 @@ jobs:
       matrix:
         cluster: [1, 2]
     steps:
-      - name: Checkout exact diagnostic source
+      - name: Checkout diagnostic and reviewed product source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 2
           persist-credentials: false
 
       - name: Measure and verify one fresh isolated PostgreSQL cluster
         shell: bash
         run: |
           set -euo pipefail
-          commit=$(git rev-parse HEAD)
-          test "$commit" = "$GITHUB_SHA"
-          tree=$(git rev-parse 'HEAD^{tree}')
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          commit=51089db9fbecb9f7f4bb864ef6a277238510b0f7
+          tree=5bcba5d2205c885c34b40a3ae31479d628aeb1bd
+          test "$(git rev-parse HEAD^)" = "$commit"
+          test "$(git rev-parse "$commit^{tree}")" = "$tree"
+          test "$(git diff --name-only "$commit" HEAD)" = $'.github/workflows/db0056-fitted-catalog-diagnostic.yml\nMANIFEST.sha256'
           archive="$RUNNER_TEMP/ctcc-source.tar"
           git -c core.autocrlf=false -c core.eol=lf archive --format=tar --output="$archive" "$commit"
           digest=$(sha256sum "$archive" | cut -d ' ' -f 1)
+          test "$digest" = e8264870d4d6e4b57e7101aef0b88e9650990618df6f3b46033f772750afc48d
+          git checkout --detach "$commit"
           python3 -m scripts.verify_current0056_hermetic \
             --archive "$archive" --archive-sha256 "$digest" \
             --commit "$commit" --tree "$tree" \
