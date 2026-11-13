@@ -275,7 +275,8 @@ async def test_qualification_capture_brackets_one_acquisition_in_original_lease(
         current_plan=plan, factories=factories, source_roles_0056=roles
     )
     original_record = object()
-    ledger_before, ledger_after, owned, operands, account = (object() for _ in range(5))
+    ledger_before, ledger_after, operands, account = (object() for _ in range(4))
+    owned = object.__new__(source.current.OwnedCurrentDemoAccountSourceV4)
     custody = object()
     seen = []
 
