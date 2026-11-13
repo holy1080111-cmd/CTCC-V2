@@ -19,6 +19,7 @@ from app.trade_qualification.account_capture_journal import (
     MAX_EVENTS,
     AccountJournalError,
     JournalReadback,
+    _checked_wire_event,
     _JournalEvent,
     canonical,
     checked_event,
@@ -65,10 +66,9 @@ class AccountCaptureJournalRepository:
             scope.settlement_currency,
         ):
             raise AccountJournalError("journal_scope_mismatch")
-        event = _JournalEvent(
+        event, data = _checked_wire_event(
             _ISSUER, row.event_json.encode("utf-8"), row.raw_body, row.packet_payload
         )
-        data = checked_event(event)
         if (row.capture_id, row.sequence, row.previous_sha256, row.event_sha256) != (
             data["capture_id"],
             data["sequence"],
@@ -76,7 +76,7 @@ class AccountCaptureJournalRepository:
             digest(event.event_json),
         ):
             raise AccountJournalError("journal_row_mismatch")
-        return event
+        return event, data
 
     async def read_chain(self, scope, capture_id):
         async with self.session_factory() as session, session.begin():
@@ -101,8 +101,7 @@ class AccountCaptureJournalRepository:
         readback_at = capture._utc(self.clock())
         result, previous, total_bytes, previous_db = [], None, 0, None
         for index, row in enumerate(rows, 1):
-            event = self._event(row, scope)
-            record = checked_event(event)
+            event, record = self._event(row, scope)
             if record["sequence"] != index or record["previous_sha256"] != previous:
                 raise AccountJournalError("journal_chain_invalid")
             total_bytes += (
@@ -381,7 +380,8 @@ class AccountCaptureJournalRepository:
                 DemoAccountCaptureEvent, (record["capture_id"], record["sequence"])
             )
             if existing is not None:
-                if self._event(existing, scope) != event:
+                existing_event, _ = self._event(existing, scope)
+                if existing_event != event:
                     raise AccountJournalError("journal_event_conflict")
             else:
                 prior = await session.scalar(
@@ -411,7 +411,7 @@ class AccountCaptureJournalRepository:
                     ):
                         raise AccountJournalError("journal_scope_mismatch")
                 else:
-                    old = checked_event(self._event(prior, scope))
+                    _, old = self._event(prior, scope)
                     if (
                         old["outcome"] != "in_progress"
                         or record["sequence"] != prior.sequence + 1
@@ -455,7 +455,7 @@ class AccountCaptureJournalRepository:
             row = await session.get(DemoAccountCaptureEvent, (capture_id, sequence))
             if row is None:
                 raise AccountJournalError("journal_event_missing")
-            event = self._event(row, scope)
+            event, _ = self._event(row, scope)
             own_size = (
                 len(event.event_json)
                 + len(event.raw_body or b"")
@@ -466,10 +466,11 @@ class AccountCaptureJournalRepository:
                 prior = await session.get(
                     DemoAccountCaptureEvent, (capture_id, sequence - 1)
                 )
+                if prior is None:
+                    raise AccountJournalError("journal_predecessor_invalid")
+                self._event(prior, scope)
                 if (
-                    prior is None
-                    or digest(self._event(prior, scope).event_json)
-                    != row.previous_sha256
+                    prior.event_sha256 != row.previous_sha256
                     or prior.db_recorded_at > row.db_recorded_at
                 ):
                     raise AccountJournalError("journal_predecessor_invalid")

@@ -1098,6 +1098,28 @@ def _batch_declared_last_row(rows, **changes):
         item.chain_bytes = total
 
 
+def test_retained_database_row_parses_once_and_rejects_persisted_hash_drift(
+    monkeypatch,
+):
+    scope, _, rows, originals, _ = _batch_receipt_rows()
+    checked = journal.checked_event
+    parses = []
+
+    def track(event):
+        parses.append(True)
+        return checked(event)
+
+    monkeypatch.setattr(journal, "checked_event", track)
+    event, parsed = AccountCaptureJournalRepository._event(rows[0], scope)
+    assert event == originals[0]
+    assert parsed["sequence"] == 1 and parses == [True]
+
+    rows[0].event_sha256 = "f" * 64
+    with pytest.raises(journal.AccountJournalError, match="^journal_row_mismatch$"):
+        AccountCaptureJournalRepository._event(rows[0], scope)
+    assert parses == [True, True]
+
+
 @pytest.mark.asyncio
 async def test_locked_batch_read_measures_one_real_native_receipt_after_materialization_before_validation(
     monkeypatch,
