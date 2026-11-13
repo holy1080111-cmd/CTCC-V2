@@ -41,7 +41,6 @@ from tests.integration import test_account_history_original_native_read_v1 as or
 from tests.integration.test_account_history_original_frame_repository_v1 import (
     collector,
 )
-from tests.original_pg_timing_probe import OriginalPgTimingProbe
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
@@ -2831,10 +2830,9 @@ async def test_exact55_two_roles_replay_original33_financial_without_authority(
             phase_elapsed_seconds["positive_started"] = _original33_elapsed_seconds(
                 armed_mono_ns
             )
-            probe = OriginalPgTimingProbe(raw)
             try:
-                with probe:
-                    result = await reader55.replay_original_history_api_population_from_pg_v2(
+                result = (
+                    await reader55.replay_original_history_api_population_from_pg_v2(
                         raw_factory,
                         genesis_request=genesis,
                         expected_checkpoint_sha256=checkpoint,
@@ -2848,6 +2846,7 @@ async def test_exact55_two_roles_replay_original33_financial_without_authority(
                             bank.API_POPULATION_POLICY_SHA256_V2
                         ),
                     )
+                )
             except reader55.OriginalHistoryFinancialPgReadError as error:
                 phase_elapsed_seconds["positive_failed"] = _original33_elapsed_seconds(
                     armed_mono_ns
@@ -2862,11 +2861,6 @@ async def test_exact55_two_roles_replay_original33_financial_without_authority(
                     "ctcc_pg55_original_financial_closed_failure_v1=" + safe,
                     pytrace=False,
                 )
-            finally:
-                if (timing := probe.receipt_json()) is not None:
-                    request.node.user_properties.append(
-                        ("ctcc_pg_original_roundtrip_timing_v1", timing)
-                    )
             phase_elapsed_seconds["positive"] = _original33_elapsed_seconds(
                 armed_mono_ns
             )

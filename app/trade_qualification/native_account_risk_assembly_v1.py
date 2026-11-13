@@ -5160,7 +5160,15 @@ _V4_PIN_FUNCTIONS = tuple(
             ),
         ),
         (_v4_wire.OriginalFrameRequestV1, ("__post_init__",)),
-        (_v4_wire.journal, ("_original_wire_event",)),
+        (
+            _v4_wire.journal,
+            (
+                "_original_wire_event",
+                "_original_wire_readback",
+                "_checked_readback_clocks",
+            ),
+        ),
+        (_v4_wire.journal.JournalReadback, ("__post_init__",)),
         (
             _v4_stream,
             (

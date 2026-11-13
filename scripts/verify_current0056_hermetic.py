@@ -531,12 +531,7 @@ def _run(args, index, raw, files, runner_sha, root):
                 "-e",
                 "CTCC_B3_SCALE_RECEIPT_DIR=/validation-results",
                 *(
-                    (
-                        "-e",
-                        "CTCC_ORIGINAL_FINANCIAL_DIAGNOSTIC=1",
-                        "-e",
-                        "CTCC_ORIGINAL_PG_TIMING_V1=1",
-                    )
+                    ("-e", "CTCC_ORIGINAL_FINANCIAL_DIAGNOSTIC=1")
                     if original_financial
                     else ()
                 ),

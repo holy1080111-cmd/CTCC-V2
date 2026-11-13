@@ -216,52 +216,6 @@ def _closed_second(raw: str) -> dict:
     }
 
 
-def _timing(raw: str) -> dict:
-    """Project only bounded numeric DBAPI timing from the optional test hook."""
-    if type(raw) is not str or not 0 < len(raw) <= 4096:
-        raise ValueError("original_financial_junit_invalid")
-    value = json.loads(raw, object_pairs_hook=_object)
-    if type(value) is not dict or set(value) != {
-        "schema",
-        "total_ms",
-        "dbapi",
-        "frame_ms_in_order",
-        "unfinished",
-        "overflow",
-        "account_complete",
-        "execution_authority",
-    }:
-        raise ValueError("original_financial_junit_invalid")
-    if (
-        value["schema"] != "ctcc.test.original_pg_roundtrip_timing.v1"
-        or value["account_complete"] is not False
-        or value["execution_authority"] is not False
-        or type(value["overflow"]) is not bool
-        or type(value["dbapi"]) is not dict
-        or set(value["dbapi"]) != {"frame", "catalog", "other"}
-        or type(value["frame_ms_in_order"]) is not list
-        or len(value["frame_ms_in_order"]) > 33
-    ):
-        raise ValueError("original_financial_junit_invalid")
-    numbers = [value["total_ms"], value["unfinished"], *value["frame_ms_in_order"]]
-    for item in value["dbapi"].values():
-        if type(item) is not dict or set(item) != {"count", "total_ms"}:
-            raise ValueError("original_financial_junit_invalid")
-        numbers.extend((item["count"], item["total_ms"]))
-    if any(type(item) is not int or not 0 <= item <= 1_200_000 for item in numbers):
-        raise ValueError("original_financial_junit_invalid")
-    if (
-        value["dbapi"]["frame"]["count"] != len(value["frame_ms_in_order"])
-        or value["dbapi"]["frame"]["count"] > 33
-        or sum(item["count"] for item in value["dbapi"].values()) > 512
-        or value["unfinished"] > 512
-        or sum(item["total_ms"] for item in value["dbapi"].values())
-        > value["total_ms"] + 3
-    ):
-        raise ValueError("original_financial_junit_invalid")
-    return value
-
-
 def _junit(raw: bytes | None) -> tuple[list[dict] | None, str | None]:
     if raw is None:
         return None, None
@@ -299,7 +253,6 @@ def _junit(raw: bytes | None) -> tuple[list[dict] | None, str | None]:
             if key in {
                 "ctcc_pg52_original_financial_closed_code_v1",
                 "ctcc_pg55_original_financial_closed_failure_v1",
-                "ctcc_pg_original_roundtrip_timing_v1",
             }:
                 if key in selected:
                     raise ValueError("original_financial_junit_invalid")
@@ -318,10 +271,6 @@ def _junit(raw: bytes | None) -> tuple[list[dict] | None, str | None]:
         if index == 1 and "ctcc_pg55_original_financial_closed_failure_v1" in selected:
             row["closed_report"] = _closed_second(
                 selected["ctcc_pg55_original_financial_closed_failure_v1"]
-            )
-        if "ctcc_pg_original_roundtrip_timing_v1" in selected:
-            row["roundtrip_timing"] = _timing(
-                selected["ctcc_pg_original_roundtrip_timing_v1"]
             )
         safe.append(row)
     return safe, _sha(raw)

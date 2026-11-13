@@ -432,8 +432,28 @@ def _source(chain, scope, *, proof_schema=SCHEMA):
     ):
         raise NativeAccountProofError("native_account_exact_source_chain_required")
     # Revalidate the whole chain before reading any later packet-bearing event.
+    # The checked records remain private to this synchronous invocation. Pin
+    # the exact immutable inputs so a later verifier cannot replace a point
+    # between this check and the old records-consumption point below.
+    validated = []
+    original_inputs = []
     for point in chain:
-        journal.JournalReadback(point.event, point.db_recorded_at, point.readback_at)
+        record = journal.checked_event(point.event)
+        journal._checked_readback_clocks(
+            record, point.db_recorded_at, point.readback_at
+        )
+        validated.append(record)
+        original_inputs.append(
+            (
+                point,
+                point.event,
+                point.event.event_json,
+                point.event.raw_body,
+                point.event.packet_payload,
+                point.db_recorded_at,
+                point.readback_at,
+            )
+        )
     reference = observed.source_reference(chain)
     if proof_schema == SCHEMA:
         history._verify_original_page_query(chain, **observed._pins(reference, scope))
@@ -470,7 +490,18 @@ def _source(chain, scope, *, proof_schema=SCHEMA):
         )
     else:
         raise NativeAccountProofError("native_account_proof_contract_invalid")
-    records = tuple(journal.checked_event(point.event) for point in chain)
+    for point, original in zip(chain, original_inputs, strict=True):
+        if (
+            point is not original[0]
+            or point.event is not original[1]
+            or point.event.event_json is not original[2]
+            or point.event.raw_body is not original[3]
+            or point.event.packet_payload is not original[4]
+            or point.db_recorded_at is not original[5]
+            or point.readback_at is not original[6]
+        ):
+            raise NativeAccountProofError("native_account_exact_source_chain_required")
+    records = tuple(validated)
     packets = tuple(
         point.event.packet_payload for point in chain if point.event.packet_payload
     )
