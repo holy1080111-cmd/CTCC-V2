@@ -172,3 +172,22 @@ releases the durable owner and independently reads back the released Control
 state. The command can update Control and can latch a stop if release is
 uncertain. A failed command reports the mutation as unconfirmed. It sends no
 orders and issues no Arm request.
+
+## Reconcile and clear the scoped Demo stop
+
+From the exact reviewed DB0056 checkout with the stopped Demo profile in place,
+start the local operator tool from an interactive terminal:
+
+```powershell
+python -B -m scripts.clear_native_demo_stop_0056 --instrument BTC-USDT-SWAP
+```
+
+Type `CTCC DEMO CLEAR STOP DISARMED` and enter the current deployment's CTCC API
+Token at the hidden prompt. The tool uses the configured Demo account to check
+that the account is flat, verify the local journal, and commit the stop-clear
+acknowledgement. `CONTROL_CLEARED_AND_RELEASED_DISARMED` confirms the
+acknowledgement and release were read back with Arm disabled. If it prints
+`CONTROL_CLEAR_UNCONFIRMED`, retain the evidence and inspect the scoped Control
+status before another attempt. The command makes no order request. The local
+entry and its fail-closed behavior have focused tests. An authenticated Demo
+clear on the deployed account still needs to be verified.
