@@ -7,7 +7,6 @@ from dataclasses import dataclass, field, replace
 from typing import Literal
 
 from app.core import native_locked_demo_control_0056_v1 as locked
-from app.core.native_stopped_control_genesis_0056_v1 import _require_role_witness
 from app.demo_automation import native_server_selectors_v2 as selectors
 from app.exchange.okx.private_rest import OkxDemoPrivateRestClient
 from app.trade_qualification import demo_control as control
@@ -57,21 +56,18 @@ def _stopped(state: control.ControlState) -> bool:
 
 
 async def _stop_locked(session, factories, roles, scope):
-    async with locked._verified_locked_demo_control_0056(
-        factories, session, scope
-    ) as proof:
-        row, catalog, witness, started_at, check_held = proof
-        _require_role_witness(roles, catalog, witness)
-        before, previous_event = await locked.DemoControlRepositoryV2._snapshot(
-            session, row
-        )
-        check_held()
-        _need(before.scope == scope)
+    async with locked.held_native_writer_control_0056_v1(
+        factories,
+        session,
+        scope,
+        roles=roles,
+        purpose=locked.NativeWriterControlPurpose0056.RECOVERY_STOP,
+    ) as held:
+        observation = held.observation.control
+        before, previous_event = observation.state, observation.event_sha256
         if _stopped(before):
             return False, before, previous_event
-        observed_at = await session.scalar(locked._CLOCK)
-        check_held()
-        _need(observed_at >= started_at and observed_at >= before.updated_at)
+        observed_at = observation.observed_at
         command = control.digest(
             control.canonical(
                 ["ctcc.demo.account_restart_recovery.0056.v1", previous_event]
@@ -95,35 +91,40 @@ async def _stop_locked(session, factories, roles, scope):
         )
         event = await locked.DemoControlRepository._store(
             session,
-            row,
+            held._control_row_for_restart(),
             stop,
             command_id=command,
             action="estop",
             previous_sha256=previous_event,
         )
-        check_held()
+        held.check_held()
         await locked.DemoControlRepositoryV2.verify_historical_binding(
             session, stop, event
         )
-        check_held()
+        held.check_held()
         return True, stop, event
 
 
 async def _observe_stop(factories, roles, scope):
-    async with factories.writer_factory() as session, session.begin():
-        proof = await locked.read_locked_demo_control_0056_v1(factories, session, scope)
-        _require_role_witness(
-            roles,
-            proof.writer_catalog,
-            (proof.server_incarnation_sha256, proof.role_route_sha256),
-        )
-        observation = proof.control
-        _need(
-            observation.state.scope == scope
-            and _stopped(observation.state)
-            and proof.issuance_authority is proof.execution_authority is False
-        )
-        return observation
+    async with (
+        factories.writer_factory() as session,
+        session.begin(),
+        locked.held_native_writer_control_0056_v1(
+            factories,
+            session,
+            scope,
+            roles=roles,
+            purpose=locked.NativeWriterControlPurpose0056.PREPARE_OBSERVATION,
+        ) as held,
+    ):
+        proof = held.observation
+    observation = proof.control
+    _need(
+        observation.state.scope == scope
+        and _stopped(observation.state)
+        and proof.issuance_authority is proof.execution_authority is False
+    )
+    return observation
 
 
 async def _recover_selected(selection, *, reconcile_only: bool):

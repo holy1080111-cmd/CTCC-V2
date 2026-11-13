@@ -115,6 +115,12 @@ def test_standalone_auth_origin_and_exact_source_are_enforced(
 def test_launcher_rechecks_private_token_without_printing_it(
     monkeypatch, tmp_path: Path, capsys
 ) -> None:
+    import uvicorn
+
+    def refuse_listener(*args, **kwargs):
+        pytest.fail("offline preflight attempted to start a listener")
+
+    monkeypatch.setattr(uvicorn, "run", refuse_listener)
     metadata = {
         "source_commit": COMMIT,
         "host_port": 8100,
@@ -141,7 +147,12 @@ def test_launcher_rechecks_private_token_without_printing_it(
     assert launcher.verified_launch_inputs(tmp_path) == (TOKEN, COMMIT, 8100)
     assert launcher.main(["--check", str(tmp_path)]) == 0
     checked_output = capsys.readouterr().out
-    assert "READY_TO_LAUNCH_OFFLINE_SNAPSHOT_ONLY" in checked_output
+    assert json.loads(checked_output) == {
+        "status": "READY_TO_LAUNCH_OFFLINE_SNAPSHOT_ONLY",
+        "url": "http://127.0.0.1:8100/dashboard",
+        "source_commit": COMMIT,
+        "execution_authority": False,
+    }
     assert TOKEN.decode() not in checked_output
     contents["api_token"] = b"changed" + TOKEN
     assert launcher.main(["--check", str(tmp_path)]) == 1

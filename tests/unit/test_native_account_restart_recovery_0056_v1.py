@@ -36,21 +36,25 @@ async def test_expired_arm_is_durably_cleared_without_rebinding(monkeypatch):
     armed = _armed()
     now = _AT + timedelta(seconds=65)
     assert not armed.arm_intent_current(now)
-    session = SimpleNamespace(scalar=AsyncMock(return_value=now))
+    session, factories, roles = object(), object(), object()
     check_held = Mock()
     row = object()
 
     @asynccontextmanager
-    async def verified(*args):
-        yield row, object(), object(), now, check_held
+    async def verified(selected, actual_session, scope, *, roles, purpose):
+        assert (selected, actual_session, scope) == (factories, session, _SCOPE)
+        assert roles is expected_roles
+        assert purpose is subject.locked.NativeWriterControlPurpose0056.RECOVERY_STOP
+        yield SimpleNamespace(
+            observation=SimpleNamespace(
+                control=ControlObservation(armed, "c" * 64, now)
+            ),
+            check_held=check_held,
+            _control_row_for_restart=lambda: row,
+        )
 
-    monkeypatch.setattr(subject.locked, "_verified_locked_demo_control_0056", verified)
-    monkeypatch.setattr(subject, "_require_role_witness", Mock())
-    monkeypatch.setattr(
-        subject.locked.DemoControlRepositoryV2,
-        "_snapshot",
-        AsyncMock(return_value=(armed, "c" * 64)),
-    )
+    expected_roles = roles
+    monkeypatch.setattr(subject.locked, "held_native_writer_control_0056_v1", verified)
     verify_lineage = AsyncMock()
     monkeypatch.setattr(
         subject.locked.DemoControlRepositoryV2,
@@ -60,7 +64,7 @@ async def test_expired_arm_is_durably_cleared_without_rebinding(monkeypatch):
     store = AsyncMock(return_value="d" * 64)
     monkeypatch.setattr(subject.locked.DemoControlRepository, "_store", store)
     changed, state, event = await subject._stop_locked(
-        session, object(), object(), _SCOPE
+        session, factories, roles, _SCOPE
     )
     assert changed and state.emergency_stop
     assert state.arm_request_id is state.arm_expires_at is None
@@ -70,6 +74,7 @@ async def test_expired_arm_is_durably_cleared_without_rebinding(monkeypatch):
         armed.owner_sha256,
         armed.pins,
     )
+    assert store.await_args.args == (session, row, state)
     assert (
         control._lineage_transition(armed, state, action="estop", command_id="e" * 64)
         == state

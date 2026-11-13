@@ -1,6 +1,8 @@
 """Offline checks for the restricted DB0056 same-transaction Control read."""
 
+import asyncio
 import ssl
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
@@ -9,6 +11,15 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import NullPool
 
 from app.core import native_locked_demo_control_0056_v1 as subject
+from app.core.native_role_identity_0056_v2 import (
+    NativeRoleIdentity0056V2,
+    _static_identity_sha256,
+)
+from app.core.native_role_preflight_0056_full_diagnostic_v1 import (
+    RestrictedNativeRoles0056ObservationV1,
+    _granted_inherited_acl_shape_sha256,
+)
+from app.core.native_role_witness_0056_v1 import RestrictedNativeRoles0056WitnessV1
 from app.demo_automation.native_server_selectors_v2 import (
     ConfiguredNativeDemoFactoriesV2,
 )
@@ -30,8 +41,26 @@ _IDENTITY = (
     True,
 )
 _CATALOG = subject.writer56.NativeWriter0056ObservationV1("a" * 64, "b" * 64)
-_WITNESS = subject.runtime_witness_0056(
-    _ACTOR, _NAMES, (("postgresql+asyncpg", "127.0.0.1", 5432, "test_db"),) * 3
+_ROUTE = ("postgresql+asyncpg", "127.0.0.1", 5432, "test_db")
+_WITNESS = subject.runtime_witness_0056(_ACTOR, _NAMES, (_ROUTE,) * 3)
+_ROLE_OIDS = (11, 12, 13)
+_OWNER_OID = 14
+_ACL = _granted_inherited_acl_shape_sha256(_NAMES, _CATALOG.native_definitions_sha256)
+_ROLES = RestrictedNativeRoles0056WitnessV1(
+    RestrictedNativeRoles0056ObservationV1(
+        _CATALOG.native_definitions_sha256, "a" * 64, "b" * 64, _ACL
+    ),
+    *_WITNESS,
+)
+_STABLE_ROLES = NativeRoleIdentity0056V2(
+    _ACTOR[4],
+    _OWNER_OID,
+    _NAMES,
+    _ROLE_OIDS,
+    _static_identity_sha256(_ACTOR[4], _OWNER_OID, _NAMES, _ROLE_OIDS, _ROUTE),
+    *_WITNESS,
+    _CATALOG.native_definitions_sha256,
+    _ACL,
 )
 
 
@@ -64,6 +93,8 @@ async def scenario(monkeypatch, request):
         identity=_IDENTITY,
         observed_at=_START + timedelta(seconds=2),
         fault=None,
+        role_oids=_ROLE_OIDS,
+        row=None,
     )
 
     async def execute(session, statement):
@@ -93,6 +124,14 @@ async def scenario(monkeypatch, request):
         assert session is state.session
         return state
 
+    async def owner(statement):
+        assert statement is subject.roles56.current55._OWNER_OID_SQL
+        return _OWNER_OID
+
+    async def roles(connection, names, owner):
+        assert connection is state and names == _NAMES and owner == _OWNER_OID
+        return dict(zip(names, state.role_oids, strict=True))
+
     async def acl(held, names, oid):
         assert held is state and names == _NAMES and oid == _ACTOR[3]
         events.append("acl")
@@ -106,10 +145,12 @@ async def scenario(monkeypatch, request):
     async def lock(session, scope):
         assert session is state.session and scope == _SCOPE
         events.append("lock")
-        return state
+        return state if state.row is None else state.row
 
     async def snapshot(session, row):
-        assert session is state.session and row is state
+        assert session is state.session and row is (
+            state if state.row is None else state.row
+        )
         events.append("snapshot")
         if state.fault == "replacement":
             await session.rollback()
@@ -126,6 +167,8 @@ async def scenario(monkeypatch, request):
     monkeypatch.setattr(AsyncSession, "execute", execute)
     monkeypatch.setattr(AsyncSession, "scalar", scalar)
     monkeypatch.setattr(AsyncSession, "connection", connection)
+    state.scalar = owner
+    monkeypatch.setattr(subject.roles56.current55.core_acl, "_roles", roles)
     monkeypatch.setattr(subject.writer56, "_session_identity", identity)
     monkeypatch.setattr(
         subject.writer56, "observe_restricted_readwrite_writer_0056_v1", catalog
@@ -233,3 +276,96 @@ async def test_refuses_changed_control_or_transaction_with_fixed_error(scenario,
         assert "lock" not in scenario.events
     elif fault in ("lineage", "replacement", "wrong-uid"):
         assert "clock" not in scenario.events
+
+
+@pytest.mark.parametrize("roles", [_ROLES, _STABLE_ROLES])
+async def test_held_prepare_observation_lifetime_and_read_only_purpose(scenario, roles):
+    async with subject.held_native_writer_control_0056_v1(
+        scenario.selected,
+        scenario.session,
+        _SCOPE,
+        roles=roles,
+        purpose=subject.NativeWriterControlPurpose0056.PREPARE_OBSERVATION,
+    ) as held:
+        held.check_held()
+        assert held.observation.control.state == scenario.snapshot
+        assert held.observation.control.event_sha256 == "c" * 64
+        assert held.observation.control.observed_at == scenario.observed_at
+        assert held.startup_admission is held.execution_authority is False
+        assert held.admission == "DENY"
+        with pytest.raises(subject.NativeLockedDemoControl0056Error):
+            held._control_row_for_restart()
+
+        async def require_other_task():
+            with pytest.raises(subject.NativeLockedDemoControl0056Error):
+                held.check_held()
+
+        await asyncio.create_task(require_other_task())
+    assert scenario.session.in_transaction()
+    with pytest.raises(subject.NativeLockedDemoControl0056Error):
+        held.check_held()
+
+
+async def test_held_recovery_row_requires_original_role_witness(scenario):
+    purpose = subject.NativeWriterControlPurpose0056.RECOVERY_STOP
+    with pytest.raises(subject.NativeLockedDemoControl0056Error):
+        async with subject.held_native_writer_control_0056_v1(
+            scenario.selected,
+            scenario.session,
+            _SCOPE,
+            roles=_STABLE_ROLES,
+            purpose=purpose,
+        ):
+            pytest.fail("read-only identity reached recovery row")
+    assert not scenario.events
+    scenario.row = subject.DemoAccountControl()
+    async with subject.held_native_writer_control_0056_v1(
+        scenario.selected,
+        scenario.session,
+        _SCOPE,
+        roles=_ROLES,
+        purpose=purpose,
+    ) as held:
+        assert held._control_row_for_restart() is scenario.row
+        assert held.admission == "DENY"
+    with pytest.raises(subject.NativeLockedDemoControl0056Error):
+        held._control_row_for_restart()
+
+
+@pytest.mark.parametrize(
+    "roles",
+    [
+        replace(_ROLES, role_route_sha256="d" * 64),
+        replace(
+            _ROLES,
+            observation=replace(
+                _ROLES.observation, granted_inherited_acl_shape_sha256="d" * 64
+            ),
+        ),
+        replace(_STABLE_ROLES, role_oids=(11, 12, 15)),
+        replace(_STABLE_ROLES, stable_identity_sha256="d" * 64),
+    ],
+)
+async def test_held_prepare_rejects_role_and_acl_drift_before_snapshot(scenario, roles):
+    with pytest.raises(subject.NativeLockedDemoControl0056Error):
+        async with subject.held_native_writer_control_0056_v1(
+            scenario.selected,
+            scenario.session,
+            _SCOPE,
+            roles=roles,
+            purpose=subject.NativeWriterControlPurpose0056.PREPARE_OBSERVATION,
+        ):
+            pytest.fail("changed role pins reached observation")
+    assert "snapshot" not in scenario.events
+
+
+async def test_held_prepare_refuses_custody_role_replacement_at_exit(scenario):
+    with pytest.raises(subject.NativeLockedDemoControl0056Error):
+        async with subject.held_native_writer_control_0056_v1(
+            scenario.selected,
+            scenario.session,
+            _SCOPE,
+            roles=_STABLE_ROLES,
+            purpose=subject.NativeWriterControlPurpose0056.PREPARE_OBSERVATION,
+        ):
+            scenario.role_oids = (11, 19, 13)

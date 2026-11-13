@@ -12,7 +12,6 @@ the checkout root:
 ```powershell
 & "<CTCC Python 3.12 executable>" -B -m scripts.prepare_local_analysis_installation --prepare
 & "<CTCC Python 3.12 executable>" -B -m scripts.run_offline_snapshot_only --check "<installation_root from prepare>"
-& "<CTCC Python 3.12 executable>" -B -m scripts.run_offline_snapshot_only --serve "<installation_root from prepare>"
 ```
 
 Preparation creates a new owner-only installation directory under
@@ -21,6 +20,25 @@ manifest, then creates a local API token. It also writes files for the separate
 Docker installation, but this viewer does not start Docker or connect to its
 database. The viewer refuses an installation prepared from another source
 commit or with altered private files. `--check` does not start a server.
+
+To reopen a stopped viewer, reuse its installation root and the checkout used
+to prepare it. Run `--check` again. Use the printed loopback port to check for
+an existing Windows listener, substituting the port from your installation:
+
+```powershell
+Get-NetTCPConnection -LocalPort 8112 -State Listen -ErrorAction SilentlyContinue
+```
+
+If the port is free and `--check` succeeded, start the viewer:
+
+```powershell
+& "<CTCC Python 3.12 executable>" -B -m scripts.run_offline_snapshot_only --serve "<installation_root from prepare>"
+```
+
+If a listener already occupies the port, reuse it only after `/readiness`
+returns `OFFLINE_SNAPSHOT_ONLY`, the expected source commit, and
+`execution_authority: false`. Otherwise, prepare a separate installation
+with `--prepare --host-port <unused-port>` and leave the existing listener running.
 
 Open the printed `http://127.0.0.1:<port>/dashboard` address while `--serve`
 is running. As the same Windows user, open the installation's private

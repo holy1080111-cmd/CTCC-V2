@@ -311,8 +311,8 @@ def test_actual_post_common_finally_refuses_unknown_cleanup_and_retains_failure_
 
 def test_pg2_owns_every_whole_module_and_keeps_both_stateful_anchors_on_zero():
     owned = [selection.postgres_paths(index) for index in range(2)]
-    assert len(selection.POSTGRES_TEST_PATHS) == 90
-    assert [len(paths) for paths in owned] == [40, 50]
+    assert len(selection.POSTGRES_TEST_PATHS) == 91
+    assert [len(paths) for paths in owned] == [40, 51]
     assert selection.DEVVAL_CUSTODY_TEST_PATH in owned[1]
     assert selection.FITTED_CUSTODY_TEST_PATH in owned[1]
     assert selection.DEVVAL_PREDICTION_DIAGNOSTIC_TEST_PATH in owned[1]
@@ -333,6 +333,7 @@ def test_pg2_owns_every_whole_module_and_keeps_both_stateful_anchors_on_zero():
             expected = 0
         elif path in (
             selection.DB0056_CONTROL_MONITOR_TEST_PATH,
+            selection.DB0056_REPORT_RESUME_TEST_PATH,
             selection.FITTED_CUSTODY_TEST_PATH,
             selection.DEVVAL_PREDICTION_DIAGNOSTIC_TEST_PATH,
         ):
@@ -382,6 +383,7 @@ def test_pg2_keeps_all_required_cases_and_modules_once_across_both_roles():
         "test_actual0056_restricted_account_control_read_replays_exact_scope",
         "test_actual0056_restricted_ledger_replays_retained_control_bound_intent",
         current56_contract.CONTROL_MONITOR_CASE[1],
+        current56_contract.REPORT_RESUME_CASE[1],
     ],
 )
 def test_current56_pg1_readback_refuses_missing_native_role_case(
@@ -510,7 +512,7 @@ def test_fitted_diagnostic_is_explicit_and_cases_only(
     if accepted:
         args, observed = current56._arguments()
         assert args.fitted_catalog_diagnostic is True and observed == 1
-        assert len(set(current56._FITTED_CASES)) == len(current56._FITTED_CASES) == 34
+        assert len(set(current56._FITTED_CASES)) == len(current56._FITTED_CASES) == 35
         assert current56_contract.devval_catalog.HERMETIC_CATALOG_CASE in (
             current56._FITTED_CASES
         )
@@ -550,6 +552,7 @@ def test_fitted_diagnostic_is_explicit_and_cases_only(
             "tests.integration.test_db0056_control_monitor_pg",
             "test_actual0056_control_monitor_joins_exact_release_and_restricted_tls",
         ) in current56._FITTED_CASES
+        assert current56_contract.REPORT_RESUME_CASE in current56._FITTED_CASES
         assert current56._FITTED_JUNIT not in current56_contract.component_artifacts(
             "postgres", 1
         )

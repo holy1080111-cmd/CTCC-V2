@@ -247,3 +247,20 @@ projector can adopt a matching durable pair left before receipt confirmation.
 If a committed receipt exists and its local pair is missing or invalid, preserve
 the remaining files and reconcile the missing evidence before proceeding.
 The projector has no Notion delivery or order execution authority.
+
+If the process stopped after committing the owned close cleanup but before
+committing the report-ready outcome and spool, use that exact cleanup digest:
+
+    python -B -m scripts.resume_native_terminal_report_0056_v1 \
+      --descriptor-file /path/to/private/db0056-deployment-descriptor.json \
+      --source-archive-file /path/to/exact-release.tar \
+      --cleanup-sha256 <cleanup-outcome-digest>
+
+This explicit command uses the administrator startup reference to identify the
+installed deployment and the pinned, restricted PostgreSQL writer. Eligibility
+comes from the original committed filled-flat closure, owned resource cleanup,
+forensics, and the database's terminal reporting policy. Current Arm and stop
+state remain untouched. The report outcome and spool commit together and the
+command verifies them in a separate transaction before printing
+`REPORT_SPOOL_VERIFIED`. Keep the same cleanup digest for an unconfirmed attempt.
+The command does not write queue files, contact Notion, or access the exchange.

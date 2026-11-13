@@ -25,6 +25,7 @@ from scripts.current0056_migration_pin import (
 from scripts.evidence_json import read_evidence_json
 from scripts.verify_linux_shard import (
     DB0056_CONTROL_MONITOR_TEST_PATH,
+    DB0056_REPORT_RESUME_TEST_PATH,
     DEVVAL_CUSTODY_TEST_PATH,
     FITTED_CUSTODY_TEST_PATH,
     postgres_paths,
@@ -68,10 +69,15 @@ CONTROL_MONITOR_CASE = (
     DB0056_CONTROL_MONITOR_TEST_PATH.removesuffix(".py").replace("/", "."),
     "test_actual0056_control_monitor_joins_exact_release_and_restricted_tls",
 )
+REPORT_RESUME_CASE = (
+    DB0056_REPORT_RESUME_TEST_PATH.removesuffix(".py").replace("/", "."),
+    "test_actual0056_report_resume_refuses_missing_cleanup_no_new_rows",
+)
 CURRENT56_PG1_REQUIRED_CASES = (
     *CURRENT56_CUSTODY_CASES,
     *CURRENT56_NATIVE_ROLE_CASES,
     CONTROL_MONITOR_CASE,
+    REPORT_RESUME_CASE,
 )
 PREDICTION_CUSTODY_CASE = (
     "tests.integration.test_public_runtime_bundle_custody_repository",

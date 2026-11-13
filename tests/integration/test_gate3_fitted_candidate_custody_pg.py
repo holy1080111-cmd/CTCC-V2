@@ -3498,11 +3498,16 @@ async def test_actual0056_restart_recovery_revokes_existing_account_arm(
     from types import SimpleNamespace
 
     from app.core import native_account_restart_recovery_0056_v1 as recovery
+    from app.core import native_locked_demo_control_0056_v1 as locked
+    from app.core.native_role_identity_0056_v2 import (
+        observe_restricted_role_identity_0056_v2,
+    )
     from app.core.native_role_witness_0056_v1 import (
         observe_restricted_native_roles_0056_witness_v1,
     )
     from app.database.repositories.demo_control import DemoControlRepository
     from app.trade_qualification.demo_control import ControlPins, ControlScope
+    from scripts import read_demo_account_control_0056 as read_control
 
     _, owner_factory, factories, _ = _actual_0056_role_observation_lab
     witness = await observe_restricted_native_roles_0056_witness_v1(
@@ -3530,6 +3535,38 @@ async def test_actual0056_restart_recovery_revokes_existing_account_arm(
         command_id="e" * 64,
         arm_expires_at=owner.state.lease_until,
     )
+    stable_roles = await observe_restricted_role_identity_0056_v2(
+        factories, source=_SOURCE_ROOT
+    )
+    async with factories.writer_factory() as session, session.begin():
+        async with locked.held_native_writer_control_0056_v1(
+            factories,
+            session,
+            scope,
+            roles=stable_roles,
+            purpose=locked.NativeWriterControlPurpose0056.PREPARE_OBSERVATION,
+        ) as held:
+            assert held.observation.control.state == armed.state
+            assert held.observation.control.event_sha256 == armed.event_sha256
+            assert held.execution_authority is False and held.admission == "DENY"
+            with pytest.raises(locked.NativeLockedDemoControl0056Error):
+                held._control_row_for_restart()
+        with pytest.raises(locked.NativeLockedDemoControl0056Error):
+            held.check_held()
+    stable_drift = replace(stable_roles, database_oid=stable_roles.database_oid + 1)
+    with pytest.raises(locked.NativeLockedDemoControl0056Error):
+        async with (
+            factories.writer_factory() as session,
+            session.begin(),
+            locked.held_native_writer_control_0056_v1(
+                factories,
+                session,
+                scope,
+                roles=stable_drift,
+                purpose=locked.NativeWriterControlPurpose0056.PREPARE_OBSERVATION,
+            ),
+        ):
+            pytest.fail("wrong stable database OID reached prepare observation")
     with pytest.raises(recovery.NativeAccountRestartRecovery0056Error):
         await recovery._recover_selected(selection, reconcile_only=True)
     stopped = await recovery._recover_selected(selection, reconcile_only=False)
@@ -3558,6 +3595,21 @@ async def test_actual0056_restart_recovery_revokes_existing_account_arm(
         is readback.execution_authority
         is False
     )
+    observed = await read_control._read_selected_control(
+        factories, stable_roles, stopped.control_event_sha256
+    )
+    assert observed == {
+        "control_event_sha256": stopped.control_event_sha256,
+        "control_revision": stopped.revision,
+        "emergency_stop": True,
+        "arm_request_recorded": False,
+    }
+    with pytest.raises(
+        read_control.startup.deployment.NativeDeploymentDescriptor0056Error
+    ):
+        await read_control._read_selected_control(
+            factories, stable_roles, armed.event_sha256
+        )
 
 
 async def test_actual0056_stopped_portfolio_keeps_absent_and_legacy_unknown(

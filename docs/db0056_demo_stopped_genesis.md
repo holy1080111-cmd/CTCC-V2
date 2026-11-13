@@ -49,6 +49,23 @@ Exit `2` marks an uncertain commit or an interrupted operation. Re-run with
 `--reconcile-only` to verify the current account stop without creating a new
 event. The readback alone cannot attribute a stop to a lost commit response.
 
+## Read the stopped Control event without connecting to OKX
+
+Use the event SHA-256 from the most recent Control receipt in the installed
+DB0056 deployment.
+
+```text
+python -B -m scripts.read_demo_account_control_0056 --source-archive-file <archive> --descriptor-file <descriptor> --control-event-sha256 <digest>
+```
+
+The command verifies the administrator-installed source binding, uses the
+restricted PostgreSQL roles and reopens the current event in a fresh
+transaction. It reports the Control revision, emergency stop and whether an Arm
+request is recorded. An old or ambiguous digest causes a refusal. The output
+contains no account identifier. The stop and any recorded Arm remain as stored.
+
+## Verify restart inventory
+
 With the stop in place, record fresh position, ordinary order and eight
 separately paginated algo order observations.
 

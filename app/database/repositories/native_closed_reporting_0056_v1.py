@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -141,7 +142,8 @@ def _read_projection_digest(receipt, spool) -> str | None:
     return pin(receipt.envelope_sha256)
 
 
-async def _read_held(session, engine, roles, names, route, spool_id, *, lock=False):
+@asynccontextmanager
+async def _verified_terminal_writer(session, engine, roles, names, route):
     _need(type(session) is AsyncSession and not session.identity_map)
     transaction = session.sync_session.get_transaction()
     _held(session, engine, transaction)
@@ -163,28 +165,36 @@ async def _read_held(session, engine, roles, names, route, spool_id, *, lock=Fal
     await roles56._require_no_effective_demo_fitted_execute(session, names)
     _need(await session.scalar(_ELIGIBILITY_ACCESS) is True)
     _held(session, engine, transaction)
-    if lock:
-        _need(session.get_bind(clause=_PROJECTION_LOCK) is engine.sync_engine)
-        _need(
-            await session.scalar(
-                _PROJECTION_LOCK, {"lock_key": _projection_lock_key(spool_id)}
-            )
-            is True
-        )
-    spool = await session.get(QualificationReportSpool, spool_id)
-    _need(type(spool) is QualificationReportSpool and spool.spool_id == spool_id)
-    _held(session, engine, transaction)
-    _, report, policy = await historical._replay_native_terminal_spool(session, spool)
-    _held(session, engine, transaction)
-    _need(
-        type(report) is historical.NativeTerminalReportDataV55
-        and report.execution_authority is report.order_retry_authority is False
-    )
-    projection = await session.get(QualificationReportProjectionReceipt, spool_id)
-    envelope = _read_projection_digest(projection, spool)
+    yield catalog, actor
     _need(await writer56._session_identity(session, engine) == first)
     _need(await roles56._identity_at_0056(session, names[0]) == actor)
     _held(session, engine, transaction)
+
+
+async def _read_held(session, engine, roles, names, route, spool_id, *, lock=False):
+    transaction = session.sync_session.get_transaction()
+    async with _verified_terminal_writer(session, engine, roles, names, route):
+        if lock:
+            _need(session.get_bind(clause=_PROJECTION_LOCK) is engine.sync_engine)
+            _need(
+                await session.scalar(
+                    _PROJECTION_LOCK, {"lock_key": _projection_lock_key(spool_id)}
+                )
+                is True
+            )
+        spool = await session.get(QualificationReportSpool, spool_id)
+        _need(type(spool) is QualificationReportSpool and spool.spool_id == spool_id)
+        _held(session, engine, transaction)
+        _, report, policy = await historical._replay_native_terminal_spool(
+            session, spool
+        )
+        _held(session, engine, transaction)
+        _need(
+            type(report) is historical.NativeTerminalReportDataV55
+            and report.execution_authority is report.order_retry_authority is False
+        )
+        projection = await session.get(QualificationReportProjectionReceipt, spool_id)
+        envelope = _read_projection_digest(projection, spool)
     return spool, report, policy, envelope
 
 
@@ -253,6 +263,22 @@ def _configured_projection_queue(settings):
     return root, queue(settings.submission_outbox_queue_namespace)
 
 
+async def _require_matching_roles(selected, expected):
+    actual = await witness56.observe_restricted_native_roles_0056_witness_v1(
+        selected, source=_SOURCE
+    )
+    _need(
+        type(expected) is NativeRoleIdentity0056V2
+        and actual.server_incarnation_sha256 == expected.server_incarnation_sha256
+        and actual.role_route_sha256 == expected.role_route_sha256
+        and actual.observation.inherited_native_definitions_sha256
+        == expected.inherited_native_definitions_sha256
+        and actual.observation.granted_inherited_acl_shape_sha256
+        == expected.granted_inherited_acl_shape_sha256
+    )
+    return actual
+
+
 async def _project_terminal_report_0056_v1(
     selected,
     *,
@@ -270,19 +296,7 @@ async def _project_terminal_report_0056_v1(
         pins = _factory_pins(selected)
         factory, engine, names, _ = pins
         route = locked._direct_tls_route(engine)
-        roles = await witness56.observe_restricted_native_roles_0056_witness_v1(
-            selected, source=_SOURCE
-        )
-        _need(
-            type(expected_roles) is NativeRoleIdentity0056V2
-            and roles.server_incarnation_sha256
-            == expected_roles.server_incarnation_sha256
-            and roles.role_route_sha256 == expected_roles.role_route_sha256
-            and roles.observation.inherited_native_definitions_sha256
-            == expected_roles.inherited_native_definitions_sha256
-            and roles.observation.granted_inherited_acl_shape_sha256
-            == expected_roles.granted_inherited_acl_shape_sha256
-        )
+        roles = await _require_matching_roles(selected, expected_roles)
         async with asyncio.timeout(30):
             async with factory() as session, session.begin():
                 spool, report, policy, envelope = await _read_held(
