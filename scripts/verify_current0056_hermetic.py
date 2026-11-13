@@ -586,6 +586,40 @@ def _run(args, index, raw, files, runner_sha, root):
             identity["recovery"] = shared.verify_pytest_report(
                 root / contract.RECOVERY_REPORT, required_cases=contract.RECOVERY_CASES
             )
+        if not diagnostic and contract.requires_root_trust(args.suite, index):
+            stage = contract.ROOT_TRUST_STAGE
+            name = prefix + stage
+            resources.append(("container", name))
+            command(
+                stage,
+                "run",
+                "--rm",
+                "--name",
+                name,
+                "--label",
+                label,
+                "--network=none",
+                "--user=0:0",
+                "--read-only",
+                "--tmpfs=/tmp:rw,nosuid,nodev,mode=1777",
+                "--security-opt=no-new-privileges:true",
+                "--cap-drop=ALL",
+                "--cap-add=SYS_CHROOT",
+                "--cap-add=SETUID",
+                "--cap-add=SETGID",
+                "--pids-limit=64",
+                *test_mount,
+                identity["image_id"],
+                "sh",
+                "-ec",
+                'umask 022; exec "$@"',
+                stage,
+                *_PYTEST,
+                f"--junitxml=/validation-results/{Path(contract.ROOT_TRUST_REPORT).name}",
+                *_cases_to_nodes((contract.ROOT_TRUST_CASE,)),
+                timeout=120,
+            )
+            contract.verify_root_trust(root)
         if diagnostic:
             stage, junit = "fitted-catalog-diagnostic", _FITTED_JUNIT
             test_command = (

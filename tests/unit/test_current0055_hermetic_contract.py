@@ -295,3 +295,90 @@ def test_current56_linux_shard_collection_applies_versioned_skip_policy(
     }
     with pytest.raises(ValueError, match="^current55_unapproved_linux_skip$"):
         contract._collection(tmp_path, "shard", 4, identity)
+
+
+def test_current56_root_trust_stage_and_artifacts_have_one_shard_owner():
+    modes = (("full", None), ("postgres", 0), ("postgres", 1))
+    scopes = {
+        (mode, index): current56.requires_root_trust(mode, index)
+        for mode, index in (*modes, *(("shard", index) for index in range(8)))
+    }
+    assert {scope for scope, needed in scopes.items() if needed} == {
+        ("full", None),
+        ("shard", 5),
+    }
+    for (mode, index), needed in scopes.items():
+        stages = current56.component_stage_names(mode, index)
+        artifacts = current56.component_artifacts(mode, index)
+        assert (current56.ROOT_TRUST_STAGE in stages) is needed
+        assert (current56.ROOT_TRUST_REPORT in artifacts) is needed
+        assert (f"{current56.ROOT_TRUST_STAGE}.log" in artifacts) is needed
+        if needed:
+            assert stages[stages.index(current56.ROOT_TRUST_STAGE) + 1] == (
+                current56.component_test_stage(mode, index)
+            )
+
+
+@pytest.mark.parametrize("behavior", ("missing", "skip", "wrong-case", "pass"))
+def test_current56_root_trust_proof_requires_the_single_actual_pass(tmp_path, behavior):
+    report = tmp_path / current56.ROOT_TRUST_REPORT
+    report.parent.mkdir()
+    module, case = current56.ROOT_TRUST_CASE
+    log = tmp_path / f"{current56.ROOT_TRUST_STAGE}.log"
+    log.write_text("HERMETIC_EXECUTION_AUTHORITY=0\n", encoding="utf-8")
+    if behavior != "missing":
+        skipped = behavior == "skip"
+        suite = ET.Element("testsuites")
+        result = ET.SubElement(
+            suite,
+            "testsuite",
+            tests="1",
+            failures="0",
+            errors="0",
+            skipped=str(int(skipped)),
+        )
+        entry = ET.SubElement(
+            result,
+            "testcase",
+            classname=module,
+            name=case if behavior != "wrong-case" else "test_unrelated",
+        )
+        if skipped:
+            ET.SubElement(entry, "skipped", type="pytest.skip", message="no root")
+        report.write_bytes(ET.tostring(suite))
+    if behavior == "missing":
+        with pytest.raises(FileNotFoundError):
+            current56.verify_root_trust(tmp_path)
+    elif behavior != "pass":
+        with pytest.raises(ValueError):
+            current56.verify_root_trust(tmp_path)
+    else:
+        assert current56.verify_root_trust(tmp_path)["passed"] == 1
+        log.write_text("", encoding="utf-8")
+        with pytest.raises(ValueError, match="^current56_root_trust_evidence_invalid$"):
+            current56.verify_root_trust(tmp_path)
+
+
+@pytest.mark.parametrize("mode", ("shard", "full", "postgres"))
+def test_current56_nonroot_skip_requires_separate_root_trust_proof(mode):
+    module, case = current56.ROOT_TRUST_CASE
+    root = ET.Element("testsuite")
+    entry = ET.SubElement(root, "testcase", classname=module, name=case)
+    ET.SubElement(
+        entry,
+        "skipped",
+        type="pytest.skip",
+        message="requires Linux and administrator to prepare a disposable filesystem",
+    )
+    raw = ET.tostring(root)
+    with pytest.raises(ValueError, match="^current55_unapproved_linux_skip$"):
+        current56._verify_platform_skips(raw, mode=mode, expected_skipped=1)
+    if mode == "postgres":
+        with pytest.raises(ValueError, match="^current55_unapproved_linux_skip$"):
+            current56._verify_platform_skips(
+                raw, mode=mode, expected_skipped=1, root_trust_verified=True
+            )
+    else:
+        current56._verify_platform_skips(
+            raw, mode=mode, expected_skipped=1, root_trust_verified=True
+        )
