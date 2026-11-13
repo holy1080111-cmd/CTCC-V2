@@ -232,3 +232,18 @@ all permutation digests, the empirical upper drawdown and threshold breaches.
 This measures drawdown sensitivity when observation order changes. Costs stay
 with their original observations. The reshuffle breaks serial dependence and
 does not estimate alternative fills, latency, or economic acceptance.
+
+## Closed-trade PnL concentration diagnostic
+
+`cash_pnl_concentration_v1` checks a pinned roster of already-netted cash PnL
+in one currency at a declared cutoff. The separately pinned plan fixes the
+candidate, observation window, eligible symbols and regimes, and number of
+positive outcomes to exclude. It reuses the closed-trade expectancy, profit
+factor and average-win/loss calculations for the full cohort, its group slices,
+the cohort without the largest winners, and each leave-one-group-out scenario.
+Winner ties resolve by close time and trade ID. A missing group or empty
+remaining cohort has an undefined result.
+
+This is an offline calculation on the supplied cohort. An exact replay checks
+the arithmetic and the input digests. The report does not establish independent
+preregistration, complete trade or cost sourcing, or economic OOS acceptance.
