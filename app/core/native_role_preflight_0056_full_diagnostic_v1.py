@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
@@ -101,20 +100,6 @@ class RestrictedNativeRoles0056ObservationV1:
     admission: Literal["DENY"] = field(default="DENY", init=False)
 
 
-@dataclass(frozen=True, slots=True, repr=False)
-class RestrictedNativeRoles0056WitnessV1:
-    """Original restricted transactions plus opaque, per-incarnation identity."""
-
-    observation: RestrictedNativeRoles0056ObservationV1
-    server_incarnation_sha256: str
-    role_route_sha256: str
-    schema: Literal["ctcc.native_only.restricted0056_runtime_witness.v1"] = field(
-        default="ctcc.native_only.restricted0056_runtime_witness.v1", init=False
-    )
-    startup_admission: Literal[False] = field(default=False, init=False)
-    execution_authority: Literal[False] = field(default=False, init=False)
-
-
 def _need(condition: bool) -> None:
     if condition is not True:
         raise NativeRoles0056ObservationError(
@@ -128,69 +113,6 @@ def _is_digest(value) -> bool:
         and len(value) == 64
         and all(character in "0123456789abcdef" for character in value)
     )
-
-
-def _runtime_witness(writer_identity, names, url_routes) -> tuple[str, str]:
-    """Hash the real writer actor/server and three private route descriptors.
-
-    A caller cannot substitute a DTO for the role observer's held transaction;
-    the witness is calculated before that observer returns. It is diagnostic.
-    """
-    _need(
-        type(writer_identity) is tuple
-        and len(writer_identity) == 9
-        and type(names) is tuple
-        and len(names) == 3
-        and len(set(names)) == 3
-        and all(type(name) is str and name for name in names)
-        and writer_identity[:3] == (names[0], names[0], "none")
-        and type(writer_identity[3]) is int
-        and writer_identity[3] > 0
-        and type(writer_identity[4]) is int
-        and writer_identity[4] > 0
-        and type(writer_identity[5]) is datetime
-        and writer_identity[5].utcoffset() is not None
-        and type(writer_identity[6]) is int
-        and 170000 <= writer_identity[6] < 180000
-        and type(writer_identity[7]) is str
-        and writer_identity[7]
-        and type(writer_identity[8]) is int
-        and 1 <= writer_identity[8] <= 65535
-        and type(url_routes) is tuple
-        and len(url_routes) == 3
-        and len(set(url_routes)) == 1
-        and all(
-            type(route) is tuple
-            and len(route) == 4
-            and all(type(part) in (str, int) for part in route)
-            for route in url_routes
-        )
-    )
-    server_sha = sha(
-        canonical(
-            {
-                "schema": "ctcc.native_only.pg0056_incarnation.v1",
-                "database_oid": writer_identity[4],
-                "postmaster_started_at": writer_identity[5]
-                .astimezone(UTC)
-                .isoformat(timespec="microseconds"),
-                "server_version_num": writer_identity[6],
-                "server_address": writer_identity[7],
-                "server_port": writer_identity[8],
-            }
-        )
-    )
-    route_sha = sha(
-        canonical(
-            {
-                "schema": "ctcc.native_only.pg0056_restricted_route.v1",
-                "route": list(url_routes[0]),
-                "role_names": list(names),
-                "writer_role_oid": writer_identity[3],
-            }
-        )
-    )
-    return server_sha, route_sha
 
 
 def _granted_inherited_acl_shape_sha256(names, native_definitions_sha256):
@@ -369,9 +291,9 @@ async def _recheck_granted_writer(writer, names, native_sha, acl_phase_sha):
     return identity
 
 
-async def _observe_restricted_native_roles_0056(
-    selected, *, source: Path, with_witness: bool
-) -> RestrictedNativeRoles0056ObservationV1 | RestrictedNativeRoles0056WitnessV1:
+async def observe_restricted_native_roles_0056_v1(
+    selected, *, source: Path
+) -> RestrictedNativeRoles0056ObservationV1:
     """Observe the exact three restricted roles without an owner connection.
 
     This checks a pre-provisioned DB0056 graph. Its result is intentionally
@@ -435,43 +357,15 @@ async def _observe_restricted_native_roles_0056(
                 )
                 == routes
             )
-        observation = RestrictedNativeRoles0056ObservationV1(
+        return RestrictedNativeRoles0056ObservationV1(
             pair["native_definitions_sha256"], pair_sha, custody_sha, acl_phase_sha
         )
-        if with_witness:
-            server_sha, route_sha = _runtime_witness(writer_identity, names, url_routes)
-            return RestrictedNativeRoles0056WitnessV1(
-                observation, server_sha, route_sha
-            )
-        return observation
     except asyncio.CancelledError:
         raise
     except Exception:  # noqa: BLE001 - never reveal DSN, SQL, role or catalog
         raise NativeRoles0056ObservationError(
             "native_roles_0056_observation_unavailable"
         ) from None
-
-
-async def observe_restricted_native_roles_0056_v1(
-    selected, *, source: Path
-) -> RestrictedNativeRoles0056ObservationV1:
-    """Preserve the historical inert V1 observation and receipt schema."""
-    result = await _observe_restricted_native_roles_0056(
-        selected, source=source, with_witness=False
-    )
-    _need(type(result) is RestrictedNativeRoles0056ObservationV1)
-    return result
-
-
-async def observe_restricted_native_roles_0056_witness_v1(
-    selected, *, source: Path
-) -> RestrictedNativeRoles0056WitnessV1:
-    """Add private route/incarnation binding without a second DB read."""
-    result = await _observe_restricted_native_roles_0056(
-        selected, source=source, with_witness=True
-    )
-    _need(type(result) is RestrictedNativeRoles0056WitnessV1)
-    return result
 
 
 async def observe_native_roles_0056_v1(

@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-from app.core import native_role_preflight_0056_full_diagnostic_v1 as roles56
+from app.core import native_role_witness_0056_v1 as role_witness56
 from app.core import native_startup_control_observation_0056_v1 as control56
 from app.demo_automation import native_server_selectors_v2 as selectors
 from app.domain.source_primitives import sha
@@ -104,21 +104,21 @@ async def observe_selected_native_startup_candidate_0056_v1(
         _need(type(selected) is selectors.ConfiguredNativeDemoFactoriesV2)
         source_sha = _source_manifest_sha256(source)
         _need(source_sha == pins.source_manifest_sha256)
-        first = await roles56.observe_restricted_native_roles_0056_witness_v1(
+        first = await role_witness56.observe_restricted_native_roles_0056_witness_v1(
             selected, source=source
         )
         control_before = await control56.observe_startup_control_0056_witness_v1(
             selected
         )
-        second = await roles56.observe_restricted_native_roles_0056_witness_v1(
+        second = await role_witness56.observe_restricted_native_roles_0056_witness_v1(
             selected, source=source
         )
         control_after = await control56.observe_startup_control_0056_witness_v1(
             selected
         )
         _need(
-            type(first) is roles56.RestrictedNativeRoles0056WitnessV1
-            and type(second) is roles56.RestrictedNativeRoles0056WitnessV1
+            type(first) is role_witness56.RestrictedNativeRoles0056WitnessV1
+            and type(second) is role_witness56.RestrictedNativeRoles0056WitnessV1
             and type(control_before) is control56.NativeStartupControl0056WitnessV1
             and type(control_after) is control56.NativeStartupControl0056WitnessV1
             and first == second

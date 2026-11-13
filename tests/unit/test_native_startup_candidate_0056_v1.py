@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.core import native_role_preflight_0056_full_diagnostic_v1 as roles56
+from app.core import native_role_witness_0056_v1 as role_witness56
 from app.core import native_startup_candidate_0056_v1 as subject
 from app.core import native_startup_control_observation_0056_v1 as control56
 from app.core.native_only_lifespan import ExistingControl
@@ -21,7 +22,7 @@ def scenario(tmp_path, monkeypatch):
     (tmp_path / "source.py").write_text("reviewed = True\n", encoding="utf-8")
     manifest.write_manifest(tmp_path, tmp_path / "MANIFEST.sha256")
     source_sha = sha((tmp_path / "MANIFEST.sha256").read_bytes())
-    role = roles56.RestrictedNativeRoles0056WitnessV1(
+    role = role_witness56.RestrictedNativeRoles0056WitnessV1(
         roles56.RestrictedNativeRoles0056ObservationV1(
             "1" * 64, "2" * 64, "3" * 64, "4" * 64
         ),
@@ -66,7 +67,9 @@ def scenario(tmp_path, monkeypatch):
         return state.controls.pop(0)
 
     monkeypatch.setattr(
-        roles56, "observe_restricted_native_roles_0056_witness_v1", role_observation
+        role_witness56,
+        "observe_restricted_native_roles_0056_witness_v1",
+        role_observation,
     )
     monkeypatch.setattr(
         control56, "observe_startup_control_0056_witness_v1", control_observation

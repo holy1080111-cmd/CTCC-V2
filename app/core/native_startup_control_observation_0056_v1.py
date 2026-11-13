@@ -15,6 +15,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import native_role_preflight_0056_full_diagnostic_v1 as roles56
+from app.core import native_role_witness_0056_v1 as role_witness56
 from app.core.native_only_lifespan import (
     _CONTROL_SQL,
     _RUNNING_SOAK_SQL,
@@ -182,7 +183,9 @@ async def _restricted_read_snapshot_0056(selected, *, with_witness=False):
                         selected.frame_reader_factory,
                     )
                 )
-                witness = roles56._runtime_witness(first[0], names, url_routes)
+                witness = role_witness56.runtime_witness_0056(
+                    first[0], names, url_routes
+                )
                 yield session, witness
             else:
                 yield session
