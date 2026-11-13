@@ -300,3 +300,103 @@ async def test_controlled_history_moves_once_with_exact_owned_factories(
             consume(token, **args)
     with pytest.raises(source.ControlledAccountSourceError, match="already_moved"):
         consume(token, **args)
+
+
+@pytest.mark.asyncio
+async def test_original_bank_db0056_requires_native_bank_context():
+    binding = object.__new__(source._CoverageBindingV6)
+    for candidate in (object(), binding):
+        with pytest.raises(
+            source.ControlledAccountSourceError,
+            match="^controlled_account_original_0056_bank_source_required$",
+        ):
+            await source._verify_owned_original_bank_catalog_0056_v6(
+                candidate,
+                object(),
+                object(),
+                request=None,
+                checkpoint=None,
+                approved_reader_oid=24,
+                frame_factory=object(),
+                writer_factory=object(),
+            )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mutation",
+    (None, "phase", "expiry", "checkpoint", "reader", "writer", "role", "actual_role"),
+)
+async def test_original_bank_db0056_rechecks_exact_request_and_frame_actor(
+    selected, monkeypatch, mutation
+):
+    state = selected.state
+    binding = object.__new__(source._CoverageBindingV6)
+    state.update(
+        phase="BANK",
+        coverage_binding=binding,
+        reader_role_oid=_RAW[3],
+        reader_factory=object(),
+        expires_at=_AT + timedelta(seconds=15),
+        facts=SimpleNamespace(
+            scope=SimpleNamespace(
+                environment=_SCOPE.environment,
+                account_id=_SCOPE.account_id,
+                settlement_currency="USDT",
+            )
+        ),
+        partition=SimpleNamespace(
+            head_sequence=1,
+            head_sha256="1" * 64,
+            control_revision=2,
+            account_revision=3,
+            ledger_revision=4,
+            checkpoints=(),
+        ),
+    )
+    monkeypatch.setitem(source._COVERAGE_V6, binding, state)
+    check = Mock()
+    monkeypatch.setattr(source, "_check_v6", check)
+    request, checkpoint = source._original_bank_inputs_v6(state)
+    inputs = {
+        "request": request,
+        "checkpoint": checkpoint,
+        "approved_reader_oid": state["reader_role_oid"],
+        "frame_factory": state["reader_factory"],
+        "writer_factory": state["control"]["factory"],
+    }
+    verify = AsyncMock(return_value=(_RAW[3] + (mutation == "actual_role"), b"catalog"))
+    monkeypatch.setattr(source, "_reader_catalog_0056_v6", verify)
+    if mutation == "phase":
+        state["phase"] = "PREPARING_ISSUER"
+    elif mutation == "expiry":
+        state["expires_at"] -= timedelta(seconds=1)
+    elif mutation == "checkpoint":
+        inputs["checkpoint"] = "e" * 64
+    elif mutation in {"reader", "writer"}:
+        inputs["frame_factory" if mutation == "reader" else "writer_factory"] = object()
+    elif mutation == "role":
+        inputs["approved_reader_oid"] += 1
+    session, fence = object(), object()
+    if mutation is None:
+        assert (
+            await source._verify_owned_original_bank_catalog_0056_v6(
+                binding, session, fence, **inputs
+            )
+            == b"catalog"
+        )
+    else:
+        with pytest.raises(
+            source.ControlledAccountSourceError,
+            match="^controlled_account_original_0056_(bank_source|frame_role)",
+        ):
+            await source._verify_owned_original_bank_catalog_0056_v6(
+                binding, session, fence, **inputs
+            )
+    if mutation in (None, "actual_role"):
+        verify.assert_awaited_once_with(
+            state, session, fence, selected.factories, selected.roles
+        )
+        assert check.call_count == 2
+    else:
+        verify.assert_not_awaited()

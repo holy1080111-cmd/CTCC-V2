@@ -2377,6 +2377,20 @@ async def test_actual0056_held_frame_reader_uses_same_transaction_and_real_catal
         )
         assert rebound == observed["current0056"]["raw"]["role"]["oid"]
         assert session.sync_session.get_transaction() is tx
+        before_backend = await source_v6.reader55.native._backend(session, fence)
+        earlier_oid, earlier_catalog = await source_v6._reader_catalog_0056_v6(
+            v6_state, session, fence, selected, roles
+        )
+        later_oid, later_catalog = await source_v6._reader_catalog_0056_v6(
+            v6_state, session, fence, selected, roles
+        )
+        assert earlier_oid == later_oid == rebound
+        assert earlier_catalog == later_catalog
+        assert json.loads(later_catalog) == observed
+        assert (
+            await source_v6.reader55.native._backend(session, fence) == before_backend
+        )
+        assert session.sync_session.get_transaction() is tx
         bad = replace(
             roles,
             observation=replace(
@@ -2390,6 +2404,31 @@ async def test_actual0056_held_frame_reader_uses_same_transaction_and_real_catal
             await source_v6._reader_role_0056_v6(
                 v6_state, session, fence, selected, bad
             )
+
+        inherited_rpc = source_v6.reader55.controlled.FRAME_SQL
+        missing_scope = source_v6.partition_policy.HistoryPartitionScopeV1(
+            "demo", str(uuid4().int % 10**30), "USDT"
+        )
+        genesis = source_v6.reader55.native.wire.OriginalFrameRequestV1(
+            missing_scope,
+            1,
+            "a" * 64,
+            0,
+            None,
+            1,
+            0,
+            0,
+            datetime.now(UTC) + timedelta(seconds=15),
+        )
+        with pytest.raises(DBAPIError) as denied:
+            await source_v6.reader55.native._execute_one(
+                session,
+                inherited_rpc,
+                fence,
+                source_v6.reader55.native._parameters(genesis),
+            )
+        assert denied.value.orig.sqlstate == "P0001"
+        assert "account_history_partition_parent_missing" in str(denied.value.orig)
 
 
 async def test_actual0056_full_native_role_rejects_swapped_roles_and_extra_grant(

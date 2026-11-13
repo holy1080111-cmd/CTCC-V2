@@ -7715,6 +7715,7 @@ def _make_controlled_financial_binding_v6():
         "_replay_controlled_current_mirror_context_v6",
         "_consume_controlled_history_use_v6",
         "_replay_controlled_coverage_context_v6",
+        "_verify_owned_original_bank_catalog_0056_v6",
         "_take_owned_account_issuer_v1",
         "_replay_owned_account_issuer_v1",
         "_finish_owned_account_issuer_v1",
@@ -7947,6 +7948,9 @@ _consume_controlled_history_use_v6 = _CONTROLLED_FINANCIAL_ENTRIES_V6[
 ]
 _replay_controlled_coverage_context_v6 = _CONTROLLED_FINANCIAL_ENTRIES_V6[
     "_replay_controlled_coverage_context_v6"
+]
+_verify_owned_original_bank_catalog_0056_v6 = _CONTROLLED_FINANCIAL_ENTRIES_V6[
+    "_verify_owned_original_bank_catalog_0056_v6"
 ]
 _take_owned_account_issuer_v1 = _CONTROLLED_FINANCIAL_ENTRIES_V6[
     "_take_owned_account_issuer_v1"

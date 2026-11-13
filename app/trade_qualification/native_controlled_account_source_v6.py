@@ -371,7 +371,7 @@ def _make_retirement_v6():
                 history_release(state["history"], key=history_key)
             if state.get("current") is not None:
                 clear_current(state["current"])
-        # The real façade safety handle/control dictionary is retained. Only
+        # The real fa癟ade safety handle/control dictionary is retained. Only
         # explicit disarm/EStop/release may persist; no safety owner is erased.
 
     return retire
@@ -1109,15 +1109,66 @@ async def _register_prefix_v6(state):
     state["registration"] = registration
 
 
+def _original_bank_inputs_v6(state):
+    final = state["partition"]
+    request = native._v4_wire.OriginalFrameRequestV1(
+        _partition_scope_v6(state["facts"]),
+        final.head_sequence,
+        final.head_sha256,
+        0,
+        None,
+        final.control_revision,
+        final.account_revision,
+        final.ledger_revision,
+        state["expires_at"],
+    )
+    checkpoint = final.checkpoints[-1].record_sha256 if final.checkpoints else None
+    return request, checkpoint
+
+
+async def _verify_owned_original_bank_catalog_0056_v6(
+    binding,
+    session,
+    fence,
+    *,
+    request,
+    checkpoint,
+    approved_reader_oid,
+    frame_factory,
+    writer_factory,
+):
+    state = _COVERAGE_V6.get(binding) if type(binding) is _CoverageBindingV6 else None
+    if (
+        state is None
+        or state["coverage_binding"] is not binding
+        or state["phase"] != "BANK"
+    ):
+        _deny("controlled_account_original_0056_bank_source_required")
+    _check_v6(state)
+    database = _owned_database_0056_v6(state)
+    if (
+        database is None
+        or (request, checkpoint) != _original_bank_inputs_v6(state)
+        or approved_reader_oid != state["reader_role_oid"]
+        or frame_factory is not state["reader_factory"]
+        or writer_factory is not state["control"]["factory"]
+    ):
+        _deny("controlled_account_original_0056_bank_source_changed")
+    reader_oid, proof_bytes = await _reader_catalog_0056_v6(
+        state, session, fence, *database
+    )
+    _check_v6(state)
+    if reader_oid != approved_reader_oid:
+        _deny("controlled_account_original_0056_frame_role_changed")
+    return proof_bytes
+
+
 async def _bank_v6(state):
     _check_v6(state)
     state["phase"] = "BANK"
     await _register_prefix_v6(state)
-    facts, original, final = (
-        state["facts"],
-        history_bundle._json(state["facts"].bundle_raw),
-        state["partition"],
-    )
+    facts, final = state["facts"], state["partition"]
+    original = history_bundle._json(facts.bundle_raw)
     position_plan = native.financial_v2.position_pages.PositionHistoryPlanV1(
         **{
             **original["position_plan"],
@@ -1143,23 +1194,17 @@ async def _bank_v6(state):
         facts.positions.archive_sha256,
     )
     state["position_source"] = positions
-    request = native._v4_wire.OriginalFrameRequestV1(
-        _partition_scope_v6(facts),
-        final.head_sequence,
-        final.head_sha256,
-        0,
-        None,
-        final.control_revision,
-        final.account_revision,
-        final.ledger_revision,
-        state["expires_at"],
-    )
-    result = await reader55.replay_original_history_api_population_from_pg_v2(
-        state["reader_factory"],
+    request, checkpoint = _original_bank_inputs_v6(state)
+    if _owned_database_0056_v6(state) is None:
+        acquire = reader55.replay_original_history_api_population_from_pg_v2
+        acquire_args = (state["reader_factory"],)
+    else:
+        acquire = reader55._replay_owned_original_history_api_population_from_pg_0056_v1
+        acquire_args = (state["coverage_binding"], state["reader_factory"])
+    result = await acquire(
+        *acquire_args,
         genesis_request=request,
-        expected_checkpoint_sha256=final.checkpoints[-1].record_sha256
-        if final.checkpoints
-        else None,
+        expected_checkpoint_sha256=checkpoint,
         approved_collector_role_oid=state["reader_role_oid"],
         lineage_session_factory=state["control"]["factory"],
         expected_financial_policy_sha256=sha(
@@ -1244,6 +1289,13 @@ async def _reader_role_v6(state):
 
 
 async def _reader_role_0056_v6(state, session, fence, factories, roles):
+    reader_oid, _ = await _reader_catalog_0056_v6(
+        state, session, fence, factories, roles
+    )
+    return reader_oid
+
+
+async def _reader_catalog_0056_v6(state, session, fence, factories, roles):
     reader = state["reader_factory"]
     routes, names = frame56._checked_factories(
         session,
@@ -1301,7 +1353,7 @@ async def _reader_role_0056_v6(state, session, fence, factories, roles):
         != routes
     ):
         _deny("controlled_account_original_0056_frame_factory_changed")
-    return raw_before[3]
+    return raw_before[3], proof_bytes
 
 
 def _source_stamp_v6(state, *, source_sha256, observed_at, received_at):

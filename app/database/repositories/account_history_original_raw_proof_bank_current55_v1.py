@@ -1,8 +1,8 @@
 """One actual original-prefix database acquisition with global financial replay.
 
-Use the separate exact current0055 catalog and original reader Fence, source
-backend checks and width1 page producer. This is an inert read observation;
-caller factory/role/request/position DTOs cannot become a collector owner.
+Use the original reader Fence, source backend checks and width1 page producer.
+The exact DB0055 catalog and the owned DB0056 catalog remain separate. This is
+an inert observation. Factory, role, request and position DTOs confer no authority.
 """
 
 import asyncio
@@ -102,6 +102,7 @@ async def _replay_original_history_raw_bank_from_pg(
     _api_version,
     expected_api_population_policy_sha256,
     position_source=None,
+    _owned_bank_0056=None,
 ):
     """Read all CURRENT frames once, finish real replay, then commit and close.
 
@@ -110,7 +111,11 @@ async def _replay_original_history_raw_bank_from_pg(
     future cutoff. No clock, expiry, original B1 or source timestamp is changed.
     Upstream credential custody/finality/HWM and account issuance stay separate.
     """
-    if type(_api_version) is not int or _api_version not in {1, 2}:
+    if (
+        type(_api_version) is not int
+        or _api_version not in {1, 2}
+        or (_owned_bank_0056 is not None and _api_version != 2)
+    ):
         _deny("original_financial_pg_policy_mismatch")
     if (_api_version == 1 and expected_api_population_policy_sha256 is not None) or (
         _api_version == 2
@@ -188,11 +193,38 @@ async def _replay_original_history_raw_bank_from_pg(
         "financial_stream_policy_sha256": expected_financial_policy_sha256,
         "raw_bank_policy_sha256": expected_raw_bank_policy_sha256,
     }
+    if _owned_bank_0056 is not None:
+        request_identity["database_head"] = "0056"
     if _api_version == 2:
         request_identity["api_population_policy_sha256"] = (
             expected_api_population_policy_sha256
         )
     state["membership"].update(journal.canonical(request_identity))
+
+    async def actual_catalog(session):
+        if _owned_bank_0056 is None:
+            return await current_catalog.verify_actual_raw_history_catalog_v1(
+                session,
+                fence,
+                approved_collector_role_oid,
+                lineage_session_factory,
+                session_factory,
+            )
+        from app.trade_qualification.native_account_risk_assembly_v1 import (
+            _verify_owned_original_bank_catalog_0056_v6,
+        )
+
+        return await _verify_owned_original_bank_catalog_0056_v6(
+            _owned_bank_0056,
+            session,
+            fence,
+            request=request,
+            checkpoint=expected_checkpoint_sha256,
+            approved_reader_oid=approved_collector_role_oid,
+            frame_factory=session_factory,
+            writer_factory=lineage_session_factory,
+        )
+
     session, close_attempted = None, False
     try:
         async with asyncio.timeout_at(fence.loop_deadline):
@@ -206,6 +238,9 @@ async def _replay_original_history_raw_bank_from_pg(
             fence.check()
             await session.begin()
             fence.check()
+            if _owned_bank_0056 is not None:
+                await session.execute(text("SET TRANSACTION READ WRITE"))
+                fence.check()
             for statement in (
                 "SET TRANSACTION ISOLATION LEVEL READ COMMITTED",
                 "SET LOCAL search_path TO pg_catalog, public, pg_temp",
@@ -215,13 +250,7 @@ async def _replay_original_history_raw_bank_from_pg(
             ):
                 await session.execute(text(statement))
                 fence.check()
-            before = await current_catalog.verify_actual_raw_history_catalog_v1(
-                session,
-                fence,
-                approved_collector_role_oid,
-                lineage_session_factory,
-                session_factory,
-            )
+            before = await actual_catalog(session)
             state["backend"] = await native._backend(session, fence)
             engine = stream._replay_engine(
                 request.scope,
@@ -253,13 +282,7 @@ async def _replay_original_history_raw_bank_from_pg(
                 or session.get_bind() is not bind
             ):
                 _deny("original_pg_incomplete")
-            after = await current_catalog.verify_actual_raw_history_catalog_v1(
-                session,
-                fence,
-                approved_collector_role_oid,
-                lineage_session_factory,
-                session_factory,
-            )
+            after = await actual_catalog(session)
             if (
                 before != after
                 or state["backend"] != await native._backend(session, fence)
@@ -309,6 +332,8 @@ async def _replay_original_history_raw_bank_from_pg(
                     "schema_version": (
                         "ctcc.current55.original_history_raw_proof_bank_pg_read_observation.v1"
                         if _api_version == 1
+                        else "ctcc.current56.original_history_api_population_pg_read_observation.v2"
+                        if _owned_bank_0056 is not None
                         else "ctcc.current55.original_history_api_population_pg_read_observation.v2"
                     ),
                     **request_identity,
@@ -493,6 +518,37 @@ async def replay_original_history_api_population_from_pg_v2(
         _api_version=2,
         expected_api_population_policy_sha256=expected_api_population_policy_sha256,
         position_source=position_source,
+    )
+
+
+async def _replay_owned_original_history_api_population_from_pg_0056_v1(
+    binding,
+    session_factory,
+    *,
+    genesis_request,
+    expected_checkpoint_sha256,
+    approved_collector_role_oid,
+    lineage_session_factory,
+    expected_financial_policy_sha256,
+    expected_raw_bank_policy_sha256,
+    expected_api_population_policy_sha256,
+    position_source,
+):
+    """Use the genuine V6 BANK phase with DB0056 verification in the frame transaction."""
+    if binding is None:
+        _deny("original_pg_read_uncertain")
+    return await _replay_original_history_raw_bank_from_pg(
+        session_factory,
+        genesis_request=genesis_request,
+        expected_checkpoint_sha256=expected_checkpoint_sha256,
+        approved_collector_role_oid=approved_collector_role_oid,
+        lineage_session_factory=lineage_session_factory,
+        expected_financial_policy_sha256=expected_financial_policy_sha256,
+        expected_raw_bank_policy_sha256=expected_raw_bank_policy_sha256,
+        _api_version=2,
+        expected_api_population_policy_sha256=expected_api_population_policy_sha256,
+        position_source=position_source,
+        _owned_bank_0056=binding,
     )
 
 
