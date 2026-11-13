@@ -3123,3 +3123,75 @@ async def test_actual0056_restricted_writer_retains_current_v7_page_chain(
     assert source_reference(chain) == reference
     assert len(chain) > 8
     assert sum(item.event.packet_payload is not None for item in chain) == 1
+
+
+async def test_actual0056_restricted_partition_reopens_existing_b3_prefix(
+    monkeypatch, _actual_0056_role_observation_lab
+):
+    from app.core.native_role_witness_0056_v1 import (
+        observe_restricted_native_roles_0056_witness_v1,
+    )
+    from app.database.repositories import (
+        account_history_partition_current56_source_v1 as partition56,
+    )
+    from app.database.repositories.demo_control import DemoControlRepository
+    from app.trade_qualification.demo_control import ControlScope
+    from tests.integration.test_account_observation_index_repository import (
+        additional_capture,
+        now,
+        stored,
+    )
+
+    owner, owner_factory, selected, _ = _actual_0056_role_observation_lab
+    writer = selected.writer_factory
+    index, ledger_scope, _, _, first = await stored(monkeypatch, (owner, writer))
+    control_scope = ControlScope("demo", ledger_scope.account_id)
+    control = await DemoControlRepository(owner_factory, clock=now).latch_stop(
+        control_scope, command_id="b" * 64
+    )
+    scope = partition56.HistoryPartitionScopeV1("demo", ledger_scope.account_id, "USDT")
+    roles = await observe_restricted_native_roles_0056_witness_v1(
+        selected, source=_SOURCE_ROOT
+    )
+    reader = partition56.Db0056SourcePartitionReaderV1(
+        selected, clock=now, expected_roles=roles
+    )
+    baseline = await reader.read(scope)
+    assert baseline.head_sequence == 1
+    assert baseline.head_sha256 == first.event_sha256
+    assert baseline.b3_documents == (first.document_json,)
+    assert baseline.control_revision == control.state.revision
+    assert baseline.members == baseline.checkpoints == ()
+
+    reference, window = await additional_capture(monkeypatch, index, ledger_scope, [])
+    second = await index.append(ledger_scope, reference, window, expected_revision=1)
+    readback = await reader.read(scope)
+    reopened = await partition56.Db0056SourcePartitionReaderV1(
+        selected, clock=now, expected_roles=roles
+    ).read(scope)
+    assert readback.head_sequence == reopened.head_sequence == 2
+    assert readback.head_sha256 == reopened.head_sha256 == second.event_sha256
+    assert readback.transaction_id != reopened.transaction_id
+    assert (
+        readback.b3_documents
+        == reopened.b3_documents
+        == (
+            first.document_json,
+            second.document_json,
+        )
+    )
+    assert not readback.account_complete and not reopened.execution_authority
+    with pytest.raises(partition56.Db0056SourcePartitionError):
+        await reader.read(partition56.HistoryPartitionScopeV1("demo", "0", "USDT"))
+
+    # The inherited read grant stays usable. Granting the old write RPC must
+    # be diagnosed as drift before the reader can return another snapshot.
+    legacy_append = "account_history_partition_v1_append"
+    signature = partition56.original.policy.FUNCTION_SIGNATURES[legacy_append]
+    role = _delta56_identifier(writer.kw["bind"].url.username)
+    async with owner.begin() as connection:
+        await connection.exec_driver_sql(
+            f"GRANT EXECUTE ON FUNCTION public.{legacy_append}({signature}) TO {role}"
+        )
+    with pytest.raises(partition56.Db0056SourcePartitionError):
+        await reader.read(scope)
