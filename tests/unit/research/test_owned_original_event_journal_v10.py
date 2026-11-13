@@ -88,6 +88,8 @@ async def test_v10_keeps_raw_g5_frame_across_locked_journal_reads(
     )
     owner = asyncio.current_task()
     state = {"diagnostic": None, "consumed": False, "g5_calls": 0, "db_calls": 0}
+    event_receipts = []
+    journal_reads = []
 
     async def account_source(received, *, session_factory, proof_root):
         assert asyncio.current_task() is owner
@@ -139,7 +141,9 @@ async def test_v10_keeps_raw_g5_frame_across_locked_journal_reads(
         if state["g5_calls"] == 3:
             assert state["db_calls"] == 2
         result = original_event(public_packet, derived, **pins)
-        state["event_key"] = decode(result)["event_key_sha256"]
+        event_receipts.append(result)
+        if len(event_receipts) == 1:
+            state["prefix_receipt"] = pins["prefix_receipt_json"]
         return result
 
     async def inspect_journal(self, scope):
@@ -148,7 +152,9 @@ async def test_v10_keeps_raw_g5_frame_across_locked_journal_reads(
         assert self.session_factory is state["factory"]
         assert scope.account_id == controlled._plan.expected_uid
         state["db_calls"] += 1
-        return _journal(scope, (), self.clock)
+        inspection = _journal(scope, (), self.clock)
+        journal_reads.append(inspection)
+        return inspection
 
     monkeypatch.setattr(original, "_evaluate_owned_base_event_v7", evaluate)
     monkeypatch.setattr(
@@ -177,11 +183,34 @@ async def test_v10_keeps_raw_g5_frame_across_locked_journal_reads(
     assert all(request.method == "GET" for request in harness.requests)
     harness.assert_closed()
     empty_registries()
-    # Pin the complete readback after checking its source and DENY semantics.
-    # Measured last-component receipt (not later batch validation) changes the
-    # G1 source digest and its derived receipts; all DENY checks above remain.
+    assert event_receipts[0] == event_receipts[1] == event_receipts[2]
+    event = decode(event_receipts[0])
+    assert record["event_receipt_sha256"] == sha(event_receipts[0])
+    assert record["base_prefix_receipt_sha256"] == sha(state["prefix_receipt"])
+    assert record["base_prefix_receipt_sha256"] == event["base_prefix_receipt_sha256"]
+    assert record["public_packet_sha256"] == state["raw_packet"].bundle_sha256
+    assert record["public_packet_sha256"] == event["public_packet_sha256"]
+    assert record["account_packet_sha256"] == frozen.sha256
+    assert record["precursor_receipt_sha256"] == sha(state["precursor"].receipt_json)
+    assert record["precursor_receipt_sha256"] == event["precursor_receipt_sha256"]
+    assert record["precursor_intent_sha256"] == event["precursor_intent_sha256"]
+    assert record["event_key_sha256"] == event["event_key_sha256"]
+    assert record["account_plan_sha256"] == controlled._pin
+    first, second = journal_reads
+    assert (
+        first.observed_at
+        <= first.received_at
+        <= second.observed_at
+        <= second.received_at
+    )
+    assert record["ledger_first_sha256"] == sha(first.document_json)
+    assert record["ledger_second_sha256"] == sha(second.document_json)
+    assert record["ledger_revision"] == decode(second.document_json)["ledger_revision"]
+    assert record["ledger_observed_at"] == second.observed_at.isoformat()
+    assert record["event_seen_in_controlled_journal"] is False
+    # The shared fixture now records the IPC clock transport evidence.
     assert sha(result.receipt_json) == (
-        "0c65793d447c88871ae35373db6fec2b54f7ba838a7c21fc750f203c206dfb41"
+        "1af9dc0bdcf11a8fd5bcea90f08cb36b7ef2d34c287852474574d74602c799d1"
     )
 
 
