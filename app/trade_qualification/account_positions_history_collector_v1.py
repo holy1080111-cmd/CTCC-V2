@@ -108,6 +108,12 @@ class _RawPage:
     headers: datetime
     completed: datetime
     certificate_sha256: str | None
+    # Optional actual response envelope for the separate fee capture. Legacy
+    # position archives keep their original five-field record contract.
+    status_code: int | None = None
+    content_type: str | None = None
+    content_encoding: str | None = None
+    redirected: bool | None = None
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -463,6 +469,7 @@ async def _signed_get(
     previous_completed: datetime,
     secret_tokens: list[str],
     _native_observer=None,
+    capture_envelope=False,
 ) -> _RawPage:
     _checked_read_session(
         read_session,
@@ -612,7 +619,23 @@ async def _signed_get(
     owned._no_secret_json(canonical, secret_tokens)
     if _native_observer is not None:
         stage._phase(_native_observer, "validated")
-    return _RawPage(raw, started, headers, completed, certificate_sha256)
+    return _RawPage(
+        raw,
+        started,
+        headers,
+        completed,
+        certificate_sha256,
+        *(
+            (
+                response.status_code,
+                response.headers.get("content-type"),
+                response.headers.get("content-encoding", "identity"),
+                bool(response.history),
+            )
+            if capture_envelope
+            else (None, None, None, None)
+        ),
+    )
 
 
 async def collect_demo_position_history(

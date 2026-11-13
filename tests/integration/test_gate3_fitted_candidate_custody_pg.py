@@ -1459,6 +1459,7 @@ async def test_actual0056_native_lifespan_denies_before_recovery_cas(
     from app import main as app_main
     from app.config.settings import Settings
     from app.core import native_only_lifespan
+    from app.core import native_startup_control_observation_0056_v1 as startup56
     from app.core.native_role_preflight_v1 import NativeRolePreflightError
     from app.database.models.demo_automation import DemoAutomationState
 
@@ -1496,6 +1497,21 @@ async def test_actual0056_native_lifespan_denies_before_recovery_cas(
     before = await read_control()
     before_state = json.loads(before)
     assert before_state["control_revision"] == 7 and before_state["armed"] is True
+    observed_control = await startup56.observe_startup_control_0056_v1(selected)
+    assert observed_control.database_head == "0056"
+    assert observed_control.control == native_only_lifespan.ExistingControl(
+        revision=7,
+        armed=True,
+        emergency_stop=False,
+        locked=False,
+        restart_latch_required=True,
+    )
+    assert (
+        observed_control.startup_admission
+        is observed_control.execution_authority
+        is False
+    )
+    assert await read_control() == before
     settings = Settings(
         _env_file=None,
         ctcc_native_only_lifespan_v1=True,
@@ -1530,3 +1546,66 @@ async def test_actual0056_native_lifespan_denies_before_recovery_cas(
     assert instance.state.native_only_recovery_confirmed is False
     forbidden_recovery.assert_not_awaited()
     assert await read_control() == before
+
+
+async def test_actual0056_restricted_account_control_read_replays_exact_scope(
+    _actual_0056_role_observation_lab,
+):
+    from app.core import native_account_control_observation_0056_v1 as account56
+    from app.core.native_startup_control_observation_0056_v1 import (
+        NativeStartupControl0056Error,
+    )
+    from app.database.repositories.demo_control import DemoControlRepository
+    from app.trade_qualification.demo_control import ControlScope
+
+    owner, owner_factory, selected, _ = _actual_0056_role_observation_lab
+    seed = DemoControlRepository(owner_factory, clock=lambda: datetime.now(UTC))
+    first_scope = ControlScope("demo", "000001")
+    second_scope = ControlScope("demo", "1")
+    await seed.latch_stop(first_scope, command_id="a" * 64)
+    first = await seed.latch_stop(first_scope, command_id="b" * 64)
+    second = await seed.latch_stop(second_scope, command_id="c" * 64)
+
+    async def read(scope):
+        return await account56.observe_account_control_0056_v1(selected, scope)
+
+    # A second transaction holds the writer row lock. This observation must
+    # replay the committed head without trying to lock the row for mutation.
+    async with owner.begin() as connection:
+        await connection.execute(
+            text("""
+            SELECT 1 FROM public.demo_account_controls
+            WHERE environment='demo' AND account_id=:uid FOR UPDATE
+            """),
+            {"uid": first_scope.account_id},
+        )
+        actual = await read(first_scope)
+        assert actual.control.state == first.state and first.state.revision == 2
+        assert actual.control.event_sha256 == first.event_sha256
+        assert actual.control.observed_at >= first.state.updated_at
+        assert actual.database_head == "0056"
+        assert actual.startup_admission is actual.execution_authority is False
+        assert actual.control.execution_authority is False
+
+    actual_second = await read(second_scope)
+    assert actual_second.control.state == second.state and second.state.revision == 1
+    assert actual_second.control.event_sha256 == second.event_sha256
+    assert actual_second.control.event_sha256 != actual.control.event_sha256
+    with pytest.raises(NativeStartupControl0056Error):
+        await read(ControlScope("demo", "000002"))
+
+    # A restricted role with an intact current row but a hidden lineage tail
+    # may not turn that incomplete snapshot into a successful read.
+    async with owner.begin() as connection:
+        await connection.exec_driver_sql(
+            "ALTER TABLE public.demo_control_journal ENABLE ROW LEVEL SECURITY"
+        )
+    try:
+        with pytest.raises(NativeStartupControl0056Error):
+            await read(first_scope)
+    finally:
+        async with owner.begin() as connection:
+            await connection.exec_driver_sql(
+                "ALTER TABLE public.demo_control_journal DISABLE ROW LEVEL SECURITY"
+            )
+    assert (await read(first_scope)).control.event_sha256 == first.event_sha256

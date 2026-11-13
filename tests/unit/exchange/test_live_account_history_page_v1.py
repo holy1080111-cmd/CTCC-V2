@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from dataclasses import replace
 from hashlib import sha256
+from itertools import count
 
 import httpx
 import pytest
 
+from app.domain.source_primitives import ClockStamp
+from app.exchange.okx import live_account_config_observation_v1 as raw_get
 from app.exchange.okx.live_account_history_page_v1 import (
     HISTORY_INST_TYPES,
     LiveHistoryPageError,
@@ -88,8 +91,20 @@ def test_history_selector_exact_endpoint_cursor_and_partition() -> None:
 
 
 @pytest.mark.asyncio
-async def test_history_page_signed_raw_readback_and_private_archive() -> None:
+async def test_history_page_signed_raw_readback_and_private_archive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     seen: list[httpx.Request] = []
+    elapsed_ns = count(0, 1_000_000)
+
+    def stamp() -> ClockStamp:
+        elapsed = next(elapsed_ns)
+        return ClockStamp(
+            utc_ns=1_700_004_000_000_000_000 + elapsed,
+            monotonic_ns=1_000_000_000 + elapsed,
+        )
+
+    monkeypatch.setattr(raw_get, "_stamp", stamp)
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request)
