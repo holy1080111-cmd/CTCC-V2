@@ -324,6 +324,12 @@ async def select_configured_demo_identity_v2(
         source_roles_0056 = None
         if _source_use is _SOURCE_ONLY_0056:
             source_roles_0056 = await _source_roles_before_get_0056(factories)
+            _need(
+                _configured_inputs(private_client, read_session, instrument_ids)
+                is settings
+                and _server_settings_pin(settings) == server_pin,
+                "native_demo_selector_0056_settings_changed_before_get",
+            )
         if source_only_role_preflight:
             # This opt-in source diagnostic proves the actual selector-owned
             # factory set before its first signed GET. Existing callers keep

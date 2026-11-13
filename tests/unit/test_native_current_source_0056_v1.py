@@ -106,3 +106,37 @@ async def test_0056_checks_exact_selected_factories_before_any_signed_get(monkey
     client.account_config_selector_v2.assert_not_awaited()
     factories.frame_reader_engine.dispose.assert_awaited_once()
     factories.custody_engine.dispose.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_0056_configuration_change_during_role_check_refuses_get(monkeypatch):
+    selectors = source.selectors
+    factories = SimpleNamespace(
+        frame_reader_engine=SimpleNamespace(dispose=AsyncMock()),
+        custody_engine=SimpleNamespace(dispose=AsyncMock()),
+    )
+    client = SimpleNamespace(account_config_selector_v2=AsyncMock())
+    monkeypatch.setattr(selectors, "_configured_inputs", Mock(return_value=object()))
+    monkeypatch.setattr(
+        selectors, "_server_settings_pin", Mock(side_effect=("before", "changed"))
+    )
+    monkeypatch.setattr(selectors, "_route_artifact", Mock(return_value=b"route"))
+    monkeypatch.setattr(
+        selectors,
+        "select_configured_native_demo_factories_v2",
+        Mock(return_value=factories),
+    )
+    monkeypatch.setattr(
+        selectors, "_source_roles_before_get_0056", AsyncMock(return_value=object())
+    )
+    with pytest.raises(
+        selectors.NativeDemoCallerReadinessErrorV2, match="settings_changed_before_get"
+    ):
+        await selectors.select_configured_demo_source_identity_0056_v1(
+            private_client=client,
+            read_session=object(),
+            instrument_ids=("BTC-USDT-SWAP",),
+        )
+    client.account_config_selector_v2.assert_not_awaited()
+    factories.frame_reader_engine.dispose.assert_awaited_once()
+    factories.custody_engine.dispose.assert_awaited_once()
