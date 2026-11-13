@@ -123,3 +123,10 @@ class PaperStateView(BaseModel):
     account: PaperAccountView
     orders: list[PaperOrderView]
     positions: list[PaperPositionView]
+
+
+class PaperRuntimeStateView(BaseModel):
+    runtime_id: UUID
+    persistent: bool
+    recovered: bool
+    state: PaperStateView

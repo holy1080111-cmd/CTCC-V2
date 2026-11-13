@@ -1,8 +1,10 @@
+import hmac
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
 from app.api.security import require_ctcc_token
+from app.config.settings import get_settings
 from app.domain.paper import (
     ManualCloseRequest,
     MarketTickRequest,
@@ -10,6 +12,7 @@ from app.domain.paper import (
     PaperOrderRequest,
     PaperOrderView,
     PaperPositionView,
+    PaperRuntimeStateView,
     PaperStateView,
     PaperTickResult,
 )
@@ -17,11 +20,29 @@ from app.paper import PaperBrokerError, PaperPersistenceError
 from app.paper.execution_service import PaperPersistenceOutcomeUnknown
 from app.paper.service import paper_service
 
+
+async def require_expected_runtime(request: Request) -> None:
+    expected = request.headers.getlist("x-ctcc-paper-runtime")
+    if expected and (
+        len(expected) != 1 or not paper_service.matches_runtime(expected[0])
+    ):
+        raise HTTPException(status_code=409, detail="paper_runtime_changed")
+
+
 router = APIRouter(
     prefix="/api/paper",
     tags=["paper"],
     dependencies=[Depends(require_ctcc_token)],
 )
+local_paper_runtime_router = APIRouter(
+    prefix="/api/paper",
+    tags=["paper"],
+    dependencies=[Depends(require_ctcc_token)],
+)
+
+
+class PaperRuntimeReadback(PaperRuntimeStateView):
+    installation_binding: str
 
 
 def _handle(exc: PaperBrokerError | PaperPersistenceError) -> HTTPException:
@@ -39,7 +60,10 @@ def _handle(exc: PaperBrokerError | PaperPersistenceError) -> HTTPException:
 
 
 @router.post(
-    "/orders", response_model=PaperOrderView, status_code=status.HTTP_201_CREATED
+    "/orders",
+    response_model=PaperOrderView,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_expected_runtime)],
 )
 async def submit_order(request: PaperOrderRequest) -> PaperOrderView:
     try:
@@ -56,7 +80,11 @@ async def get_order(order_id: UUID) -> PaperOrderView:
         raise _handle(exc) from exc
 
 
-@router.post("/orders/{order_id}/cancel", response_model=PaperOrderView)
+@router.post(
+    "/orders/{order_id}/cancel",
+    response_model=PaperOrderView,
+    dependencies=[Depends(require_expected_runtime)],
+)
 async def cancel_order(order_id: UUID) -> PaperOrderView:
     try:
         return await paper_service.cancel(order_id)
@@ -64,7 +92,11 @@ async def cancel_order(order_id: UUID) -> PaperOrderView:
         raise _handle(exc) from exc
 
 
-@router.post("/ticks", response_model=PaperTickResult)
+@router.post(
+    "/ticks",
+    response_model=PaperTickResult,
+    dependencies=[Depends(require_expected_runtime)],
+)
 async def process_tick(request: MarketTickRequest) -> PaperTickResult:
     try:
         return await paper_service.tick(
@@ -82,7 +114,11 @@ async def get_position(position_id: UUID) -> PaperPositionView:
         raise _handle(exc) from exc
 
 
-@router.post("/positions/{position_id}/close", response_model=PaperPositionView)
+@router.post(
+    "/positions/{position_id}/close",
+    response_model=PaperPositionView,
+    dependencies=[Depends(require_expected_runtime)],
+)
 async def close_position(
     position_id: UUID, request: ManualCloseRequest
 ) -> PaperPositionView:
@@ -108,6 +144,21 @@ async def get_state() -> PaperStateView:
         return paper_service.state()
     except PaperPersistenceOutcomeUnknown as exc:
         raise _handle(exc) from exc
+
+
+@local_paper_runtime_router.get("/runtime/state", response_model=PaperRuntimeReadback)
+async def get_runtime_state(response: Response) -> PaperRuntimeReadback:
+    try:
+        view = await paper_service.runtime_state()
+    except PaperPersistenceOutcomeUnknown as exc:
+        raise _handle(exc) from exc
+    binding = hmac.digest(
+        get_settings().api_token_value.encode("utf-8"),
+        b"ctcc.paper.local_runtime_installation.v1",
+        "sha256",
+    ).hex()
+    response.headers["Cache-Control"] = "no-store"
+    return PaperRuntimeReadback(**view.model_dump(), installation_binding=binding)
 
 
 @router.post("/reset", response_model=PaperStateView)

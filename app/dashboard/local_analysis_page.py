@@ -90,7 +90,7 @@ LOCAL_ANALYSIS_HTML = r"""<!doctype html>
         <input id="paperTarget" type="text" inputmode="decimal" maxlength="40"></div>
     </div>
     <label><input id="paperConfirm" type="checkbox">我確認這是本機 Paper 模擬操作</label>
-    <button id="paperOrder" type="button">送出模擬訂單</button>
+    <button id="paperOrder" type="button" disabled>送出模擬訂單</button>
     <p>手動報價可能觸發本機限價單成交、停利或停損。請先核對帳本。</p>
     <div class="fields">
       <div><label for="paperTickSymbol">報價商品</label>
@@ -98,17 +98,32 @@ LOCAL_ANALYSIS_HTML = r"""<!doctype html>
       <div><label for="paperTickPrice">模擬報價</label>
         <input id="paperTickPrice" type="text" inputmode="decimal" maxlength="40"></div>
     </div>
-    <button id="paperTick" type="button">送出模擬報價</button>
+    <button id="paperTick" type="button" disabled>送出模擬報價</button>
+    <p>從已讀取的帳本選擇要取消的待成交單或要平倉的部位。</p>
+    <div class="fields">
+      <div><label for="paperPendingOrder">待成交單</label>
+        <select id="paperPendingOrder" disabled></select>
+        <button id="paperCancel" type="button" disabled>取消模擬訂單</button></div>
+      <div><label for="paperOpenPosition">未平倉部位</label>
+        <select id="paperOpenPosition" disabled></select>
+        <label for="paperClosePrice">平倉參考價</label>
+        <input id="paperClosePrice" type="text" inputmode="decimal" maxlength="40">
+        <button id="paperClose" type="button" disabled>手動模擬平倉</button></div>
+    </div>
     <p id="paperActionStatus" role="status" aria-live="polite">尚未操作。</p>
     <pre id="paperActionResult" hidden></pre>
+    <div id="paperRecovery" hidden>
+      <p id="paperRecoveryResult" role="status" aria-live="polite"></p>
+      <label><input id="paperRecoveryConfirm" type="checkbox">我已核對重啟後的 Paper 帳本</label>
+      <button id="paperResume" type="button" disabled>完成核對並恢復操作</button>
+    </div>
   </section>
   <p>Token 僅在本次送出時使用，不儲存在瀏覽器；此頁的畫面與程式碼都由本機提供。</p>
 </main>
 <script>
 "use strict";
 const MAX_SNAPSHOT_BYTES = 1024 * 1024;
-const PAPER_UNCERTAIN = "paper_persistence_outcome_unknown";
-const PAPER_RESTART_MESSAGE = "本機 Paper 寫入結果未明，已暫停操作。請重新啟動本機服務並核對帳本，再決定是否重送。";
+const PAPER_RESTART_MESSAGE = "本機 Paper 寫入結果未明，已暫停所有模擬操作。請重啟同一個本機服務，再重新讀取帳本核對。";
 const tokenInput = document.getElementById("token");
 const fileInput = document.getElementById("snapshot");
 const button = document.getElementById("analyze");
@@ -124,7 +139,20 @@ const paperTickButton = document.getElementById("paperTick");
 const paperConfirm = document.getElementById("paperConfirm");
 const paperActionStatus = document.getElementById("paperActionStatus");
 const paperActionResult = document.getElementById("paperActionResult");
-let pendingPaperOrder = null;
+const pendingSelect = document.getElementById("paperPendingOrder");
+const openSelect = document.getElementById("paperOpenPosition");
+const cancelButton = document.getElementById("paperCancel");
+const closeButton = document.getElementById("paperClose");
+const recovery = document.getElementById("paperRecovery");
+const recoveryResult = document.getElementById("paperRecoveryResult");
+const recoveryConfirm = document.getElementById("paperRecoveryConfirm");
+const resumeButton = document.getElementById("paperResume");
+const PAPER_FENCE = "ctcc.paper.pending-operation.v1";
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const DIGEST = /^[0-9a-f]{64}$/;
+let lastPaper = null;
+let recoveryRead = null;
+let paperBusy = false;
 
 paperMode.addEventListener("change", () => {
   paperLimitWrap.hidden = paperMode.value !== "limit";
@@ -212,75 +240,165 @@ button.addEventListener("click", async () => {
   }
 });
 
+
+function paperMarker() {
+  try {
+    const raw = localStorage.getItem(PAPER_FENCE);
+    if (raw === null) return null;
+    if (raw.length > 512) return false;
+    const item = JSON.parse(raw);
+    if (!item || Object.keys(item).length !== 5 ||
+        !UUID.test(item.operation) || !UUID.test(item.runtime) || !DIGEST.test(item.installation) ||
+        !["order", "tick", "cancel", "close"].includes(item.kind) ||
+        (item.kind === "tick" ? item.target !== null : !UUID.test(item.target))) return false;
+    return item;
+  } catch {
+    return false;
+  }
+}
+
+function renderPaperControls() {
+  const marker = paperMarker();
+  const disabled = paperBusy || marker !== null || !navigator.locks;
+  paperOrderButton.disabled = disabled;
+  paperTickButton.disabled = disabled;
+  pendingSelect.disabled = disabled || !pendingSelect.value;
+  openSelect.disabled = disabled || !openSelect.value;
+  cancelButton.disabled = pendingSelect.disabled;
+  closeButton.disabled = openSelect.disabled;
+  paperButton.disabled = paperBusy;
+  recovery.hidden = marker === null;
+  resumeButton.disabled = paperBusy || !recoveryRead || !recoveryConfirm.checked;
+  if (marker === false || !navigator.locks) {
+    paperActionStatus.textContent = "瀏覽器無法確認本機操作記錄。請保留記錄並改用支援的瀏覽器。";
+  } else if (marker !== null && !paperBusy && !recoveryRead) {
+    paperActionStatus.textContent = PAPER_RESTART_MESSAGE;
+  }
+}
+
+function setInventory(select, rows, status) {
+  const matches = rows.filter((row) => row && row.status === status && UUID.test(row.id));
+  const unique = new Set(matches.map((row) => row.id));
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = "請選擇";
+  select.replaceChildren(placeholder);
+  if (unique.size !== matches.length) return;
+  for (const row of matches) {
+    const option = document.createElement("option");
+    option.value = row.id;
+    option.textContent = String(row.symbol) + " / " + String(row.side) + " / " + row.id;
+    select.append(option);
+  }
+  // A fresh inventory always requires a fresh explicit selection.
+  select.value = "";
+}
+
+function clearRecovery() {
+  recoveryRead = null;
+  recoveryConfirm.checked = false;
+  recoveryResult.textContent = "";
+  resumeButton.disabled = true;
+}
+
+function recoveryDescription(marker, state) {
+  if (marker.kind === "tick") return "請核對報價是否已改變訂單、部位和帳本。";
+  if (marker.kind === "order") {
+    const rows = state.orders.filter((order) => order?.client_order_id === "local-ui-" + marker.target);
+    return rows.length === 1 ? "帳本找到原模擬訂單。" : "帳本尚無唯一的原模擬訂單。";
+  }
+  if (marker.kind === "cancel") {
+    const rows = state.orders.filter((order) => order?.id === marker.target);
+    return rows.length === 1 && rows[0].status === "cancelled"
+      ? "帳本顯示該訂單已取消。" : "帳本未確認該訂單已取消。";
+  }
+  const rows = state.positions.filter((position) => position?.id === marker.target);
+  return rows.length === 1 && rows[0].status === "closed" &&
+    rows[0].close_reason === "manual_local:" + marker.operation
+    ? "帳本找到本次手動平倉。" : "帳本未確認本次手動平倉。";
+}
+
+function paperFetch(path, options, signal) {
+  return fetch(path, {
+    ...options,
+    credentials: "omit",
+    cache: "no-store",
+    redirect: "error",
+    referrerPolicy: "no-referrer",
+    signal
+  });
+}
+
 async function refreshPaper(token) {
+  lastPaper = null;
+  clearRecovery();
   paperResult.textContent = "";
   paperResult.hidden = true;
+  setInventory(pendingSelect, [], "pending");
+  setInventory(openSelect, [], "open");
   paperStatus.textContent = "讀取本機 Paper 帳本中…";
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 30000);
   try {
-    const values = [];
-    for (const path of ["/api/paper/account", "/api/paper/state"]) {
-      const response = await fetch(path, {
-        method: "GET",
-        headers: {"X-CTCC-Token": token},
-        credentials: "omit",
-        cache: "no-store",
-        redirect: "error",
-        referrerPolicy: "no-referrer",
-        signal: controller.signal
-      });
-      if (!response.ok) {
-        if (await paperPersistenceUnknown(response)) {
-          paperStatus.textContent = PAPER_RESTART_MESSAGE;
-          return false;
-        }
-        paperStatus.textContent = response.status === 401 || response.status === 403
-          ? "本機 API Token 驗證失敗，請重新輸入。"
-          : "本機 Paper 帳本暫時無法讀取。";
-        return false;
-      }
-      values.push(await response.json());
+    const response = await paperFetch("/api/paper/runtime/state", {
+      method: "GET", headers: {"X-CTCC-Token": token}
+    }, controller.signal);
+    if (!response.ok) {
+      paperStatus.textContent = response.status === 401 || response.status === 403
+        ? "本機 API Token 驗證失敗，請重新輸入。"
+        : "本機 Paper 帳本暫時無法讀取。";
+      return null;
     }
-    if (!values[0] || !values[1] || !Array.isArray(values[1].orders)) {
+    const value = await response.json();
+    const state = value?.state;
+    if (!UUID.test(value?.runtime_id) || !DIGEST.test(value?.installation_binding) ||
+        typeof value.persistent !== "boolean" || typeof value.recovered !== "boolean" || !state?.account ||
+        !Array.isArray(state.orders) || !Array.isArray(state.positions)) {
       paperStatus.textContent = "本機 Paper 帳本格式不符。";
-      return false;
+      return null;
     }
-    paperResult.textContent = JSON.stringify({account: values[0], state: values[1]}, null, 2);
+    lastPaper = value;
+    setInventory(pendingSelect, state.orders, "pending");
+    setInventory(openSelect, state.positions, "open");
+    paperResult.textContent = JSON.stringify({account: state.account, state}, null, 2);
     paperResult.hidden = false;
     paperStatus.textContent = "已讀取本機 Paper 模擬帳本；OKX 實際持倉仍未知。";
-    if (pendingPaperOrder) {
-      const matches = values[1].orders.filter(
-        (order) => order.client_order_id === pendingPaperOrder.id
-      );
-      if (matches.length === 1) {
-        paperActionResult.textContent = JSON.stringify(matches[0], null, 2);
-        paperActionResult.hidden = false;
-        paperActionStatus.textContent = "已在本機帳本找到同一模擬請求識別碼。";
-        pendingPaperOrder = null;
-      }
+    const marker = paperMarker();
+    if (marker && value.persistent && value.recovered && value.installation_binding === marker.installation &&
+        value.runtime_id !== marker.runtime) {
+      recoveryRead = {marker, runtime: value.runtime_id, state: JSON.stringify(state)};
+      recoveryResult.textContent = recoveryDescription(marker, state) + " 核對後才可恢復操作。";
     }
-    return true;
+    return value;
   } catch {
     paperStatus.textContent = "本機 Paper 帳本連線中斷。";
-    return false;
+    return null;
   } finally {
     clearTimeout(timer);
+    renderPaperControls();
   }
 }
 
-paperButton.addEventListener("click", async () => {
+function consumeToken() {
   const token = tokenInput.value.trim();
   tokenInput.value = "";
+  return token;
+}
+
+paperButton.addEventListener("click", async () => {
+  if (paperBusy) return;
+  const token = consumeToken();
   if (!token) {
     paperStatus.textContent = "請輸入本機 API Token。";
     return;
   }
-  paperButton.disabled = true;
+  paperBusy = true;
+  renderPaperControls();
   try {
     await refreshPaper(token);
   } finally {
-    paperButton.disabled = false;
+    paperBusy = false;
+    renderPaperControls();
   }
 });
 
@@ -296,229 +414,192 @@ function paperSymbol(id) {
     ? value : null;
 }
 
-function setPaperActionBusy(busy) {
-  paperOrderButton.disabled = busy;
-  paperTickButton.disabled = busy;
-}
-
-async function paperPersistenceUnknown(response) {
-  if (response.status !== 503) return false;
-  try {
-    return (await response.json())?.detail === PAPER_UNCERTAIN;
-  } catch {
-    return false;
-  }
-}
-
-async function paperPost(path, token, payload) {
+async function paperPost(path, token, payload, runtimeId) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 30000);
   try {
-    const response = await fetch(path, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-CTCC-Token": token
-      },
-      body: JSON.stringify(payload),
-      credentials: "omit",
-      cache: "no-store",
-      redirect: "error",
-      referrerPolicy: "no-referrer",
-      signal: controller.signal
-    });
+    const request = {method: "POST", headers: {"X-CTCC-Token": token,
+      "X-CTCC-Paper-Runtime": runtimeId}};
+    // Cancel is the bodyless POST already required by the local transport.
+    if (payload !== undefined) {
+      request.headers["Content-Type"] = "application/json";
+      request.body = JSON.stringify(payload);
+    }
+    const response = await paperFetch(path, request, controller.signal);
     return {
       status: response.status,
-      ok: response.ok,
-      persistenceUnknown: await paperPersistenceUnknown(response),
-      value: response.ok ? await response.json() : null
+      value: response.ok || response.status === 409 ? await response.json() : null
     };
   } finally {
     clearTimeout(timer);
   }
 }
 
-function showUncertainPaperOrder(message) {
-  pendingPaperOrder.uncertain = true;
-  paperActionStatus.textContent = message;
-  paperActionResult.textContent = JSON.stringify(
-    {client_order_id: pendingPaperOrder.id}, null, 2
-  );
-  paperActionResult.hidden = false;
+function uniqueTarget(rows, id, status) {
+  return UUID.test(id) && rows.filter((row) => row?.id === id && row.status === status).length === 1;
 }
 
-paperOrderButton.addEventListener("click", async () => {
-  if (!pendingPaperOrder) {
-    paperActionResult.textContent = "";
-    paperActionResult.hidden = true;
-  }
+async function runPaperAction(kind, path, payload, expected, target = null) {
+  if (paperBusy || paperMarker() !== null || !navigator.locks) return;
   if (!paperConfirm.checked) {
     paperActionStatus.textContent = "請先確認這是本機 Paper 模擬操作。";
     return;
   }
+  paperConfirm.checked = false;
+  const token = consumeToken();
+  if (!token || !globalThis.crypto || typeof globalThis.crypto.randomUUID !== "function") {
+    paperActionStatus.textContent = "請輸入本機 API Token，並使用支援的瀏覽器。";
+    return;
+  }
+  const operation = globalThis.crypto.randomUUID();
+  if (kind === "order") {
+    payload.client_order_id = "local-ui-" + operation;
+    target = operation;
+  } else if (kind === "close") {
+    payload.reason = "manual_local:" + operation;
+  }
+  paperBusy = true;
+  paperActionResult.hidden = true;
+  renderPaperControls();
+  try {
+    await navigator.locks.request(PAPER_FENCE, {ifAvailable: true}, async (lock) => {
+      if (!lock || paperMarker() !== null) return;
+      const runtime = await refreshPaper(token);
+      if (!runtime || !runtime.persistent) {
+        paperActionStatus.textContent = "需要已確認的持久 Paper 帳本，未送出操作。";
+        return;
+      }
+      if ((kind === "cancel" && !uniqueTarget(runtime.state.orders, target, "pending")) ||
+          (kind === "close" && !uniqueTarget(runtime.state.positions, target, "open"))) {
+        paperActionStatus.textContent = "選擇的帳本項目已改變，未送出操作。";
+        return;
+      }
+      const marker = {operation, runtime: runtime.runtime_id,
+        installation: runtime.installation_binding, kind, target};
+      const retained = JSON.stringify(marker);
+      localStorage.setItem(PAPER_FENCE, retained);
+      if (localStorage.getItem(PAPER_FENCE) !== retained) return;
+      paperActionStatus.textContent = "送出本機模擬操作中…";
+      const response = await paperPost(path, token, payload, runtime.runtime_id);
+      if ([401, 403, 422].includes(response.status) ||
+          (response.status === 409 && response.value?.detail === "paper_runtime_changed")) {
+        if (localStorage.getItem(PAPER_FENCE) === retained) localStorage.removeItem(PAPER_FENCE);
+        paperActionStatus.textContent = "本機驗證或資料檢查未通過，模擬操作未受理。";
+        return;
+      }
+      if (!expected(response, payload)) return;
+      if (localStorage.getItem(PAPER_FENCE) === retained) localStorage.removeItem(PAPER_FENCE);
+      paperActionResult.textContent = JSON.stringify(response.value, null, 2);
+      paperActionResult.hidden = false;
+      paperActionStatus.textContent = "本機模擬操作已受理。";
+      if (!await refreshPaper(token)) {
+        paperActionStatus.textContent = "操作已受理，請重新讀取本機帳本。";
+      }
+    });
+  } catch {
+    paperActionStatus.textContent = "未取得本機操作結果。";
+  } finally {
+    paperBusy = false;
+    renderPaperControls();
+  }
+}
+
+paperOrderButton.addEventListener("click", async () => {
   const symbol = paperSymbol("paperSymbol");
   const quantity = positiveDecimal("paperQuantity");
   const reference = positiveDecimal("paperReference");
   const stop = positiveDecimal("paperStop");
-  const target = positiveDecimal("paperTarget");
-  const limit = paperMode.value === "limit" ? positiveDecimal("paperLimit") : null;
-  if (!symbol || !quantity || !reference || !stop || !target ||
-      (paperMode.value === "limit" && !limit)) {
+  const priceTarget = positiveDecimal("paperTarget");
+  const side = document.getElementById("paperSide").value;
+  const orderType = paperMode.value;
+  const limit = orderType === "limit" ? positiveDecimal("paperLimit") : null;
+  if (!symbol || !quantity || !reference || !stop || !priceTarget ||
+      !["long", "short"].includes(side) || !["market", "limit"].includes(orderType) ||
+      (orderType === "limit" && !limit)) {
     paperActionStatus.textContent = "請填寫完整的商品與正數價格、數量。";
     return;
   }
-  const payload = {
-    symbol: symbol,
-    side: document.getElementById("paperSide").value,
-    quantity: quantity,
-    reference_price: reference,
-    stop_loss: stop,
-    take_profit: target,
-    order_type: paperMode.value,
-    strategy: "manual_local"
-  };
-  if (paperMode.value === "limit") {
-    payload.limit_price = limit;
-  }
-  const fingerprint = JSON.stringify(payload);
-  if (pendingPaperOrder && pendingPaperOrder.fingerprint !== fingerprint) {
-    showUncertainPaperOrder("上一筆模擬請求結果未明；請先讀取帳本核對，不可變更內容重送。");
-    return;
-  }
-  const token = tokenInput.value.trim();
-  tokenInput.value = "";
-  if (!token) {
-    paperActionStatus.textContent = "請輸入本機 API Token。";
-    return;
-  }
-  if (!pendingPaperOrder) {
-    if (!globalThis.crypto || typeof globalThis.crypto.randomUUID !== "function") {
-      paperActionStatus.textContent = "無法產生本機模擬請求識別碼，未送出。";
-      return;
-    }
-    pendingPaperOrder = {
-      id: `local-ui-${globalThis.crypto.randomUUID()}`,
-      fingerprint: fingerprint,
-      uncertain: false
-    };
-  }
-  paperConfirm.checked = false;
-  setPaperActionBusy(true);
-  paperActionStatus.textContent = "送出本機模擬請求中…";
-  try {
-    const response = await paperPost("/api/paper/orders", token, {
-      ...payload, client_order_id: pendingPaperOrder.id
-    });
-    if (response.persistenceUnknown) {
-      showUncertainPaperOrder(PAPER_RESTART_MESSAGE);
-      return;
-    }
-    if (response.status === 401 || response.status === 403) {
-      if (pendingPaperOrder.uncertain) {
-        showUncertainPaperOrder("本次 Token 驗證失敗；先前模擬請求仍未確認，請讀取帳本。");
-      } else {
-        pendingPaperOrder = null;
-        paperActionStatus.textContent = "本機 API Token 驗證失敗；模擬請求未授權。";
-      }
-      return;
-    }
-    if (response.status === 422) {
-      if (pendingPaperOrder.uncertain) {
-        showUncertainPaperOrder("本次模擬請求資料遭拒；先前請求仍未確認，請讀取帳本。");
-      } else {
-        pendingPaperOrder = null;
-        paperActionStatus.textContent = "模擬訂單資料未通過檢查，請修正後重新確認。";
-      }
-      return;
-    }
-    if (response.status !== 201) {
-      showUncertainPaperOrder("模擬訂單結果未明；請讀取帳本核對，勿以新識別碼重送。");
-      return;
-    }
-    const value = response.value;
-    if (!value || value.client_order_id !== pendingPaperOrder.id ||
-        value.symbol !== symbol || value.side !== payload.side ||
-        value.order_type !== payload.order_type || typeof value.id !== "string") {
-      showUncertainPaperOrder("模擬訂單回應不符；請讀取帳本核對，勿重送。");
-      return;
-    }
-    paperActionResult.textContent = JSON.stringify(value, null, 2);
-    paperActionResult.hidden = false;
-    pendingPaperOrder = null;
-    paperActionStatus.textContent = "本機模擬訂單已受理；正在重新讀取帳本。";
-    if (!await refreshPaper(token)) {
-      paperActionStatus.textContent = "模擬訂單已受理，但帳本重新讀取失敗。";
-    }
-  } catch {
-    showUncertainPaperOrder("模擬訂單結果未明；請讀取帳本核對，勿以新識別碼重送。");
-  } finally {
-    setPaperActionBusy(false);
-  }
+  const payload = {symbol, side, quantity, reference_price: reference,
+    stop_loss: stop, take_profit: priceTarget, order_type: orderType, strategy: "manual_local"};
+  if (limit) payload.limit_price = limit;
+  await runPaperAction("order", "/api/paper/orders", payload, ({status, value}, wanted) =>
+    status === 201 && UUID.test(value?.id) && value.client_order_id === wanted.client_order_id &&
+    value.symbol === symbol && value.side === side && value.order_type === orderType &&
+    ["filled", "pending"].includes(value.status));
 });
 
 paperTickButton.addEventListener("click", async () => {
-  if (!pendingPaperOrder) {
-    paperActionResult.textContent = "";
-    paperActionResult.hidden = true;
-  }
-  if (!paperConfirm.checked) {
-    paperActionStatus.textContent = "請先確認這是本機 Paper 模擬操作。";
-    return;
-  }
-  if (pendingPaperOrder) {
-    paperActionStatus.textContent = "上一筆模擬訂單結果未明；請先讀取帳本核對。";
-    return;
-  }
   const symbol = paperSymbol("paperTickSymbol");
   const price = positiveDecimal("paperTickPrice");
   if (!symbol || !price) {
     paperActionStatus.textContent = "請填寫報價商品與正數價格。";
     return;
   }
-  const token = tokenInput.value.trim();
-  tokenInput.value = "";
-  if (!token) {
-    paperActionStatus.textContent = "請輸入本機 API Token。";
+  await runPaperAction("tick", "/api/paper/ticks", {symbol, price}, ({status, value}) =>
+    status === 200 && value?.symbol === symbol && value.account &&
+    Array.isArray(value.filled_order_ids) && Array.isArray(value.closed_position_ids));
+});
+
+cancelButton.addEventListener("click", async () => {
+  const id = pendingSelect.value;
+  if (!lastPaper || !uniqueTarget(lastPaper.state.orders, id, "pending")) return;
+  await runPaperAction("cancel", "/api/paper/orders/" + id + "/cancel", undefined, ({status, value}) =>
+    status === 200 && value?.id === id && value.status === "cancelled", id);
+});
+
+closeButton.addEventListener("click", async () => {
+  const id = openSelect.value;
+  const price = positiveDecimal("paperClosePrice");
+  if (!lastPaper || !uniqueTarget(lastPaper.state.positions, id, "open")) return;
+  if (!price) {
+    paperActionStatus.textContent = "請輸入正數平倉參考價。";
     return;
   }
-  paperConfirm.checked = false;
-  setPaperActionBusy(true);
-  paperActionStatus.textContent = "送出本機模擬報價中…";
+  await runPaperAction("close", "/api/paper/positions/" + id + "/close", {price}, ({status, value}, wanted) =>
+    status === 200 && value?.id === id && value.status === "closed" &&
+    value.close_reason === wanted.reason, id);
+});
+
+resumeButton.addEventListener("click", async () => {
+  if (!recoveryRead || !recoveryConfirm.checked || paperBusy || !navigator.locks) return;
+  const token = consumeToken();
+  if (!token) {
+    paperActionStatus.textContent = "請重新輸入本機 API Token。";
+    return;
+  }
+  const accepted = recoveryRead;
+  const retained = JSON.stringify(accepted.marker);
+  paperBusy = true;
+  renderPaperControls();
   try {
-    const response = await paperPost("/api/paper/ticks", token, {symbol, price});
-    if (response.persistenceUnknown) {
-      paperActionStatus.textContent = PAPER_RESTART_MESSAGE;
-      return;
-    }
-    if (response.status === 401 || response.status === 403) {
-      paperActionStatus.textContent = "本機 API Token 驗證失敗；模擬報價未授權。";
-      return;
-    }
-    if (response.status === 422) {
-      paperActionStatus.textContent = "模擬報價資料未通過檢查。";
-      return;
-    }
-    if (!response.ok) {
-      paperActionStatus.textContent = "模擬報價結果未明；請讀取帳本核對，勿立即重送。";
-      return;
-    }
-    const value = response.value;
-    if (!value || value.symbol !== symbol || !value.account) {
-      paperActionStatus.textContent = "模擬報價回應不符；請讀取帳本核對。";
-      return;
-    }
-    paperActionResult.textContent = JSON.stringify(value, null, 2);
-    paperActionResult.hidden = false;
-    paperActionStatus.textContent = "本機模擬報價已受理；正在重新讀取帳本。";
-    if (!await refreshPaper(token)) {
-      paperActionStatus.textContent = "模擬報價已受理，但帳本重新讀取失敗。";
-    }
+    await navigator.locks.request(PAPER_FENCE, {ifAvailable: true}, async (lock) => {
+      if (!lock || localStorage.getItem(PAPER_FENCE) !== retained) return;
+      await refreshPaper(token);
+      if (!recoveryRead || recoveryRead.runtime !== accepted.runtime || recoveryRead.state !== accepted.state ||
+          JSON.stringify(recoveryRead.marker) !== retained || localStorage.getItem(PAPER_FENCE) !== retained) return;
+      localStorage.removeItem(PAPER_FENCE);
+      clearRecovery();
+      paperActionStatus.textContent = "帳本已核對，已恢復本機模擬操作。";
+    });
   } catch {
-    paperActionStatus.textContent = "模擬報價結果未明；請讀取帳本核對，勿立即重送。";
+    paperActionStatus.textContent = "未能完成本機帳本核對。";
   } finally {
-    setPaperActionBusy(false);
+    paperBusy = false;
+    renderPaperControls();
   }
 });
+
+pendingSelect.addEventListener("change", renderPaperControls);
+openSelect.addEventListener("change", renderPaperControls);
+recoveryConfirm.addEventListener("change", renderPaperControls);
+window.addEventListener("storage", (event) => {
+  if (event.key === PAPER_FENCE || event.key === null) {
+    clearRecovery();
+    renderPaperControls();
+  }
+});
+renderPaperControls();
+
 </script>
 </body>
 </html>

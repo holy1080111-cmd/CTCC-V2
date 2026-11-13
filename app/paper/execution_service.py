@@ -5,7 +5,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import TypeVar
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from app.database.repositories.persistence import (
     PaperCommitOutcomeUnknown,
@@ -18,6 +18,7 @@ from app.domain.paper import (
     PaperOrderRequest,
     PaperOrderView,
     PaperPositionView,
+    PaperRuntimeStateView,
     PaperStateView,
     PaperTickResult,
 )
@@ -62,6 +63,7 @@ class PaperExecutionService:
         self._last_mark_persist_at: datetime | None = None
         self._last_error: str | None = None
         self._persistence_outcome_unknown = False
+        self._runtime_id = uuid4()
 
     def require_confirmed_state(self) -> None:
         if self._persistence_outcome_unknown:
@@ -264,6 +266,20 @@ class PaperExecutionService:
     def account(self) -> PaperAccountView:
         self.require_confirmed_state()
         return self.broker.account()
+
+    async def runtime_state(self) -> PaperRuntimeStateView:
+        """Return a detached view after the in-flight persistence attempt ends."""
+        async with self._lock:
+            self.require_confirmed_state()
+            return PaperRuntimeStateView(
+                runtime_id=self._runtime_id,
+                persistent=self.repository is not None and self._initialized,
+                recovered=self._recovered,
+                state=self.broker.state().model_copy(deep=True),
+            )
+
+    def matches_runtime(self, value: str) -> bool:
+        return value == str(self._runtime_id)
 
     async def _mutate(
         self,

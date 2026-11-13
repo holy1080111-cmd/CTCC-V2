@@ -156,6 +156,7 @@ async def test_committed_but_unacknowledged_save_fences_until_fresh_recovery() -
         lambda: service.reconcile("persist_memory"),
         lambda: service.reconcile("restore_from_database"),
         service.recovery_status,
+        service.runtime_state,
     ):
         with pytest.raises(PaperPersistenceOutcomeUnknown):
             await action()
@@ -167,6 +168,11 @@ async def test_committed_but_unacknowledged_save_fences_until_fresh_recovery() -
     fresh_process = PaperExecutionService(PaperBroker(), repository)
     assert (await fresh_process.recover()).recovered
     assert fresh_process.state() == repository.state
+    restored_runtime = await fresh_process.runtime_state()
+    assert restored_runtime.persistent is True
+    assert restored_runtime.recovered is True
+    assert not service.matches_runtime(str(restored_runtime.runtime_id))
+    assert restored_runtime.state == repository.state
     assert repository.actions == ["paper_state_initialized", "paper_order_submitted"]
 
 
@@ -197,6 +203,60 @@ def test_local_paper_response_is_fixed_when_commit_outcome_is_unknown(monkeypatc
             assert response.status_code == 503
             assert response.json() == {"detail": "paper_persistence_outcome_unknown"}
     assert repository.actions == ["paper_order_submitted"]
+
+
+def test_runtime_binding_rejects_stale_or_duplicate_header_and_preserves_original_routes(
+    monkeypatch,
+):
+    repository = FakeRepository()
+    service = PaperExecutionService(PaperBroker(), repository)
+    asyncio.run(service.recover())
+    monkeypatch.setattr(paper_api, "paper_service", service)
+    app = FastAPI()
+    app.include_router(paper_api.router)
+    app.include_router(paper_api.local_paper_runtime_router)
+    app.dependency_overrides[require_ctcc_token] = lambda: None
+    with TestClient(app) as client:
+        response = client.get("/api/paper/runtime/state")
+        document = response.json()
+        assert (
+            response.status_code == 200
+            and response.headers["cache-control"] == "no-store"
+        )
+        assert document["persistent"] is True
+        assert document["recovered"] is False
+        assert len(document["installation_binding"]) == 64
+        assert document["state"] == client.get("/api/paper/state").json()
+        correct = ("X-CTCC-Paper-Runtime", document["runtime_id"])
+        route = "/api/paper/orders"
+        payload = request().model_dump(mode="json")
+        for headers in ([correct, correct], [(correct[0], str(uuid4()))]):
+            denied = client.post(route, json=payload, headers=headers)
+            assert denied.status_code == 409
+            assert denied.json() == {"detail": "paper_runtime_changed"}
+        limit = {**payload, "order_type": "limit", "limit_price": "100"}
+        order = client.post(route, json=limit, headers=[correct]).json()
+        assert order["status"] == "pending"
+        cancel = client.post(f"{route}/{order['id']}/cancel", headers=[correct])
+        assert cancel.status_code == 200 and cancel.json()["status"] == "cancelled"
+        assert client.post(route, json=payload).status_code == 201
+        position = client.get("/api/paper/state").json()["positions"][0]
+        closed = client.post(
+            f"/api/paper/positions/{position['id']}/close",
+            json={"price": "102", "reason": "manual_local:test"},
+            headers=[correct],
+        )
+        assert (
+            closed.status_code == 200
+            and closed.json()["close_reason"] == "manual_local:test"
+        )
+    assert repository.actions == [
+        "paper_state_initialized",
+        "paper_order_submitted",
+        "paper_order_cancelled",
+        "paper_order_submitted",
+        "paper_position_closed",
+    ]
 
 
 @pytest.mark.asyncio
@@ -238,6 +298,7 @@ async def test_failed_tick_restores_already_changed_positions(monkeypatch) -> No
 
     assert service.state() == before
     assert repository.state == before
+
     assert repository.actions == before_actions
 
 
@@ -270,12 +331,17 @@ async def test_cancelled_mutation_holds_lock_until_single_persistence_attempt_fi
     assert service._lock.locked()
     assert repository.state == before
 
+    observation = asyncio.create_task(service.runtime_state())
+    await asyncio.sleep(0)
+    assert not observation.done()
+
     complete.set()
     with pytest.raises(asyncio.CancelledError):
         await order
 
     assert not service._lock.locked()
     assert service.state() == repository.state
+    assert (await observation).state == repository.state
     assert len(service.state().orders) == int(commit_succeeds)
     assert repository.actions.count("paper_order_submitted") == int(commit_succeeds)
 

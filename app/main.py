@@ -7,6 +7,7 @@ from fastapi.responses import RedirectResponse
 
 from app.api.native_only_http import router as native_only_api_router
 from app.api.router import api_router
+from app.api.routers.paper import local_paper_runtime_router
 from app.config.settings import get_settings
 from app.core.logging import configure_logging
 from app.core.native_only_lifespan import (
@@ -136,6 +137,7 @@ _LOCAL_ANALYSIS_ROUTES = {
     "/api/analysis/snapshot": "POST",
     "/api/paper/account": "GET",
     "/api/paper/state": "GET",
+    "/api/paper/runtime/state": "GET",
     "/api/paper/orders": "POST",
     "/api/paper/orders/{order_id}": "GET",
     "/api/paper/orders/{order_id}/cancel": "POST",
@@ -152,7 +154,7 @@ async def _local_dashboard_redirect() -> RedirectResponse:
 def _local_analysis_router() -> APIRouter:
     router = APIRouter()
     seen = set()
-    for route in api_router.routes:
+    for route in (*api_router.routes, *local_paper_runtime_router.routes):
         method = _LOCAL_ANALYSIS_ROUTES.get(route.path)
         if method is None:
             continue

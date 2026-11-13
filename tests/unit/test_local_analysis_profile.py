@@ -49,6 +49,7 @@ def test_local_analysis_profile_keeps_only_reviewed_routes(monkeypatch):
             client.get("/dashboard").headers["location"] == "/dashboard/local-analysis"
         )
         assert client.get("/dashboard/local-analysis").status_code == 200
+        assert client.get("/api/paper/runtime/state").status_code in (401, 503)
         for path in (
             "/docs",
             "/redoc",
