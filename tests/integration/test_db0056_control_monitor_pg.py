@@ -32,6 +32,9 @@ _ARCHIVE = Path("/ctcc-admitted-test-source.tar")
 async def test_actual0056_coverage_replays_held_checkpoint_without_authority(
     _actual_0056_role_observation_lab,  # noqa: F811
 ):
+    from app.core.native_locked_demo_control_0056_v1 import (
+        NativeLockedDemoControl0056Error,
+    )
     from app.core.native_role_witness_0056_v1 import (
         observe_restricted_native_roles_0056_witness_v1,
     )
@@ -107,8 +110,8 @@ async def test_actual0056_coverage_replays_held_checkpoint_without_authority(
     assert b'"execution_authority":false' in snapshots[1][3]
 
     with pytest.raises(
-        coverage.ControlledCoverageSourceErrorV2,
-        match="controlled55_coverage_actual_control_changed",
+        NativeLockedDemoControl0056Error,
+        match="^native_locked_demo_control_0056_unavailable$",
     ):
         async with factory() as writer, writer.begin():
             await writer.execute(
@@ -119,6 +122,12 @@ async def test_actual0056_coverage_replays_held_checkpoint_without_authority(
                 selected, roles, writer, control_scope, stopped.state, "0" * 64
             ):
                 pytest.fail("foreign Control event entered coverage")
+    async with factory() as writer, writer.begin():
+        await writer.execute(text("SET LOCAL synchronous_commit='on'"))
+        async with coverage._held_db0056_coverage_control(
+            selected, roles, writer, control_scope, stopped.state, stopped.event_sha256
+        ) as held:
+            assert await held.recheck_control() == (stopped.state, stopped.event_sha256)
 
 
 async def test_actual0056_owner_initializes_legacy_singleton_only_as_stopped(

@@ -3576,9 +3576,13 @@ async def test_actual0056_controlled_partition_uses_inherited_armed_append(
         repository.append_member_and_checkpoint(scope, **arguments)
     expected = ControlObservation(armed, "8" * 64, timestamp)
     with pytest.raises(
-        repo.previous.policy.AccountHistoryPartitionError, match="original_arm_changed"
+        repo.checkpoint.locked.NativeLockedDemoControl0056Error,
+        match="^native_locked_demo_control_0056_unavailable$",
     ):
         await repository.read(scope)
+    expected = ControlObservation(armed, event, timestamp)
+    reopened = await repository.read(scope)
+    assert reopened.members == committed.members
 
 
 async def test_actual0056_restricted_writer_creates_only_exact_stopped_genesis(
