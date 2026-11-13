@@ -1958,8 +1958,12 @@ async def test_actual0056_owner_grant_lock_and_rollback(
 
 async def test_actual0056_draft_locked_owner_grant_and_separate_role_readback(
     _actual_0056_ungranted_lab,
+    tmp_path,
+    monkeypatch,
 ):
     """A disposable lab invokes the private draft; the public entry stays off."""
+    from scripts import native_owner_postgrant_readback_0056_v1 as postgrant_readback
+
     owner, owner_factory, selected, _ = _actual_0056_ungranted_lab
     names = tuple(
         factory.kw["bind"].url.username
@@ -1986,7 +1990,7 @@ async def test_actual0056_draft_locked_owner_grant_and_separate_role_readback(
         fitted_delta.inspect_owner_readwrite_catalog(
             fitted_write, owner=owner.url.username, demo_roles=names
         )
-    identity, _, _ = fitted_measurement._read_hermetic_inputs()
+    identity, files, _ = fitted_measurement._read_hermetic_inputs()
     source = source_scopes.actual_current_source_scope(_SOURCE_ROOT)
     async with owner.connect() as connection:
         profile = tuple(
@@ -2032,6 +2036,59 @@ async def test_actual0056_draft_locked_owner_grant_and_separate_role_readback(
     )
     assert restricted.database_head == "0056"
     assert restricted.startup_admission is restricted.execution_authority is False
+
+    # The fixture supplies the isolated product-shaped role set at the
+    # configuration boundary. The readback itself opens four fresh verified
+    # TLS engines and queries the actual scoped PostgreSQL catalogs.
+    ca_file = Path(os.environ["CTCC_DEVVAL_CUSTODY_TEST_TLS_CA_FILE"])
+    archive, archive_pin = _reconstruct_owned_lab_archive(tmp_path, identity, files)
+    owner_dsn = tmp_path / "postgrant-owner-dsn"
+    owner_dsn.write_bytes(
+        owner.url.set(password=secrets.token_hex(24))
+        .render_as_string(hide_password=False)
+        .encode("utf-8")
+    )
+    owner_dsn.chmod(0o600)
+    pins = replace(pins, source_archive_sha256=archive_pin)
+    settings = type(
+        "ScopedSettings", (), {"ctcc_native_pg_tls_ca_sha256": pins.route.ca_sha256}
+    )()
+    monkeypatch.setattr(postgrant_readback, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        postgrant_readback.selectors,
+        "select_configured_native_demo_factories_v2",
+        lambda: selected,
+    )
+    observed = await postgrant_readback.observe_owner_postgrant_readback_0056_v1(
+        pins, owner_dsn_file=owner_dsn, ca_file=ca_file, source_archive_file=archive
+    )
+    assert (
+        observed["cluster_system_identifier_sha256"]
+        == pins.route.cluster_system_identifier_sha256
+    )
+    assert (
+        observed["inherited_native_definitions_sha256"]
+        == pins.portable_inherited_definitions_sha256
+    )
+    assert (
+        observed["granted_inherited_acl_shape_sha256"]
+        == restricted.granted_inherited_acl_shape_sha256
+    )
+    assert observed["restricted_logins_observed"] == 3
+    assert observed["separate_read_only_owner_observations"] == 2
+    assert observed["password_authentication_verified"] is False
+    assert observed["admission"] == "DENY"
+    assert observed["startup_admission"] is observed["execution_authority"] is False
+    with pytest.raises(postgrant_readback.OwnerPostgrantReadbackRefusal):
+        await postgrant_readback.observe_owner_postgrant_readback_0056_v1(
+            replace(
+                pins,
+                route=replace(pins.route, cluster_system_identifier_sha256="f" * 64),
+            ),
+            owner_dsn_file=owner_dsn,
+            ca_file=ca_file,
+            source_archive_file=archive,
+        )
     with pytest.raises(owner_grant_draft.OwnerGrantRefusal):
         await owner_grant_draft.grant_reviewed_owner_0056_v1(pins)
 
