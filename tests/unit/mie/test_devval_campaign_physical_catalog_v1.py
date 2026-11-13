@@ -6,8 +6,10 @@ from hashlib import sha256
 
 import pytest
 
+from scripts import current0056_fitted_catalog_measurement_v1 as fitted
 from scripts import current0056_hermetic_contract as current56
 from scripts import devval_campaign_physical_catalog_v1 as catalog
+from tests.unit.mie import test_current0056_fitted_catalog_measurement_v1 as samples
 
 
 def _document():
@@ -203,7 +205,9 @@ def test_hermetic_pair_checks_both_catalogs_without_admitting_windows(mutation):
         catalog.verify_hermetic_linux_catalogs(catalog._canonical(document))
 
 
-def test_current56_binds_linux_catalog_pair_to_the_exact_passing_junit(tmp_path):
+def test_current56_binds_linux_catalog_pair_to_the_exact_passing_junit(
+    tmp_path, monkeypatch
+):
     artifact = f"test-results/{catalog.HERMETIC_CATALOG_FILE}"
     assert artifact in current56.component_artifacts("postgres", 1)
     assert artifact in current56.component_artifacts("full", None)
@@ -212,26 +216,41 @@ def test_current56_binds_linux_catalog_pair_to_the_exact_passing_junit(tmp_path)
     evidence = tmp_path / artifact
     evidence.parent.mkdir()
     evidence.write_bytes(catalog._canonical(_linux_catalog_pair()))
+    identity, files, _, document, roles = samples._inputs(monkeypatch)
+    files.update(
+        {name: {"sha256": digest} for name, digest in catalog.SQL_PINS.items()}
+    )
+    source_map = fitted._canonical(files)
+    identity["source_files_sha256"] = sha256(source_map).hexdigest()
+    fitted_evidence = evidence.with_name(fitted.FILE)
+    fitted_evidence.write_bytes(
+        samples._build((identity, files, source_map, document, roles))
+    )
+
     junit_path, _ = current56.component_report_paths("postgres", 1)
     junit = tmp_path / junit_path
     suites = ET.Element("testsuites")
     suite = ET.SubElement(
-        suites, "testsuite", tests="1", failures="0", errors="0", skipped="0"
+        suites, "testsuite", tests="2", failures="0", errors="0", skipped="0"
     )
-    module, case_name = catalog.HERMETIC_CATALOG_CASE
-    case = ET.SubElement(suite, "testcase", classname=module, name=case_name)
+    cases = [
+        ET.SubElement(suite, "testcase", classname=module, name=name)
+        for module, name in (catalog.HERMETIC_CATALOG_CASE, fitted.CASE)
+    ]
     report = ET.tostring(suites)
     junit.write_bytes(report)
-    identity = {"tests": {"sha256": sha256(report).hexdigest()}}
-    files = {name: {"sha256": digest} for name, digest in catalog.SQL_PINS.items()}
+    identity["tests"] = {"sha256": sha256(report).hexdigest()}
     current56._verify_devval_catalog_evidence(tmp_path, "postgres", 1, identity, files)
     with pytest.raises(ValueError, match="source_or_test_changed"):
         current56._verify_devval_catalog_evidence(tmp_path, "postgres", 1, identity, {})
-    case.set("name", "test_other_success")
-    report = ET.tostring(suites)
-    junit.write_bytes(report)
-    identity["tests"]["sha256"] = sha256(report).hexdigest()
-    with pytest.raises(ValueError, match="pytest_required_execution_not_verified"):
-        current56._verify_devval_catalog_evidence(
-            tmp_path, "postgres", 1, identity, files
-        )
+    for case in cases:
+        name = case.get("name")
+        case.set("name", "test_other_success")
+        report = ET.tostring(suites)
+        junit.write_bytes(report)
+        identity["tests"]["sha256"] = sha256(report).hexdigest()
+        with pytest.raises(ValueError, match="pytest_required_execution_not_verified"):
+            current56._verify_devval_catalog_evidence(
+                tmp_path, "postgres", 1, identity, files
+            )
+        case.set("name", name)
