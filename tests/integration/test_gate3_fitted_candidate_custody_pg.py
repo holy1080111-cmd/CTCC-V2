@@ -1789,10 +1789,15 @@ async def test_actual0056_lab_only_recovery_cas_after_fresh_restricted_observati
     )
     instance = app_main._build_app()
     assert instance.openapi_url is None
-    assert all(
-        route.methods is None or route.methods <= {"GET", "HEAD"}
-        for route in instance.routes
-    )
+    paths = instance.openapi()["paths"]
+    assert set(paths) == {
+        "/liveness",
+        "/readiness",
+        "/api/version",
+        "/api/demo-automation/status",
+        "/api/demo-automation/history",
+    }
+    assert all(set(operations) == {"get"} for operations in paths.values())
 
     async with app_main.lifespan(instance):
         assert len(observations) == 1
