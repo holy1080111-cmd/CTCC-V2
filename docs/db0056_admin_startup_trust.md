@@ -46,11 +46,47 @@ with these exact keys:
 | `granted_inherited_acl_shape_sha256` | Expected granted inherited ACL shape SHA-256 |
 | `reviewed_portable_reference_sha256` | Reviewed portable reference SHA-256 |
 
-All hexadecimal values must be lowercase. Store only these exact fields.
-The reader returns the pins and the trust file's own exact-byte SHA-256
-for downstream comparison to fresh deployment and database observations.
-This reader performs no network requests, service startup, database
-mutation, account arming, or order submission.
+All hexadecimal values must be lowercase. The reader returns the pins and
+the trust file's own SHA-256 for comparison with deployment and database
+observations.
+
+## Provision the reviewed reference
+
+Export the [owner-verified deployment descriptor](db0056_deployment_descriptor.md)
+first. Retain the descriptor SHA-256 from that reviewed export independently
+of the transferred file. Stage an administrator-owned private copy of the
+descriptor for installation and another equal-byte private copy for the
+runtime UID. The administrator-staged descriptor and its parent directory
+must deny group and other access.
+
+On Linux, use the root-controlled exact source and validation environment
+whose archive you reviewed. All ancestors of the installed source, descriptor,
+and archive must be root-owned directories without group or other write
+access. Source files in the application and command directories must also
+be administrator-owned and deny group or other writes. The archive must
+be a root-owned regular single-link file without
+group or other write access. Use full absolute paths. This command belongs
+to the deployment administrator and accepts no database credentials.
+
+    python -B -m scripts.install_native_startup_trust_0056_v1 \
+      --descriptor-file /private/admin/db0056-deployment-descriptor.json \
+      --descriptor-sha256 <digest retained from the reviewed owner export> \
+      --source-archive-file /reviewed/CTCC-source.tar
+
+The command checks the descriptor, exact installed release and portable
+database reference before atomically publishing the fixed path. Linux and
+the filesystem at that path must support no-clobber rename. A matching
+existing root-owned file returns exit code 0 with status ALREADY_INSTALLED.
+A conflicting or malformed existing file returns exit code 1 and is
+preserved. Both success states report the observed reference hash. The
+commands here leave service startup, account arming and writes outside the
+reference installation.
+
+For rotation, stop the affected monitoring process and use the administrator's
+preserved deployment rollback procedure to move the prior reference out of
+the fixed path. Install the independently reviewed replacement and verify the
+new runtime readback before restoring the process. The installer does not
+automatically replace or remove an active reference.
 
 ## Read back the stored control
 

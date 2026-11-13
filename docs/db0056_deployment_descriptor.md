@@ -38,3 +38,21 @@ Exit `2` is an observed diagnostic match or export. Exit `1` is refusal.
 Both operations leave startup and execution admission denied and send no
 exchange requests. This does not apply a schema migration, change permissions,
 start the API, or replace account restart recovery.
+
+## Serve the DB0056 control monitor
+
+After the administrator provisions the fixed [startup reference](db0056_admin_startup_trust.md),
+run the dedicated monitoring service under the restricted runtime identity.
+Use an existing private CTCC API token of 32 to 128 URL-safe characters.
+
+    python -B -m scripts.serve_native_control_monitor_0056 \
+      --descriptor-file /private/deployment/db0056-deployment-descriptor.json \
+      --source-archive-file /reviewed/CTCC-source.tar
+
+The service binds to IPv4 loopback on port 8126 by default. It verifies the
+installed release and the stored control before listening. A request to
+`GET /api/demo/control` with the local API token in `X-CTCC-Token` rechecks the
+database through the configured restricted roles. One status read can run at
+a time. If a read fails or the deployment reference changes, the service stops
+serving control status until a verified restart. Only the stored control is
+reported. Execution admission stays denied.

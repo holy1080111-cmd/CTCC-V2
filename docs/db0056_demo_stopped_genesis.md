@@ -77,3 +77,25 @@ account-configuration GET and prints a status without the account identifiers.
 `IP_NOT_WHITELISTED` indicates OKX code 50110 for the current connection.
 An observed configuration leaves full account collection and trade admission
 as separate checks.
+
+## Compare CURRENT source and the stopped qualification ledger
+
+The account must already have stopped Control and an initialized capture
+scope. The qualification preflight uses a single pinned Demo read lease. It
+compares two independently opened, UID-locked PostgreSQL observations around
+the original CURRENT requests, including the Control event, account and ledger
+revisions, currency scopes and unresolved reservations. The receipt binds the
+durably replayed CURRENT page chain and the exact local ledger fingerprint.
+Changed endpoint state or unproven chronology prevents receipt publication.
+
+    python -B -m scripts.observe_demo_current_source_0056 --instrument BTC-USDT-SWAP --qualification-preflight
+
+The UID lock is released before the requests and acquired again for the
+post-capture read. The receipt records the two observed endpoints. It cannot
+authorize an account revision, qualify a trade, or grant order permission.
+
+Add `--key-policy` to show two redacted classifications on a successful
+read. The reviewed key policy requires `EXACT_READ_TRADE` and
+`SINGLE_PERMITTED_IPV4`. The connection check's exit code continues
+to report whether signed configuration was observed. The two policy
+classifications describe the permissions and IP field returned by OKX.

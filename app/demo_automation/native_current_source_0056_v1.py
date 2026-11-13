@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
+from app.core import native_ledger_preflight_0056_v1 as ledger56
 from app.core.native_locked_demo_control_0056_v1 import (
     NativeLockedDemoControl0056V1,
     read_locked_demo_control_0056_v1,
@@ -29,8 +31,10 @@ from app.trade_qualification import account_current_source_v4 as current
 from app.trade_qualification import account_native_proof_storage as storage
 from app.trade_qualification.account_runtime import ControlledDemoAccountSession
 from app.trade_qualification.demo_control import ControlScope
+from app.trade_qualification.reservations import LedgerScope
 
 _RECEIPT = "db0056-current-source-observation.json"
+_QUALIFICATION_RECEIPT = "db0056-qualification-preflight.json"
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 
 
@@ -100,7 +104,7 @@ def _readback_control(before, after):
     )
 
 
-def _source_document(operands, plan, plan_sha, before, after):
+def _source_packet_document(operands, plan, plan_sha):
     _need(
         type(operands) is current.CurrentAccountOperandsV4
         and type(operands.packet) is capture.DemoAccountPacket
@@ -125,14 +129,6 @@ def _source_document(operands, plan, plan_sha, before, after):
         "schema": "ctcc.demo.db0056.current_page_chain_observation.v1",
         "database_head": "0056",
         "admission": "DENY",
-        "control_observation_semantics": "ENDPOINTS_ONLY",
-        "control_revision": after.control.state.revision,
-        "control_event_sha256": after.control.event_sha256,
-        "control_first_observed_at": before.control.observed_at.isoformat(),
-        "control_last_observed_at": after.control.observed_at.isoformat(),
-        "server_incarnation_sha256": after.server_incarnation_sha256,
-        "role_route_sha256": after.role_route_sha256,
-        "native_definitions_sha256": after.writer_catalog.native_definitions_sha256,
         "plan_sha256": plan_sha,
         "packet_sha256": operands.reference.packet_sha256,
         "original_chain_sha256": operands.reference.head_sha256,
@@ -147,8 +143,116 @@ def _source_document(operands, plan, plan_sha, before, after):
     }
 
 
-async def _capture(settings, instrument_id: str, *, restart_inventory=False):
-    _need(type(restart_inventory) is bool, "native_current_0056_purpose_refused")
+def _source_document(operands, plan, plan_sha, before, after):
+    return {
+        **_source_packet_document(operands, plan, plan_sha),
+        "control_observation_semantics": "ENDPOINTS_ONLY",
+        "control_revision": after.control.state.revision,
+        "control_event_sha256": after.control.event_sha256,
+        "control_first_observed_at": before.control.observed_at.isoformat(),
+        "control_last_observed_at": after.control.observed_at.isoformat(),
+        "server_incarnation_sha256": after.server_incarnation_sha256,
+        "role_route_sha256": after.role_route_sha256,
+        "native_definitions_sha256": after.writer_catalog.native_definitions_sha256,
+    }
+
+
+async def _observe_qualification_ledger(factories, roles, plan):
+    scope = LedgerScope(
+        environment="demo",
+        account_id=plan.expected_uid,
+        settlement_currency=plan.settlement_currency,
+    )
+    async with factories.writer_factory() as session:
+        transaction = await session.begin()
+        try:
+            observation = await ledger56.read_locked_native_ledger_preflight_0056_v1(
+                factories, roles, session, scope
+            )
+        finally:
+            await transaction.rollback()
+        _need(
+            type(observation) is ledger56.NativeLedgerPreflight0056V1
+            and observation.emergency_stop is True
+            and observation.stored_arm_present is False
+            and observation.execution_authority is False
+            and observation.admission == "DENY",
+            "native_qualification_0056_stopped_ledger_required",
+        )
+        return observation
+
+
+def _qualification_source_document(operands, plan, plan_sha, before, after):
+    _need(
+        type(before) is type(after) is ledger56.NativeLedgerPreflight0056V1
+        and before == replace(after, observed_at=before.observed_at)
+        and before.emergency_stop is True
+        and before.stored_arm_present is False
+        and all(
+            type(at) is datetime and at.utcoffset() == UTC.utcoffset(at)
+            for at in (before.observed_at, after.observed_at)
+        ),
+        "native_qualification_0056_local_state_changed",
+    )
+    source = _source_packet_document(operands, plan, plan_sha)
+    packet = operands.packet
+    request_started_at = min(page.request_started_at for page in packet.observations)
+    _need(
+        before.observed_at
+        < request_started_at
+        <= packet.completed_at
+        <= after.observed_at,
+        "native_qualification_0056_source_order_invalid",
+    )
+    checkpoint = {
+        "account_revision": before.account_revision,
+        "ledger_revision": before.ledger_revision,
+        "scope_state": before.scope_state,
+        "unresolved_reservations": before.unresolved_reservation_count,
+        "unresolved_consumed_intents": before.unresolved_consumed_intent_count,
+        "control_event_sha256": before.control_event_sha256,
+        "control_revision": before.control_revision,
+        "server_incarnation_sha256": before.server_incarnation_sha256,
+        "role_route_sha256": before.role_route_sha256,
+        "native_definitions_sha256": before.native_definitions_sha256,
+        "uid_ledger_checkpoint_sha256": before.uid_ledger_checkpoint_sha256,
+    }
+    _need(
+        all(
+            type(value) is str and _DIGEST.fullmatch(value) is not None
+            for name, value in checkpoint.items()
+            if name.endswith("_sha256")
+        ),
+        "native_qualification_0056_digest_refused",
+    )
+    return {
+        **source,
+        "schema": "ctcc.demo.db0056.current_qualification_preflight.v1",
+        "control_observation_semantics": "ENDPOINTS_ONLY",
+        "local_ledger": checkpoint,
+        "local_ledger_sha256": sha(canonical(checkpoint)),
+        "account_request_first_started_at": request_started_at.isoformat(),
+        "account_packet_completed_at": packet.completed_at.isoformat(),
+        "local_ledger_first_observed_at": before.observed_at.isoformat(),
+        "local_ledger_last_observed_at": after.observed_at.isoformat(),
+        "local_control_and_ledger_endpoint_fields_match": True,
+        "emergency_stop": True,
+        "trade_qualified": False,
+    }
+
+
+async def _capture(
+    settings,
+    instrument_id: str,
+    *,
+    restart_inventory=False,
+    qualification_preflight=False,
+):
+    _need(
+        type(restart_inventory) is type(qualification_preflight) is bool
+        and not (restart_inventory and qualification_preflight),
+        "native_current_0056_purpose_refused",
+    )
     if restart_inventory:
         from app.demo_automation.native_restart_inventory_0056_v1 import (
             _inventory_document,
@@ -164,6 +268,9 @@ async def _capture(settings, instrument_id: str, *, restart_inventory=False):
                 read_session=lease,
                 instrument_ids=(instrument_id,),
             )
+            original_selection = (
+                selectors._record(selection) if qualification_preflight else None
+            )
             factories = selection.factories
             roles = selection.source_roles_0056
             plan = selection.current_plan
@@ -177,6 +284,11 @@ async def _capture(settings, instrument_id: str, *, restart_inventory=False):
                     initialize_capture=True,
                 )
                 root = _attempt(settings, leaf_prefix="db0056-restart-inventory-")
+            elif qualification_preflight:
+                local_before = await _observe_qualification_ledger(
+                    factories, roles, plan
+                )
+                root = _attempt(settings, leaf_prefix="db0056-qualification-preflight-")
             else:
                 before = await _observe_control(factories, scope, roles)
                 root = _attempt(settings)
@@ -199,11 +311,22 @@ async def _capture(settings, instrument_id: str, *, restart_inventory=False):
                     after, local_after = await _observe_stopped_portfolio(
                         factories, scope, roles, plan.settlement_currency
                     )
+                elif qualification_preflight:
+                    local_after = await _observe_qualification_ledger(
+                        factories, roles, plan
+                    )
                 else:
                     after = await _observe_control(factories, scope, roles)
-                _readback_control(before, after)
+                if not qualification_preflight:
+                    _readback_control(before, after)
                 _need(
-                    selection.current_plan == plan and selection.factories is factories,
+                    (
+                        not qualification_preflight
+                        or selectors._record(selection) is original_selection
+                    )
+                    and selection.current_plan == plan
+                    and selection.factories is factories
+                    and selection.source_roles_0056 is roles,
                     "native_current_0056_selection_changed",
                 )
                 lease.verify_current()
@@ -212,6 +335,11 @@ async def _capture(settings, instrument_id: str, *, restart_inventory=False):
                 # Errors between acquisition and consumption retire the local
                 # capability while retaining its already-committed audit data.
                 current._CURRENT.pop(owned, None)
+            if qualification_preflight:
+                document = _qualification_source_document(
+                    operands, plan, plan_sha, local_before, local_after
+                )
+                return root, document
             document = _source_document(operands, plan, plan_sha, before, after)
             if restart_inventory:
                 document = _inventory_document(
@@ -260,4 +388,24 @@ async def observe_configured_current_account_0056_v1(
     except Exception:  # noqa: BLE001 -- do not expose credentials, SQL, or account IDs.
         raise NativeCurrentSource0056Error(
             "native_current_0056_observation_unavailable"
+        ) from None
+
+
+async def observe_configured_qualification_preflight_0056_v1(
+    instrument_id: str,
+) -> NativeCurrentSource0056ObservationV1:
+    """Capture actual provider CURRENT with matching stopped Control and ledger."""
+    try:
+        settings = _settings(instrument_id)
+        require_private_evidence_base_v2(settings.okx_demo_native_evidence_root)
+        async with asyncio.timeout(120):
+            root, document = await _capture(
+                settings, instrument_id, qualification_preflight=True
+            )
+        return _publish(root, document, name=_QUALIFICATION_RECEIPT)
+    except (asyncio.CancelledError, NativeCurrentSource0056Error):
+        raise
+    except Exception:  # noqa: BLE001 -- keep SQL and provider details private.
+        raise NativeCurrentSource0056Error(
+            "native_qualification_0056_preflight_unavailable"
         ) from None

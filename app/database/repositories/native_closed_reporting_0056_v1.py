@@ -119,13 +119,14 @@ async def _observe_held(session, engine, roles, names, route, spool_id):
     _need(type(session) is AsyncSession and not session.identity_map)
     transaction = session.sync_session.get_transaction()
     _held(session, engine, transaction)
-    # The inherited eligibility function uses advisory/row locks. PostgreSQL
-    # requires READ WRITE for SELECT FOR UPDATE even though no data is changed.
+    # The inherited writer check requires READ COMMITTED. The eligibility
+    # function takes the account and row locks in this same transaction.
     await session.execute(
-        text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ WRITE")
+        text("SET TRANSACTION ISOLATION LEVEL READ COMMITTED, READ WRITE")
     )
     for setting in locked._LOCAL_SETTINGS:
         await session.execute(text(setting))
+    await session.execute(text("SET LOCAL synchronous_commit = 'on'"))
     _held(session, engine, transaction)
     first = await writer56._session_identity(session, engine)
     actor = await roles56._identity_at_0056(session, names[0])

@@ -125,6 +125,14 @@ POSTGRES_INTEGRATION = (
 # broadly matching reason string must not turn an arbitrary skipped test green.
 POSIX_SKIP_POLICY = {
     (
+        "tests.unit.test_install_native_startup_trust_0056_v1",
+        "test_linux_install_is_single_link_and_reopens_as_nonroot_without_replacement",
+    ): "requires Linux and administrator to prepare a disposable filesystem",
+    (
+        "tests.unit.test_native_startup_trust_0056_v1",
+        "test_real_linux_directory_descriptors_with_nonroot_child",
+    ): "requires Linux with an administrator to prepare a disposable filesystem",
+    (
         "tests.unit.research.test_public_receipt_storage",
         "test_native_symlink_root_rejected",
     ): "native POSIX symlink case executed on Linux; Windows uses reparse handles",

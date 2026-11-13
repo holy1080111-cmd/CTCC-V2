@@ -10,6 +10,7 @@ import sys
 from app.demo_automation.native_current_source_0056_v1 import (
     NativeCurrentSource0056Error,
     observe_configured_current_account_0056_v1,
+    observe_configured_qualification_preflight_0056_v1,
 )
 from app.demo_automation.native_history_source_0056_v1 import (
     NativeHistorySource0056Error,
@@ -33,6 +34,11 @@ def main(arguments=None) -> int:
         "--restart-inventory",
         action="store_true",
         help="Observe fresh exchange inventory and local exposure around the stopped account.",
+    )
+    mode.add_argument(
+        "--qualification-preflight",
+        action="store_true",
+        help="Compare stopped Control and ledger checkpoints around real CURRENT data.",
     )
     args = parser.parse_args(arguments)
     if args.include_history:
@@ -61,29 +67,27 @@ def main(arguments=None) -> int:
             )
         )
         return 0
+    if args.qualification_preflight:
+        operation = observe_configured_qualification_preflight_0056_v1
+        status = "QUALIFICATION_PREFLIGHT_OBSERVED"
+        failure = "db0056_qualification_preflight_refused"
+    elif args.restart_inventory:
+        operation = observe_configured_restart_inventory_0056_v1
+        status = "RESTART_INVENTORY_OBSERVED"
+        failure = "db0056_restart_inventory_refused"
+    else:
+        operation = observe_configured_current_account_0056_v1
+        status = "CURRENT_SOURCE_OBSERVED"
+        failure = "db0056_current_source_refused"
     try:
-        operation = (
-            observe_configured_restart_inventory_0056_v1
-            if args.restart_inventory
-            else observe_configured_current_account_0056_v1
-        )
         result = asyncio.run(operation(args.instrument))
     except (NativeCurrentSource0056Error, KeyboardInterrupt):
-        print(
-            "db0056_restart_inventory_refused"
-            if args.restart_inventory
-            else "db0056_current_source_refused",
-            file=sys.stderr,
-        )
+        print(failure, file=sys.stderr)
         return 1
     print(
         json.dumps(
             {
-                "status": (
-                    "RESTART_INVENTORY_OBSERVED"
-                    if args.restart_inventory
-                    else "CURRENT_SOURCE_OBSERVED"
-                ),
+                "status": status,
                 "database_head": result.database_head,
                 "receipt_sha256": result.receipt_sha256,
                 "account_complete": result.account_complete,

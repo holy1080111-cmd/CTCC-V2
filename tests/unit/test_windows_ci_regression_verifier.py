@@ -426,3 +426,27 @@ def test_prospective_cutover_is_postgresql_only_without_skip_expansion():
         "prospective_event_cutover" not in module
         for module, _ in verifier.POSIX_SKIP_POLICY
     )
+
+
+@pytest.mark.parametrize(
+    ("module", "node", "reason"),
+    [
+        (
+            "tests.unit.test_install_native_startup_trust_0056_v1",
+            "test_linux_install_is_single_link_and_reopens_as_nonroot_without_replacement",
+            "requires Linux and administrator to prepare a disposable filesystem",
+        ),
+        (
+            "tests.unit.test_native_startup_trust_0056_v1",
+            "test_real_linux_directory_descriptors_with_nonroot_child",
+            "requires Linux with an administrator to prepare a disposable filesystem",
+        ),
+    ],
+)
+def test_only_exact_db0056_admin_custody_tests_may_skip(module, node, reason):
+    skip = ET.Element("skipped", {"type": "pytest.skip", "message": reason})
+    assert verifier.classify_approved_skip(module, node, skip) == "posix_only"
+    with pytest.raises(
+        verifier.WindowsRegressionError, match="windows_junit_unapproved_skip"
+    ):
+        verifier.classify_approved_skip(module, "test_unreviewed_linux_skip", skip)

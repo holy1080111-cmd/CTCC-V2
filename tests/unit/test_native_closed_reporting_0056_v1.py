@@ -168,7 +168,8 @@ async def test_report_observation_replays_once_and_always_rolls_back(
     assert len(rollbacks) == 1
     assert not rollbacks[0].session.in_transaction()
     witness_probe.assert_awaited_once()
-    assert sql[0] == "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ WRITE"
+    assert sql[0] == "SET TRANSACTION ISOLATION LEVEL READ COMMITTED, READ WRITE"
+    assert sql[-1] == "SET LOCAL synchronous_commit = 'on'"
     if failure in {"catalog", "grant", "missing"}:
         replay.assert_not_awaited()
     else:

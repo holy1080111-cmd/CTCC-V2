@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Literal
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 
 from app.core import native_locked_demo_control_0056_v1 as locked
 from app.core.native_stopped_control_genesis_0056_v1 import _require_role_witness
@@ -22,6 +23,7 @@ from app.database.models.qualification_ledger import (
 from app.database.repositories import qualification_ledger as ledger
 from app.database.repositories import qualification_native_checkpoint_v2 as checkpoint
 from app.domain import native_filled_flat_closure_schema_v55 as closure
+from app.domain.source_primitives import canonical, sha
 from app.trade_qualification import control_bound_ledger
 from app.trade_qualification.demo_control import ControlScope
 from app.trade_qualification.reservations import LedgerScope, checked_bootstrap
@@ -42,6 +44,8 @@ _MODELS = (
     DemoCollectorIssuedAccountRevision,
 )
 _EVENT_LIMIT = 2048
+_CURRENCY_LIMIT = 128
+_SHA256 = re.compile(r"[0-9a-f]{64}")
 
 
 class NativeLedgerPreflight0056Error(ValueError):
@@ -61,6 +65,9 @@ class NativeLedgerPreflight0056V1:
     unresolved_consumed_intent_count: int
     server_incarnation_sha256: str
     role_route_sha256: str
+    native_definitions_sha256: str
+    uid_ledger_checkpoint_sha256: str
+    observed_at: datetime
     database_head: Literal["0056"] = field(default="0056", init=False)
     reconciliation_verified: Literal[False] = field(default=False, init=False)
     account_complete: Literal[False] = field(default=False, init=False)
@@ -112,7 +119,16 @@ async def _unresolved_under_uid_lock(session, scope, held):
                     QualificationReservationTransition.state_revision,
                     QualificationReservationTransition.from_state,
                     QualificationReservationTransition.reason_code,
-                    QualificationReservationTransition.evidence_json.is_not(None),
+                    func.pg_catalog.encode(
+                        func.pg_catalog.sha256(
+                            func.pg_catalog.convert_to(
+                                QualificationReservationTransition.evidence_json,
+                                "UTF8",
+                            )
+                        ),
+                        "hex",
+                    ),
+                    QualificationReservation.request_sha256,
                 )
                 .outerjoin(
                     QualificationReservationTransition,
@@ -143,9 +159,19 @@ async def _unresolved_under_uid_lock(session, scope, held):
         consumed_revision,
         previous,
         reason,
-        has_evidence,
+        evidence_sha256,
+        request_sha256,
     ) in rows:
-        _need(type(revision) is int)
+        _need(
+            type(revision) is int
+            and type(request_sha256) is str
+            and _SHA256.fullmatch(request_sha256) is not None
+            and (
+                evidence_sha256 is None
+                or type(evidence_sha256) is str
+                and _SHA256.fullmatch(evidence_sha256) is not None
+            )
+        )
         if (state, revision) in {("reserved", 1), ("uncertain", 2)}:
             _need(transition_id is None)
             continue
@@ -156,20 +182,70 @@ async def _unresolved_under_uid_lock(session, scope, held):
             and consumed_revision == 2
             and previous == "reserved"
             and (
-                (reason == "consumed" and has_evidence is False)
+                (reason == "consumed" and evidence_sha256 is None)
                 or (
                     reason
                     in {
                         control_bound_ledger.CONSUMED_REASON,
                         "consumed_with_submit_intent",
                     }
-                    and has_evidence is True
+                    and evidence_sha256 is not None
                 )
             )
         )
-        if has_evidence:
+        if evidence_sha256 is not None:
             intents += 1
-    return len(rows), intents
+    return rows, intents
+
+
+async def _uid_ledger_checkpoint(session, scope, held, selected):
+    currencies = tuple(
+        (
+            await session.execute(
+                select(
+                    QualificationAccountScope.settlement_currency,
+                    QualificationAccountScope.account_revision,
+                    QualificationAccountScope.ledger_revision,
+                    QualificationAccountScope.claims_sha256,
+                    QualificationAccountScope.updated_at,
+                )
+                .where(
+                    QualificationAccountScope.environment == scope.environment,
+                    QualificationAccountScope.account_id == scope.account_id,
+                )
+                .order_by(QualificationAccountScope.settlement_currency)
+                .limit(_CURRENCY_LIMIT + 1)
+            )
+        ).all()
+    )
+    held()
+    _need(
+        0 < len(currencies) <= _CURRENCY_LIMIT
+        and (
+            scope.settlement_currency,
+            selected.account_revision,
+            selected.ledger_revision,
+            selected.claims_sha256,
+            selected.updated_at,
+        )
+        in currencies
+    )
+    unresolved, consumed = await _unresolved_under_uid_lock(session, scope, held)
+    checkpoint = {
+        "schema": "ctcc.demo.db0056.uid_ledger_checkpoint.v1",
+        "currencies": [
+            [
+                currency,
+                account_revision,
+                ledger_revision,
+                claims,
+                updated_at.isoformat(),
+            ]
+            for currency, account_revision, ledger_revision, claims, updated_at in currencies
+        ],
+        "unresolved": [list(row) for row in unresolved],
+    }
+    return len(unresolved), consumed, sha(canonical(checkpoint))
 
 
 async def read_locked_native_ledger_preflight_0056_v1(
@@ -249,8 +325,8 @@ async def read_locked_native_ledger_preflight_0056_v1(
             scope_state = await _replay_historical_scope(
                 session, repo, scope, row, held
             )
-            unresolved, consumed = await _unresolved_under_uid_lock(
-                session, scope, held
+            unresolved, consumed, uid_checkpoint = await _uid_ledger_checkpoint(
+                session, scope, held, row
             )
             _need(scope_state != "BOOTSTRAP" or unresolved == 0)
             observed_at = await session.scalar(locked._CLOCK)
@@ -267,6 +343,9 @@ async def read_locked_native_ledger_preflight_0056_v1(
                 unresolved,
                 consumed,
                 *witness,
+                catalog.native_definitions_sha256,
+                uid_checkpoint,
+                observed_at,
             )
     except (NativeLedgerPreflight0056Error, asyncio.CancelledError):
         raise

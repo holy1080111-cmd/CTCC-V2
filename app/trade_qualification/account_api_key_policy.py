@@ -1,4 +1,4 @@
-"""Offline, DENY-only API-key policy observation from an original V7 packet.
+"""Redacted API-key field classification and DENY-only V7 packet replay.
 
 A packet and its SHA pins establish replay consistency, not OKX authenticity.
 No credential, signer, HTTP client, account authority, or execution path is here.
@@ -32,6 +32,7 @@ POLICY_BYTES = journal.canonical(
 )
 POLICY_SHA256 = journal.digest(POLICY_BYTES)
 _PERMISSIONS = frozenset({"read_only", "trade", "withdraw"})
+_READ_TRADE = frozenset({"read_only", "trade"})
 _DIGEST = re.compile(r"[a-f0-9]{64}")
 # Fixed V1 exclusions avoid interpreter-dependent ipaddress.is_global results.
 # This intentionally rejects IPv6 pending a separately versioned policy.
@@ -121,6 +122,39 @@ def _bound_ips(value: object) -> tuple[str, ...] | None:
     return addresses
 
 
+def classify_demo_api_key_config_fields(
+    *, permissions: object, bound_ips: object
+) -> dict[str, object]:
+    """Classify config fields without granting authority or revealing their values."""
+    observed_permissions = _permissions(permissions)
+    if observed_permissions is None:
+        permission_policy = "MISSING_OR_MALFORMED"
+    elif "withdraw" in observed_permissions:
+        permission_policy = "WITHDRAW_ENABLED"
+    elif observed_permissions == _READ_TRADE:
+        permission_policy = "EXACT_READ_TRADE"
+    else:
+        permission_policy = "READ_TRADE_MISMATCH"
+
+    observed_ips = _bound_ips(bound_ips)
+    if observed_ips is None:
+        ip_policy = (
+            "UNBOUND"
+            if type(bound_ips) is str and bound_ips == ""
+            else "MISSING_OR_MALFORMED"
+        )
+    elif len(observed_ips) == 1:
+        ip_policy = "SINGLE_PERMITTED_IPV4"
+    else:
+        ip_policy = "MULTIPLE_PERMITTED_IPV4"
+
+    return {
+        "permission_policy": permission_policy,
+        "ip_binding_policy": ip_policy,
+        "current_egress_ip_verified": False,
+    }
+
+
 def observe_v7_demo_api_key_policy(
     packet_bytes: bytes,
     *,
@@ -207,7 +241,7 @@ def observe_v7_demo_api_key_policy(
         reasons.add("permissions_changed")
     elif "withdraw" in before_permissions:
         reasons.add("withdraw_permission_enabled")
-    elif before_permissions != frozenset({"read_only", "trade"}):
+    elif before_permissions != _READ_TRADE:
         reasons.add("read_trade_permission_missing")
 
     before_ips = _bound_ips(before.get("ip"))
