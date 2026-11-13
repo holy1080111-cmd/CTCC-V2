@@ -80,9 +80,23 @@ def private_dirs(tmp_path):
         output.mkdir(mode=0o700)
     token = private / "api_token"
     try:
-        with token.open("xb") as handle:
-            handle.write(TOKEN)
-        if os.name == "posix":
+        if os.name == "nt":
+            from app.trade_evidence import storage
+            from app.trade_evidence.native_private_root_v2 import (
+                _open_new_windows_private_evidence_file,
+                _windows_private,
+            )
+
+            # Windows may otherwise give a file created by an administrator
+            # the Administrators group as owner, even in a user-owned directory.
+            with storage._windows_root(private) as directory:
+                fd = _open_new_windows_private_evidence_file(directory, token.name)
+                with os.fdopen(fd, "wb") as handle:
+                    _windows_private(token)
+                    handle.write(TOKEN)
+        else:
+            with token.open("xb") as handle:
+                handle.write(TOKEN)
             token.chmod(0o600)
         yield token, output
     finally:

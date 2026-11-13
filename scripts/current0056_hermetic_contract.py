@@ -41,14 +41,17 @@ RECOVERY_CASES = previous.RECOVERY_CASES
 RESERVATION_UNIQUE = previous.RESERVATION_UNIQUE
 ROOT_TRUST_STAGE = "linux-root-trust-install"
 ROOT_TRUST_REPORT = "test-results/linux-root-trust-install.xml"
-_ROOT_TRUST_PATH = "tests/unit/test_install_native_startup_trust_0056_v1.py"
-ROOT_TRUST_CASE = (
-    _ROOT_TRUST_PATH.removesuffix(".py").replace("/", "."),
-    "test_linux_install_is_single_link_and_reopens_as_nonroot_without_replacement",
-)
-_ROOT_TRUST_SKIP = (
-    ROOT_TRUST_CASE,
-    "requires Linux and administrator to prepare a disposable filesystem",
+_ROOT_TRUST_SPECS = (
+    (
+        "tests/unit/test_native_startup_trust_0056_v1.py",
+        "test_real_linux_directory_descriptors_with_nonroot_child",
+        "requires Linux with an administrator to prepare a disposable filesystem",
+    ),
+    (
+        "tests/unit/test_install_native_startup_trust_0056_v1.py",
+        "test_linux_install_is_single_link_and_reopens_as_nonroot_without_replacement",
+        "requires Linux and administrator to prepare a disposable filesystem",
+    ),
 )
 FITTED_CUSTODY_CASES = tuple(
     (FITTED_CUSTODY_TEST_PATH.removesuffix(".py").replace("/", "."), name)
@@ -151,14 +154,33 @@ _LINUX_PLATFORM_SKIPS_0056 = (
 )
 
 
-def _linux_platform_skips(root_trust_verified):
-    return (
-        *_LINUX_PLATFORM_SKIPS_0056,
-        *((_ROOT_TRUST_SKIP,) if root_trust_verified else ()),
+def _root_trust_specs(mode, index):
+    return tuple(
+        (path, name, reason)
+        for path, name, reason in _ROOT_TRUST_SPECS
+        if mode == "full" or mode == "shard" and index == module_shard(path)
     )
 
 
-def _verify_platform_skips(raw, *, mode, expected_skipped, root_trust_verified=False):
+def root_trust_cases(mode, index):
+    return tuple(
+        (path.removesuffix(".py").replace("/", "."), name)
+        for path, name, _ in _root_trust_specs(mode, index)
+    )
+
+
+def _linux_platform_skips(root_trust_verified):
+    return (
+        *_LINUX_PLATFORM_SKIPS_0056,
+        *(
+            ((path.removesuffix(".py").replace("/", "."), name), reason)
+            for path, name, reason in _ROOT_TRUST_SPECS
+            if (path.removesuffix(".py").replace("/", "."), name) in root_trust_verified
+        ),
+    )
+
+
+def _verify_platform_skips(raw, *, mode, expected_skipped, root_trust_verified=()):
     previous._verify_platform_skips(
         raw,
         mode=mode,
@@ -168,7 +190,7 @@ def _verify_platform_skips(raw, *, mode, expected_skipped, root_trust_verified=F
 
 
 def requires_root_trust(mode, index):
-    return mode == "full" or mode == "shard" and index == module_shard(_ROOT_TRUST_PATH)
+    return bool(root_trust_cases(mode, index))
 
 
 def component_stage_names(mode, index):
@@ -224,20 +246,23 @@ def component_artifacts(mode, index):
     return artifacts
 
 
-def verify_root_trust(root):
+def verify_root_trust(root, mode, index):
+    expected = root_trust_cases(mode, index)
+    if not expected:
+        raise ValueError("current56_root_trust_evidence_invalid")
     report = shared.verify_pytest_report(
-        root / ROOT_TRUST_REPORT, required_cases=(ROOT_TRUST_CASE,)
+        root / ROOT_TRUST_REPORT, required_cases=expected
     )
     if (
-        report["tests"] != 1
-        or report["passed"] != 1
+        report["tests"] != len(expected)
+        or report["passed"] != len(expected)
         or _read(root, f"{ROOT_TRUST_STAGE}.log")
         .splitlines()
         .count(b"HERMETIC_EXECUTION_AUTHORITY=0")
         != 1
     ):
         raise ValueError("current56_root_trust_evidence_invalid")
-    return report
+    return expected
 
 
 def _verify_devval_catalog_evidence(root, mode, index, identity, files):
@@ -333,7 +358,7 @@ def migration_readback(raw, expected_digest):
     return actual
 
 
-def _collection(root, mode, index, identity, *, root_trust_verified=False):
+def _collection(root, mode, index, identity, *, root_trust_verified=()):
     junit, selected_path = component_report_paths(mode, index)
     if mode == "shard":
         return previous._collection(
@@ -579,11 +604,11 @@ def verify_current56_component(
     if identity["migration"] != before:
         raise ValueError("current56_component_migration_not_bound")
     _cleanup(_read(root, "cleanup.json"), prefix, anchor=anchor)
-    root_trust_required = requires_root_trust(mode, index)
-    if root_trust_required:
-        verify_root_trust(root)
+    root_trust_verified = ()
+    if requires_root_trust(mode, index):
+        root_trust_verified = verify_root_trust(root, mode, index)
     selection = _collection(
-        root, mode, index, identity, root_trust_verified=root_trust_required
+        root, mode, index, identity, root_trust_verified=root_trust_verified
     )
     if requires_devval_catalog(mode, index):
         _verify_devval_catalog_evidence(root, mode, index, identity, files)

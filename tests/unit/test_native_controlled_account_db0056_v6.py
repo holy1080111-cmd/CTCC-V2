@@ -270,6 +270,9 @@ async def test_controlled_history_moves_once_with_exact_owned_factories(
         ),
     )
     original = selected.state
+    wrapped = source._consume_controlled_history_use_v6
+    enclosed = dict(zip(wrapped.__code__.co_freevars, wrapped.__closure__, strict=True))
+    consume = enclosed["original"].cell_contents
     monkeypatch.setattr(source, "_check_v6", Mock())
     invocations = {}
     monkeypatch.setattr(source, "_HISTORY_USES_V6", invocations)
@@ -286,9 +289,7 @@ async def test_controlled_history_moves_once_with_exact_owned_factories(
         "key": source.history._CONTROLLED_CURRENT_KEY_V4,
     }
     if drift is None:
-        started_at, session_key, profile = source._consume_controlled_history_use_v6(
-            token, **args
-        )
+        started_at, session_key, profile = consume(token, **args)
         assert started_at == _AT - timedelta(days=7, seconds=60)
         assert len(session_key) == 64
         assert profile[0] is selected.factories and profile[1] is selected.roles
@@ -296,6 +297,6 @@ async def test_controlled_history_moves_once_with_exact_owned_factories(
         with pytest.raises(
             source.ControlledAccountSourceError, match="original_context_changed"
         ):
-            source._consume_controlled_history_use_v6(token, **args)
+            consume(token, **args)
     with pytest.raises(source.ControlledAccountSourceError, match="already_moved"):
-        source._consume_controlled_history_use_v6(token, **args)
+        consume(token, **args)

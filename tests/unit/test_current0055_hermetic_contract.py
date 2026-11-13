@@ -297,7 +297,7 @@ def test_current56_linux_shard_collection_applies_versioned_skip_policy(
         contract._collection(tmp_path, "shard", 4, identity)
 
 
-def test_current56_root_trust_stage_and_artifacts_have_one_shard_owner():
+def test_current56_root_trust_stage_owns_disjoint_shard_cases_and_both_for_full():
     modes = (("full", None), ("postgres", 0), ("postgres", 1))
     scopes = {
         (mode, index): current56.requires_root_trust(mode, index)
@@ -305,8 +305,24 @@ def test_current56_root_trust_stage_and_artifacts_have_one_shard_owner():
     }
     assert {scope for scope, needed in scopes.items() if needed} == {
         ("full", None),
+        ("shard", 3),
         ("shard", 5),
     }
+    reader = current56.root_trust_cases("shard", 3)
+    installer = current56.root_trust_cases("shard", 5)
+    assert reader == (
+        (
+            "tests.unit.test_native_startup_trust_0056_v1",
+            "test_real_linux_directory_descriptors_with_nonroot_child",
+        ),
+    )
+    assert installer == (
+        (
+            "tests.unit.test_install_native_startup_trust_0056_v1",
+            "test_linux_install_is_single_link_and_reopens_as_nonroot_without_replacement",
+        ),
+    )
+    assert current56.root_trust_cases("full", None) == reader + installer
     for (mode, index), needed in scopes.items():
         stages = current56.component_stage_names(mode, index)
         artifacts = current56.component_artifacts(mode, index)
@@ -323,7 +339,7 @@ def test_current56_root_trust_stage_and_artifacts_have_one_shard_owner():
 def test_current56_root_trust_proof_requires_the_single_actual_pass(tmp_path, behavior):
     report = tmp_path / current56.ROOT_TRUST_REPORT
     report.parent.mkdir()
-    module, case = current56.ROOT_TRUST_CASE
+    ((module, case),) = current56.root_trust_cases("shard", 5)
     log = tmp_path / f"{current56.ROOT_TRUST_STAGE}.log"
     log.write_text("HERMETIC_EXECUTION_AUTHORITY=0\n", encoding="utf-8")
     if behavior != "missing":
@@ -348,20 +364,24 @@ def test_current56_root_trust_proof_requires_the_single_actual_pass(tmp_path, be
         report.write_bytes(ET.tostring(suite))
     if behavior == "missing":
         with pytest.raises(FileNotFoundError):
-            current56.verify_root_trust(tmp_path)
+            current56.verify_root_trust(tmp_path, "shard", 5)
     elif behavior != "pass":
         with pytest.raises(ValueError):
-            current56.verify_root_trust(tmp_path)
+            current56.verify_root_trust(tmp_path, "shard", 5)
     else:
-        assert current56.verify_root_trust(tmp_path)["passed"] == 1
+        assert current56.verify_root_trust(tmp_path, "shard", 5) == ((module, case),)
+        with pytest.raises(ValueError):
+            current56.verify_root_trust(tmp_path, "shard", 3)
+        with pytest.raises(ValueError):
+            current56.verify_root_trust(tmp_path, "full", None)
         log.write_text("", encoding="utf-8")
         with pytest.raises(ValueError, match="^current56_root_trust_evidence_invalid$"):
-            current56.verify_root_trust(tmp_path)
+            current56.verify_root_trust(tmp_path, "shard", 5)
 
 
 @pytest.mark.parametrize("mode", ("shard", "full", "postgres"))
 def test_current56_nonroot_skip_requires_separate_root_trust_proof(mode):
-    module, case = current56.ROOT_TRUST_CASE
+    ((module, case),) = current56.root_trust_cases("shard", 5)
     root = ET.Element("testsuite")
     entry = ET.SubElement(root, "testcase", classname=module, name=case)
     ET.SubElement(
@@ -376,9 +396,19 @@ def test_current56_nonroot_skip_requires_separate_root_trust_proof(mode):
     if mode == "postgres":
         with pytest.raises(ValueError, match="^current55_unapproved_linux_skip$"):
             current56._verify_platform_skips(
-                raw, mode=mode, expected_skipped=1, root_trust_verified=True
+                raw,
+                mode=mode,
+                expected_skipped=1,
+                root_trust_verified=((module, case),),
             )
     else:
+        with pytest.raises(ValueError, match="^current55_unapproved_linux_skip$"):
+            current56._verify_platform_skips(
+                raw,
+                mode=mode,
+                expected_skipped=1,
+                root_trust_verified=current56.root_trust_cases("shard", 3),
+            )
         current56._verify_platform_skips(
-            raw, mode=mode, expected_skipped=1, root_trust_verified=True
+            raw, mode=mode, expected_skipped=1, root_trust_verified=((module, case),)
         )

@@ -627,10 +627,10 @@ def _run(args, index, raw, files, runner_sha, root):
                 stage,
                 *_PYTEST,
                 f"--junitxml=/validation-results/{Path(contract.ROOT_TRUST_REPORT).name}",
-                *_cases_to_nodes((contract.ROOT_TRUST_CASE,)),
+                *_cases_to_nodes(contract.root_trust_cases(args.suite, index)),
                 timeout=120,
             )
-            contract.verify_root_trust(root)
+            contract.verify_root_trust(root, args.suite, index)
         if diagnostic:
             stage, junit = "fitted-catalog-diagnostic", _FITTED_JUNIT
             test_command = (
