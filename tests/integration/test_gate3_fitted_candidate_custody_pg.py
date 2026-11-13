@@ -32,6 +32,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 import app.database.models  # noqa: F401 - register the full migration metadata.
+from app.core import native_frame_reader_0056_v1 as held_frame56
 from app.core import native_role_preflight_0056_full_diagnostic_v1 as observation
 from app.core import native_writer_observation_0056_v1 as writer_observation
 from app.database.base import Base
@@ -2088,6 +2089,72 @@ async def test_actual0056_full_native_role_observation_tls(
             postgrant_readonly_inherited_sha256=first.inherited_native_definitions_sha256,
             postgrant_readwrite_inherited_sha256=writer.native_definitions_sha256,
         )
+
+
+async def test_actual0056_held_frame_reader_uses_same_transaction_and_real_catalog(
+    _actual_0056_role_observation_lab,
+):
+    _, _, selected, _ = _actual_0056_role_observation_lab
+    frame_factory = selected.frame_reader_factory
+    writer_factory = selected.writer_factory
+    custody_factory = selected.custody_factory
+
+    class Fence:
+        checks = 0
+
+        def check(self):
+            self.checks += 1
+
+    fence = Fence()
+    async with frame_factory() as session, session.begin():
+        for statement in (
+            "SET TRANSACTION ISOLATION LEVEL READ COMMITTED",
+            "SET TRANSACTION READ WRITE",
+            "SET LOCAL search_path TO pg_catalog,public,pg_temp",
+            "SET LOCAL TIME ZONE 'UTC'",
+            "SET LOCAL lock_timeout='1000ms'",
+            "SET LOCAL statement_timeout='1000ms'",
+        ):
+            await session.execute(text(statement))
+        held_transaction = session.sync_session.get_transaction()
+        assert held_transaction is not None
+        observed = json.loads(
+            await held_frame56.verify_held_frame_catalog_0056_v1(
+                session, fence, writer_factory, custody_factory, frame_factory
+            )
+        )
+        assert session.sync_session.get_transaction() is held_transaction
+        assert tuple(
+            (
+                await session.execute(
+                    text(
+                        "SELECT current_setting('transaction_isolation'), "
+                        "current_setting('transaction_read_only')"
+                    )
+                )
+            ).one()
+        ) == ("read committed", "off")
+        assert observed["schema"] == "ctcc.native_only.held_frame_catalog_0056.v1"
+        assert observed["database_head"] == "0056"
+        assert (
+            observed["current0056"]["profile"]["actual_separate_roles_observed"] is True
+        )
+        assert observed["account_complete"] is observed["execution_authority"] is False
+        assert observed["admission"] == "DENY"
+        assert fence.checks >= 20
+        with pytest.raises(held_frame56.NativeFrameReader0056Error):
+            await held_frame56.verify_held_frame_catalog_0056_v1(
+                session, fence, frame_factory, custody_factory, writer_factory
+            )
+        assert session.sync_session.get_transaction() is held_transaction
+
+    async with frame_factory() as session, session.begin():
+        await session.execute(text("SET TRANSACTION ISOLATION LEVEL READ COMMITTED"))
+        await session.execute(text("SET TRANSACTION READ ONLY"))
+        with pytest.raises(held_frame56.NativeFrameReader0056Error):
+            await held_frame56.verify_held_frame_catalog_0056_v1(
+                session, fence, writer_factory, custody_factory, frame_factory
+            )
 
 
 async def test_actual0056_full_native_role_rejects_swapped_roles_and_extra_grant(

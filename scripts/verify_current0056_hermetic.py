@@ -123,6 +123,10 @@ _FITTED_CASES = (
         "test_actual0056_restricted_writer_control_replays_and_holds_uid_lock",
     ),
     (
+        fitted_measurement.CASE[0],
+        "test_actual0056_held_frame_reader_uses_same_transaction_and_real_catalog",
+    ),
+    (
         "tests.integration.test_qualification_submission_intent_repository",
         "test_uncertain_and_expired_intent_read_is_audit_only_and_hold_remains",
     ),
