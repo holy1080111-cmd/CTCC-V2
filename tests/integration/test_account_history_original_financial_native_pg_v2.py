@@ -28,6 +28,7 @@ from tests.integration import test_account_history_original_native_read_v1 as or
 from tests.integration.test_account_history_original_frame_repository_v1 import (
     original_frame_database as original_frame_database,  # noqa: PLC0414
 )
+from tests.original_pg_timing_probe import OriginalPgTimingProbe
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
@@ -49,14 +50,16 @@ async def test_pg_financial_synthetic_wire_original33_uses_same_expiry_and_measu
         # FIRST construction follows real role setup, exactly as the existing
         # native acceptance. No existing request expiry or Control lease resets.
         genesis = original._request(scope, documents, revisions, lease)
+        probe = OriginalPgTimingProbe(reader)
         try:
-            result = await native.replay_original_history_financial_from_pg_v2(
-                async_sessionmaker(reader, expire_on_commit=False, autoflush=False),
-                genesis_request=genesis,
-                expected_checkpoint_sha256=checkpoint,
-                approved_collector_role_oid=oid,
-                expected_financial_policy_sha256=stream.original_history_financial_stream_policy_sha256_v2(),
-            )
+            with probe:
+                result = await native.replay_original_history_financial_from_pg_v2(
+                    async_sessionmaker(reader, expire_on_commit=False, autoflush=False),
+                    genesis_request=genesis,
+                    expected_checkpoint_sha256=checkpoint,
+                    approved_collector_role_oid=oid,
+                    expected_financial_policy_sha256=stream.original_history_financial_stream_policy_sha256_v2(),
+                )
         except native.OriginalHistoryFinancialPgReadError as error:
             if os.environ.get("CTCC_ORIGINAL_FINANCIAL_DIAGNOSTIC") != "1":
                 raise
@@ -73,6 +76,11 @@ async def test_pg_financial_synthetic_wire_original33_uses_same_expiry_and_measu
             pytest.fail(
                 "ctcc_pg52_original_financial_closed_code_v1=" + code, pytrace=False
             )
+        finally:
+            if (timing := probe.receipt_json()) is not None:
+                request.node.user_properties.append(
+                    ("ctcc_pg_original_roundtrip_timing_v1", timing)
+                )
         await original._assert_reader_gone(admin, reader)
         acquisition = json.loads(result.acquisition_receipt_json)
         joined = json.loads(result.replay.receipt_json)

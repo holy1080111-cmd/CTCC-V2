@@ -3,7 +3,7 @@
 import hashlib
 import json
 import sys
-from xml.sax.saxutils import escape
+from xml.sax.saxutils import escape, quoteattr
 
 import pytest
 
@@ -41,15 +41,26 @@ def _progress(*, failed=False, unfinished=False):
     )
 
 
-def _junit(*, first="passed", second="passed", first_code=None):
+def _junit(*, first="passed", second="passed", first_code=None, first_timing=None):
     elements = []
     for index, status in enumerate((first, second)):
         module, name = diagnostic.CASES[index]
+        properties = []
+        if index == 0 and first_code is not None:
+            properties.append(
+                '<property name="ctcc_pg52_original_financial_closed_code_v1" '
+                f'value="{escape(first_code)}"/>'
+            )
+        if index == 0 and first_timing is not None:
+            properties.append(
+                '<property name="ctcc_pg_original_roundtrip_timing_v1" value='
+                + quoteattr(
+                    json.dumps(first_timing, sort_keys=True, separators=(",", ":"))
+                )
+                + "/>"
+            )
         property_xml = (
-            '<properties><property name="ctcc_pg52_original_financial_closed_code_v1" '
-            f'value="{escape(first_code)}"/></properties>'
-            if index == 0 and first_code is not None
-            else ""
+            "<properties>" + "".join(properties) + "</properties>" if properties else ""
         )
         failure_xml = (
             f'<{status} message="private SQL values"/>' if status != "passed" else ""
@@ -127,6 +138,28 @@ def test_unlisted_refusal_or_progress_identity_is_denied():
     altered = _progress().replace(b'"selected_count":2', b'"selected_count":3')
     with pytest.raises(ValueError, match="original_financial_progress_invalid"):
         diagnostic.redacted_diagnostic(altered, _junit())
+
+
+def test_numeric_pg_timing_is_redacted_and_private_extra_field_is_denied():
+    timing = {
+        "schema": "ctcc.test.original_pg_roundtrip_timing.v1",
+        "total_ms": 19345,
+        "dbapi": {
+            "frame": {"count": 2, "total_ms": 1000},
+            "catalog": {"count": 2, "total_ms": 100},
+            "other": {"count": 5, "total_ms": 30},
+        },
+        "frame_ms_in_order": [400, 600],
+        "unfinished": 0,
+        "overflow": False,
+        "account_complete": False,
+        "execution_authority": False,
+    }
+    result = diagnostic.redacted_diagnostic(_progress(), _junit(first_timing=timing))
+    assert result["cases"][0]["roundtrip_timing"] == timing
+    bad = {**timing, "raw_sql": "private SQL values"}
+    with pytest.raises(ValueError, match="original_financial_junit_invalid"):
+        diagnostic.redacted_diagnostic(_progress(), _junit(first_timing=bad))
 
 
 def test_runner_admits_only_postgres_zero_and_two_fixed_nodes(monkeypatch):
