@@ -118,12 +118,18 @@ def _load_inputs(path: Path, expected_sha256: str) -> OwnerTargetPlanInputsV1:
 
 def _reviewed_portable(observed: owner_pregrant.NativeOwnerPregrant0056Diagnostic):
     from scripts.current0056_reviewed_owner_portable_v1 import (
+        ReviewedOwnerPortable0056V1,
         verify_reviewed_owner_portable_0056_v1,
     )
 
     reference = verify_reviewed_owner_portable_0056_v1(_SOURCE, observed)
     _need(
-        draft._digest(reference.reference_sha256)
+        type(reference) is ReviewedOwnerPortable0056V1
+        and reference.grant_authority is False
+        and reference.startup_admission is False
+        and reference.execution_authority is False
+        and reference.admission == "DENY"
+        and draft._digest(reference.reference_sha256)
         and reference.inherited_native_definitions_sha256
         == observed.inherited_native_definitions_sha256
         and reference.fitted_normalized_owner_catalog_sha256
