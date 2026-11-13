@@ -8,6 +8,7 @@ import os
 import re
 import socket
 import ssl
+import sys
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -69,6 +70,7 @@ from scripts import current0056_native_owner_pregrant_v1 as owner_pregrant
 from scripts import current0056_postgrant_acl_measurement_v1 as postgrant_acl
 from scripts import current_contract_source_scopes_v1 as source_scopes
 from scripts import devval_campaign_physical_catalog_v1 as devval_catalog
+from scripts.evidence_json import read_evidence_json
 from tests.integration.test_gate3_canonical_schedule_claim import migrate, pin_record
 from tests.integration.test_gate3_committed_preregistration_seal import (
     append_pin,
@@ -1184,6 +1186,90 @@ async def _verify_actual_tls_roles(engines):
     assert len({row[3] for row in observed}) == len({row[4] for row in observed}) == 4
     assert all(row[5] is True and row[6] == "170011" for row in observed)
     assert len({row[7:] for row in observed}) == 1
+
+
+async def test_actual0056_configured_product_tls_child_is_source_pinned_and_read_back(
+    _actual_0056_role_observation_lab,
+):
+    """Import the configured product engines afresh, then read three TLS roles."""
+    _, _, selected, _ = _actual_0056_role_observation_lab
+    identity, source_files, source_files_raw = (
+        fitted_measurement._read_hermetic_inputs()
+    )
+    source = fitted_measurement.source_identity(
+        identity, source_files, source_files_raw
+    )
+    ca_file = os.environ["CTCC_DEVVAL_CUSTODY_TEST_TLS_CA_FILE"]
+    ca_sha256 = os.environ["CTCC_DEVVAL_CUSTODY_TEST_TLS_CA_SHA256"]
+    factories = (
+        selected.writer_factory,
+        selected.custody_factory,
+        selected.frame_reader_factory,
+    )
+    urls = tuple(factory.kw["bind"].url for factory in factories)
+    assert len({url.username for url in urls}) == 3
+    assert all(url.password is None and not url.query for url in urls)
+    child_env = {
+        "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+        "PYTHONPATH": str(_SOURCE_ROOT),
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "ENVIRONMENT": "test",
+        "TRADING_MODE": "analysis_only",
+        "CTCC_NATIVE_ONLY_LIFESPAN_V1": "true",
+        "DATABASE_URL": urls[0].render_as_string(hide_password=False),
+        "OKX_DEMO_NATIVE_CUSTODY_DATABASE_URL": urls[1].render_as_string(
+            hide_password=False
+        ),
+        "OKX_DEMO_NATIVE_FRAME_READER_DATABASE_URL": urls[2].render_as_string(
+            hide_password=False
+        ),
+        "CTCC_NATIVE_PG_TLS_CA_FILE": ca_file,
+        "CTCC_NATIVE_PG_TLS_CA_SHA256": ca_sha256,
+        "CTCC_DEVVAL_EXPECTED_SOURCE_MANIFEST_SHA256": source["manifest_sha256"],
+    }
+
+    async def child(changes):
+        env = {**child_env, **changes}
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-B",
+            "-m",
+            "tests.integration.native_pg_tls_configured_child_v1",
+            cwd=str(_SOURCE_ROOT),
+            env=env,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            async with asyncio.timeout(60):
+                stdout, stderr = await process.communicate()
+        finally:
+            if process.returncode is None:
+                process.kill()
+                await process.wait()
+        assert len(stdout) <= 4096 and stderr == b""
+        return process.returncode, read_evidence_json(stdout.strip())
+
+    code, positive = await child({})
+    assert code == 0
+    assert positive == {
+        "schema": "ctcc.native_pg_tls.configured_child.diagnostic.v1",
+        "status": "PASS",
+        "source_manifest_sha256": source["manifest_sha256"],
+        "distinct_restricted_roles": 3,
+        "shared_tls_context": True,
+        "actual_ssl_readback": True,
+        "database_head": "0056",
+        "startup_admission": False,
+        "execution_authority": False,
+    }
+    for changed in (
+        {"CTCC_DEVVAL_EXPECTED_SOURCE_MANIFEST_SHA256": "0" * 64},
+        {"CTCC_NATIVE_PG_TLS_CA_SHA256": "0" * 64},
+    ):
+        code, negative = await child(changed)
+        assert code == 2
+        assert negative == {"status": "FAIL", "code": "native_pg_tls_child_denied"}
 
 
 @asynccontextmanager

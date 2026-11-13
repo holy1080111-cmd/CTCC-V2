@@ -63,6 +63,10 @@ _FITTED_CASES = (
     ),
     (
         fitted_measurement.CASE[0],
+        "test_actual0056_configured_product_tls_child_is_source_pinned_and_read_back",
+    ),
+    (
+        fitted_measurement.CASE[0],
         "test_actual0056_full_native_role_rejects_swapped_roles_and_extra_grant",
     ),
     (
