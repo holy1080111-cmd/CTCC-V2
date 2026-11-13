@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import re
 import xml.etree.ElementTree as ET
 
 MODULE = "tests.integration.test_account_history_original_financial_native_pg_v3"
@@ -42,6 +43,36 @@ ERRORS = frozenset(
         "original_financial_pg_component_changed",
         "original_financial_pg_policy_mismatch",
     }
+)
+_JUNIT_REFUSALS = {
+    "OriginalHistoryFinancialPgReadError": ERRORS,
+    "RuntimeError": frozenset(
+        {
+            "financial_v3_trace_configuration_invalid",
+            "financial_v3_trace_context_invalid",
+            "financial_v3_trace_module_changed",
+            "financial_v3_trace_node_changed",
+            "financial_v3_trace_source_changed",
+        }
+    ),
+    "ValueError": frozenset(
+        {
+            "financial_trace_lease_relation_invalid",
+            "financial_trace_ordinal_invalid",
+            "financial_v3_trace_invalid",
+        }
+    ),
+}
+_JUNIT_EXCEPTION_CLASSES = _JUNIT_REFUSALS.keys() | {
+    "AssertionError",
+    "TimeoutError",
+    "IntegrityError",
+    "DBAPIError",
+    "OperationalError",
+}
+_EXCEPTION_LINE = re.compile(
+    r"^(?:E\s+)?(?:[a-zA-Z_]\w*\.)*([A-Za-z]+Error)"
+    r"(?::(?:\s+([a-z][a-z0-9_]+))?.*)?$"
 )
 
 
@@ -218,7 +249,7 @@ def read_trace(raw):
 
 
 def read_junit(raw):
-    """Select only the original case disposition, never assertion/driver text."""
+    """Select the original case disposition and closed failure classifications."""
     if type(raw) is not bytes or not 0 < len(raw) <= TRACE_LIMIT or b"<!" in raw:
         raise ValueError("financial_v3_junit_invalid")
     try:
@@ -231,9 +262,27 @@ def read_junit(raw):
         cases[0].get("name"),
     ) != (MODULE, CASE):
         raise ValueError("financial_v3_junit_invalid")
-    tags = [
-        child.tag for child in cases[0] if child.tag in {"failure", "error", "skipped"}
+    terminals = [
+        child for child in cases[0] if child.tag in {"failure", "error", "skipped"}
     ]
-    if len(tags) > 1:
+    if len(terminals) > 1:
         raise ValueError("financial_v3_junit_invalid")
-    return tags[0] if tags else "passed"
+    result = {
+        "outcome": terminals[0].tag if terminals else "passed",
+        "exception_class": None,
+        "closed_code": None,
+    }
+    if result["outcome"] in {"failure", "error"}:
+        terminal = terminals[0]
+        for value in (
+            terminal.get("message", ""),
+            *reversed((terminal.text or "").splitlines()),
+        ):
+            match = _EXCEPTION_LINE.fullmatch(value.strip())
+            if not match or match[1] not in _JUNIT_EXCEPTION_CLASSES:
+                continue
+            result["exception_class"] = match[1]
+            if match[2] in _JUNIT_REFUSALS.get(match[1], ()):
+                result["closed_code"] = match[2]
+            break
+    return result

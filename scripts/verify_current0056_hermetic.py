@@ -806,7 +806,7 @@ def _export_financial_expiry(root, raw, files, identity, steps, cleanup):
         original, _ = stable_read(tests / financial_v3.JUNIT, financial_v3.TRACE_LIMIT)
         report["junit"] = {
             "sha256": contract.digest(original),
-            "outcome": financial_v3.read_junit(original),
+            **financial_v3.read_junit(original),
         }
     except (OSError, ValueError):
         report["junit"] = None

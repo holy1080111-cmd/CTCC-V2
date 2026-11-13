@@ -302,7 +302,11 @@ def pytest_collection_finish(session):
 def pytest_runtest_call(item):
     if item.nodeid != evidence.NODE or sys.gettrace() is not None:
         raise RuntimeError("financial_v3_trace_context_invalid")
-    if item.module.__name__ != evidence.MODULE:
+    expected = Path(__file__).resolve().parents[1] / evidence.NODE.split("::")[0]
+    if (
+        item.path.resolve(strict=True) != expected
+        or Path(item.module.__file__).resolve(strict=True) != expected
+    ):
         raise RuntimeError("financial_v3_trace_module_changed")
     trace = _Trace(item.module.original._request)
     try:

@@ -2,6 +2,8 @@
 
 import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -139,9 +141,64 @@ def test_junit_reduction_emits_no_raw_failure_details():
         ' <failure message="secret-looking-value">private</failure>'
         "</testcase></testsuite></testsuites>"
     ).encode()
-    assert evidence.read_junit(raw) == "failure"
+    assert evidence.read_junit(raw) == {
+        "outcome": "failure",
+        "exception_class": None,
+        "closed_code": None,
+    }
+    fixed = raw.replace(
+        b"secret-looking-value",
+        b"RuntimeError: financial_v3_trace_module_changed secret-looking-value",
+    )
+    result = evidence.read_junit(fixed)
+    assert result == {
+        "outcome": "failure",
+        "exception_class": "RuntimeError",
+        "closed_code": "financial_v3_trace_module_changed",
+    }
+    assert "secret-looking-value" not in json.dumps(result)
+    result = evidence.read_junit(
+        fixed.replace(
+            b"financial_v3_trace_module_changed",
+            b"previously_unclassified_dynamic_token",
+        )
+    )
+    assert result["exception_class"] == "RuntimeError" and result["closed_code"] is None
     with pytest.raises(ValueError, match="junit_invalid"):
         evidence.read_junit(raw.replace(evidence.CASE.encode(), b"other_case"))
+
+
+@pytest.mark.parametrize("qualified", [False, True])
+def test_same_collected_module_path_admits_either_pytest_import_name(
+    monkeypatch, qualified
+):
+    monkeypatch.setattr(plugin.sys, "gettrace", lambda: None)
+    root = Path(plugin.__file__).resolve().parents[1]
+    path = root / evidence.NODE.split("::")[0]
+    request = original._request
+    real = plugin._Trace
+    observed = []
+
+    def trace(request_builder):
+        observed.append(request_builder)
+        return real(request_builder)
+
+    monkeypatch.setattr(plugin, "_Trace", trace)
+    module = SimpleNamespace(
+        __name__=evidence.MODULE if qualified else path.stem,
+        __file__=str(path),
+        original=SimpleNamespace(_request=request),
+    )
+    item = SimpleNamespace(nodeid=evidence.NODE, module=module, path=path)
+    hook = plugin.pytest_runtest_call(item)
+    next(hook)
+    with pytest.raises(StopIteration):
+        next(hook)
+    assert observed == [request]
+
+    item.module.__file__ = original.__file__
+    with pytest.raises(RuntimeError, match="trace_module_changed"):
+        next(plugin.pytest_runtest_call(item))
 
 
 def test_monitor_can_close_all_33_pages_without_losing_scoped_order():
