@@ -1459,6 +1459,7 @@ async def test_actual0056_native_lifespan_denies_before_recovery_cas(
     from app import main as app_main
     from app.config.settings import Settings
     from app.core import native_only_lifespan
+    from app.core import native_startup_control_observation_0056_v1 as startup56
     from app.core.native_role_preflight_v1 import NativeRolePreflightError
     from app.database.models.demo_automation import DemoAutomationState
 
@@ -1496,6 +1497,21 @@ async def test_actual0056_native_lifespan_denies_before_recovery_cas(
     before = await read_control()
     before_state = json.loads(before)
     assert before_state["control_revision"] == 7 and before_state["armed"] is True
+    observed_control = await startup56.observe_startup_control_0056_v1(selected)
+    assert observed_control.database_head == "0056"
+    assert observed_control.control == native_only_lifespan.ExistingControl(
+        revision=7,
+        armed=True,
+        emergency_stop=False,
+        locked=False,
+        restart_latch_required=True,
+    )
+    assert (
+        observed_control.startup_admission
+        is observed_control.execution_authority
+        is False
+    )
+    assert await read_control() == before
     settings = Settings(
         _env_file=None,
         ctcc_native_only_lifespan_v1=True,
