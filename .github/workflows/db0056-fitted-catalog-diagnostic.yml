@@ -2,7 +2,7 @@ name: DB0056 fitted catalog diagnostic
 
 on:
   push:
-    branches: [work/db0056-fitted-catalog-diagnostic]
+    branches: [work/db0056-n303-current-linux]
   workflow_dispatch:
 
 permissions:
@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   fitted-catalog:
-    if: github.ref == 'refs/heads/work/db0056-fitted-catalog-diagnostic'
+    if: github.ref == 'refs/heads/work/db0056-n303-current-linux'
     name: DB0056 isolated catalog measurement ${{ matrix.cluster }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -54,5 +54,61 @@ jobs:
             ${{ runner.temp }}/ctcc-fitted-catalog/test-results/current0056-fitted-catalog-single-redacted.json
             ${{ runner.temp }}/ctcc-fitted-catalog/test-results/current0056-inherited-native-catalog-redacted.json
             ${{ runner.temp }}/ctcc-fitted-catalog/test-results/current0056-postgrant-acl-redacted.json
+          if-no-files-found: error
+          retention-days: 30
+
+  installed-reference:
+    name: Exact product Linux monitor provisioning
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out recorded diagnostic source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Build the exact product and verify installer and monitor
+        shell: bash
+        run: |
+          set -euo pipefail
+          product=3b0fcbf5ecb35a4969a9d74f666a004021f391c4
+          tree=196d11c603f1ddbc8b9cfcd4db034a56dea5df9d
+          test "$(git rev-parse HEAD^)" = "$product"
+          test "$(git diff --name-only "$product" HEAD)" = $'.github/workflows/db0056-fitted-catalog-diagnostic.yml\nMANIFEST.sha256'
+          test "$(git rev-parse "$product^{tree}")" = "$tree"
+          root="$RUNNER_TEMP/ctcc-reference"
+          mkdir "$root" "$root/context" "$root/results"
+          git -c core.autocrlf=false -c core.eol=lf archive --format=tar --output="$root/exact.tar" "$product"
+          (cd "$root" && sha256sum exact.tar > results/exact.sha256)
+          test "$(cut -d ' ' -f 1 "$root/results/exact.sha256")" = b256366f4738c37496b62c78bdf94162426871f03f86c88eac76cbd0c35f1ecf
+          tar -xf "$root/exact.tar" -C "$root/context"
+          docker build --build-arg CTCC_SOURCE_COMMIT="$product" --build-arg CTCC_SOURCE_TREE="$tree" -t ctcc-reference "$root/context"
+          docker image inspect ctcc-reference --format '{{.Id}}' > "$root/results/image-id.txt"
+          container=$(docker create --network none --user 0:0 --cap-drop ALL \
+            --cap-add SYS_CHROOT --cap-add SETUID --cap-add SETGID \
+            --mount "type=bind,src=$root/exact.tar,dst=/archive/exact.tar,readonly" \
+            ctcc-reference sh -euc '
+              mkdir /output
+              python -B -m pytest -o addopts= -q -p no:cacheprovider \
+                --junitxml /output/linux-reference.xml \
+                tests/unit/test_native_startup_trust_0056_v1.py \
+                tests/unit/test_install_native_startup_trust_0056_v1.py \
+                tests/unit/test_native_control_monitor_0056.py \
+                tests/unit/test_native_control_status_0056_v1.py
+              python -B -m scripts.verify_offline_chaos_subset_v1 \
+                --archive /archive/exact.tar \
+                --archive-sha256 b256366f4738c37496b62c78bdf94162426871f03f86c88eac76cbd0c35f1ecf \
+                --output /output/component-chaos')
+          trap 'docker rm -f "$container" >/dev/null' EXIT
+          status=0
+          docker start --attach "$container" || status=$?
+          docker cp "$container:/output/." "$root/results/"
+          exit "$status"
+      - name: Preserve exact Linux evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ctcc-db0056-monitor-linux
+          path: ${{ runner.temp }}/ctcc-reference/results/
           if-no-files-found: error
           retention-days: 30
