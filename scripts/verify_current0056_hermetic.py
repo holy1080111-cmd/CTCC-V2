@@ -116,6 +116,10 @@ _FITTED_CASES = (
     ),
     (
         fitted_measurement.CASE[0],
+        "test_actual0056_reviewed_owner_target_plan_has_no_grant",
+    ),
+    (
+        fitted_measurement.CASE[0],
         "test_actual0056_restricted_account_control_read_replays_exact_scope",
     ),
     (

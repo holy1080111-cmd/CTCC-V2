@@ -30,3 +30,8 @@ fields always show `admission=DENY`, and the credentials check only confirms
 local configuration. Verification of the configured account uses the separate
 `scripts.observe_demo_current_source_0056` command. The original native-only
 Compose overlay and DB0055 provisioner remain separate.
+
+The [DB0056 owner target plan](db0056_owner_target_plan.md) measures
+pre-grant catalog and target identity in a separately launched owner
+process. Run the Demo source preflight under the three restricted roles
+after they have been provisioned and verified.
