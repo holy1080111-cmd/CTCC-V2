@@ -139,6 +139,24 @@ def verify_reviewed_owner_portable_0056_v1(
     observed: NativeOwnerPregrant0056Diagnostic,
 ) -> ReviewedOwnerPortable0056V1:
     """Match current owner observations to source-pinned portable definitions."""
+    reference = load_reviewed_owner_portable_0056_v1(source)
+    _need(
+        type(observed) is NativeOwnerPregrant0056Diagnostic
+        and observed.grants_present is False
+        and observed.native_reference_sealed is False
+        and observed.startup_admission is observed.execution_authority is False
+        and observed.admission == "DENY"
+        and reference.inherited_native_definitions_sha256
+        == observed.inherited_native_definitions_sha256
+        == observed.inherited_readwrite_native_definitions_sha256
+        and reference.fitted_normalized_owner_catalog_sha256
+        == observed.fitted_normalized_owner_catalog_sha256
+    )
+    return reference
+
+
+def load_reviewed_owner_portable_0056_v1(source: Path) -> ReviewedOwnerPortable0056V1:
+    """Read the two pinned measurements without fabricating an owner observation."""
     try:
         _reviewed_source(source)
         first, second = (
@@ -156,21 +174,12 @@ def verify_reviewed_owner_portable_0056_v1(
         inherited = definitions[_INHERITED[0]]
         normalized = definitions[_NORMALIZED]
         _need(
-            type(observed) is NativeOwnerPregrant0056Diagnostic
-            and observed.grants_present is False
-            and observed.native_reference_sealed is False
-            and observed.startup_admission is observed.execution_authority is False
-            and observed.admission == "DENY"
-            and all(
+            all(
                 captured["definitions"][name] == inherited
                 for captured in (first, second)
                 for name in _INHERITED
             )
             and normalized == second["definitions"][_NORMALIZED]
-            and inherited
-            == observed.inherited_native_definitions_sha256
-            == observed.inherited_readwrite_native_definitions_sha256
-            and normalized == observed.fitted_normalized_owner_catalog_sha256
         )
         reference = canonical(
             {

@@ -1962,6 +1962,10 @@ async def test_actual0056_draft_locked_owner_grant_and_separate_role_readback(
     monkeypatch,
 ):
     """Run the attended grant operation against a disposable TLS cluster."""
+    from types import SimpleNamespace
+
+    from app.core.native_only_lifespan import _MUST_BE_FALSE
+    from scripts import native_deployment_descriptor_0056_v1 as descriptor
     from scripts import native_owner_grant_0056_v2 as attended_grant
     from scripts import native_owner_postgrant_readback_0056_v1 as postgrant_readback
 
@@ -2043,9 +2047,16 @@ async def test_actual0056_draft_locked_owner_grant_and_separate_role_readback(
     )
     owner_dsn.chmod(0o600)
     pins = replace(pins, source_archive_sha256=archive_pin)
-    settings = type(
-        "ScopedSettings", (), {"ctcc_native_pg_tls_ca_sha256": pins.route.ca_sha256}
-    )()
+    settings = SimpleNamespace(
+        ctcc_native_pg_tls_ca_sha256=pins.route.ca_sha256,
+        ctcc_native_pg_tls_ca_file=str(ca_file),
+        ctcc_native_only_lifespan_v1=True,
+        environment="production",
+        trading_mode="okx_demo",
+        web_concurrency=1,
+        okx_demo_enabled=True,
+        **dict.fromkeys(_MUST_BE_FALSE, False),
+    )
     monkeypatch.setattr(attended_grant, "get_settings", lambda: settings)
     monkeypatch.setattr(postgrant_readback, "get_settings", lambda: settings)
     monkeypatch.setattr(
@@ -2102,6 +2113,26 @@ async def test_actual0056_draft_locked_owner_grant_and_separate_role_readback(
     assert reconciled["admission"] == "DENY"
     with pytest.raises(owner_grant_draft.OwnerGrantRefusal):
         await owner_grant_draft.grant_reviewed_owner_0056_v1(pins)
+
+    descriptor_sha256 = await descriptor.export_owner_verified_descriptor_0056_v1(
+        plan_file=options["plan_file"],
+        plan_file_sha256=digest,
+        owner_dsn_file=owner_dsn,
+        ca_file=ca_file,
+        source_archive_file=archive,
+        descriptor_directory=private,
+    )
+    monkeypatch.setattr(descriptor, "get_settings", lambda: settings)
+    # The restricted verifier now has no owner credential file to consult.
+    owner_dsn.unlink()
+    assert (
+        await descriptor.verify_restricted_deployment_descriptor_0056_v1(
+            descriptor_file=private / "db0056-deployment-descriptor.json",
+            descriptor_sha256=descriptor_sha256,
+            source_archive_file=archive,
+        )
+        == descriptor_sha256
+    )
 
 
 async def test_actual0056_reviewed_owner_target_plan_has_no_grant(

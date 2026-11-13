@@ -126,11 +126,29 @@ def _canonical_source_sha(name: str, raw: bytes) -> str:
 
 def _verify_reviewed_archive(pins: OwnerUpgradePinsV1, path: Path) -> None:
     """Reconstruct the reviewed Git tree and bind every archived source row."""
+    _need(type(pins) is OwnerUpgradePinsV1)
+    _verify_reviewed_source_archive(
+        path,
+        source_commit=pins.source_commit,
+        source_tree=pins.source_tree,
+        source_archive_sha256=pins.source_archive_sha256,
+        source_manifest_sha256=pins.route.source_manifest_sha256,
+    )
+
+
+def _verify_reviewed_source_archive(
+    path: Path,
+    *,
+    source_commit: str,
+    source_tree: str,
+    source_archive_sha256: str,
+    source_manifest_sha256: str,
+) -> None:
     _need(
-        type(pins) is OwnerUpgradePinsV1
-        and _pin(pins.source_commit, _GIT)
-        and _pin(pins.source_tree, _GIT)
-        and _pin(pins.source_archive_sha256, _HEX)
+        _pin(source_commit, _GIT)
+        and _pin(source_tree, _GIT)
+        and _pin(source_archive_sha256, _HEX)
+        and _pin(source_manifest_sha256, _HEX)
         and type(path) is type(Path())
         and path.is_absolute()
         and ".." not in path.parts
@@ -140,13 +158,13 @@ def _verify_reviewed_archive(pins: OwnerUpgradePinsV1, path: Path) -> None:
     entry = path.lstat()
     _need(stat.S_ISREG(entry.st_mode) and 0 < entry.st_size <= 128 * 1024 * 1024)
     raw = path.read_bytes()
-    _need(len(raw) == entry.st_size and _sha(raw) == pins.source_archive_sha256)
+    _need(len(raw) == entry.st_size and _sha(raw) == source_archive_sha256)
     current_manifest = (_SOURCE / "MANIFEST.sha256").read_bytes()
-    _need(_sha(current_manifest) == pins.route.source_manifest_sha256)
+    _need(_sha(current_manifest) == source_manifest_sha256)
     with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as archive:
         _need(
-            archive.pax_headers.get("comment") == pins.source_commit
-            and archive_checks.archive_tree(archive) == pins.source_tree
+            archive.pax_headers.get("comment") == source_commit
+            and archive_checks.archive_tree(archive) == source_tree
         )
         members = {item.name: item for item in archive.getmembers() if item.isfile()}
         _need("MANIFEST.sha256" in members)

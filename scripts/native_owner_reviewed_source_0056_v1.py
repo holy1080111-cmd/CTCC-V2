@@ -11,7 +11,7 @@ from scripts import manifest
 from scripts.current_hermetic_contract_dispatch_v1 import capture_hermetic_archive
 from scripts.native_owner_upgrade_0056_v1 import (
     OwnerUpgradePinsV1,
-    _verify_reviewed_archive,
+    _verify_reviewed_source_archive,
 )
 from scripts.verify_final_hermetic import archive_files
 
@@ -26,14 +26,41 @@ def require_exact_installed_owner_source_0056_v1(
     source_archive_file: Path,
 ) -> None:
     """Check a reviewed archive and every installed source byte it declares."""
+    if type(pins) is not OwnerUpgradePinsV1:
+        raise NativeOwnerReviewedSource0056Error(
+            "db0056_owner_exact_installed_source_refused"
+        )
+    require_exact_installed_source_0056_v1(
+        source,
+        source_archive_file,
+        source_commit=pins.source_commit,
+        source_tree=pins.source_tree,
+        source_archive_sha256=pins.source_archive_sha256,
+        source_manifest_sha256=pins.route.source_manifest_sha256,
+    )
+
+
+def require_exact_installed_source_0056_v1(
+    source: Path,
+    source_archive_file: Path,
+    *,
+    source_commit: str,
+    source_tree: str,
+    source_archive_sha256: str,
+    source_manifest_sha256: str,
+) -> None:
+    """Verify the release bytes without deployment secrets or owner identity."""
     try:
-        if (
-            type(pins) is not OwnerUpgradePinsV1
-            or source.resolve(strict=True) != source
-        ):
+        if source.resolve(strict=True) != source:
             raise ValueError
-        _verify_reviewed_archive(pins, source_archive_file)
-        raw = capture_hermetic_archive(source_archive_file, pins.source_archive_sha256)
+        _verify_reviewed_source_archive(
+            source_archive_file,
+            source_commit=source_commit,
+            source_tree=source_tree,
+            source_archive_sha256=source_archive_sha256,
+            source_manifest_sha256=source_manifest_sha256,
+        )
+        raw = capture_hermetic_archive(source_archive_file, source_archive_sha256)
         with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as archive:
             files = archive_files(archive)
         installed = {
