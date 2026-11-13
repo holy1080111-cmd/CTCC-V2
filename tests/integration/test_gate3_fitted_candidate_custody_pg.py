@@ -3102,3 +3102,24 @@ async def test_actual0056_restricted_writer_control_replays_and_holds_uid_lock(
             await locked56.read_locked_demo_control_0056_v1(
                 selected, session, first_scope
             )
+
+
+async def test_actual0056_restricted_writer_retains_current_v7_page_chain(
+    monkeypatch, _actual_0056_role_observation_lab
+):
+    from app.database.repositories.account_capture_journal import (
+        AccountCaptureJournalRepository,
+    )
+    from app.trade_qualification.account_observation_index import source_reference
+    from tests.integration.test_account_current_observation_repository import (
+        original_v7,
+    )
+
+    _, _, selected, _ = _actual_0056_role_observation_lab
+    writer = selected.writer_factory
+    scope, reference = await original_v7(monkeypatch, (None, writer))
+    fresh = AccountCaptureJournalRepository(writer, clock=lambda: datetime.now(UTC))
+    chain = await fresh.read_chain(scope, reference.capture_id)
+    assert source_reference(chain) == reference
+    assert len(chain) > 8
+    assert sum(item.event.packet_payload is not None for item in chain) == 1
