@@ -213,6 +213,11 @@ def test_current56_binds_linux_catalog_pair_to_the_exact_passing_junit(
     assert artifact in current56.component_artifacts("full", None)
     assert artifact not in current56.component_artifacts("postgres", 0)
     assert artifact not in current56.component_artifacts("shard", 1)
+    inherited_artifact = f"test-results/{fitted.INHERITED_FILE}"
+    assert inherited_artifact in current56.component_artifacts("postgres", 1)
+    assert inherited_artifact in current56.component_artifacts("full", None)
+    assert inherited_artifact not in current56.component_artifacts("postgres", 0)
+    assert inherited_artifact not in current56.component_artifacts("shard", 1)
     evidence = tmp_path / artifact
     evidence.parent.mkdir()
     evidence.write_bytes(catalog._canonical(_linux_catalog_pair()))
@@ -223,24 +228,52 @@ def test_current56_binds_linux_catalog_pair_to_the_exact_passing_junit(
     source_map = fitted._canonical(files)
     identity["source_files_sha256"] = sha256(source_map).hexdigest()
     fitted_evidence = evidence.with_name(fitted.FILE)
-    fitted_evidence.write_bytes(
-        samples._build((identity, files, source_map, document, roles))
+    fitted_raw = samples._build((identity, files, source_map, document, roles))
+    fitted_evidence.write_bytes(fitted_raw)
+    cluster = fitted.verify_measurement(
+        fitted_raw, identity=identity, source_files=files
+    )["cluster_system_identifier_sha256"]
+    digests = {
+        "owner_pregrant_inherited_sha256": "a" * 64,
+        "owner_pregrant_readwrite_inherited_sha256": "a" * 64,
+        "owner_pregrant_fitted_raw_sha256": "b" * 64,
+        "owner_pregrant_fitted_normalized_sha256": "c" * 64,
+        "postgrant_readonly_inherited_sha256": "a" * 64,
+        "postgrant_readwrite_inherited_sha256": "a" * 64,
+    }
+    inherited_evidence = tmp_path / inherited_artifact
+    inherited_evidence.write_bytes(
+        fitted._canonical(fitted._inherited_receipt(identity, files, cluster, digests))
     )
 
     junit_path, _ = current56.component_report_paths("postgres", 1)
     junit = tmp_path / junit_path
     suites = ET.Element("testsuites")
     suite = ET.SubElement(
-        suites, "testsuite", tests="2", failures="0", errors="0", skipped="0"
+        suites, "testsuite", tests="3", failures="0", errors="0", skipped="0"
     )
     cases = [
         ET.SubElement(suite, "testcase", classname=module, name=name)
-        for module, name in (catalog.HERMETIC_CATALOG_CASE, fitted.CASE)
+        for module, name in (
+            catalog.HERMETIC_CATALOG_CASE,
+            fitted.CASE,
+            fitted.INHERITED_CASE,
+        )
     ]
     report = ET.tostring(suites)
     junit.write_bytes(report)
     identity["tests"] = {"sha256": sha256(report).hexdigest()}
     current56._verify_devval_catalog_evidence(tmp_path, "postgres", 1, identity, files)
+    inherited_evidence.write_bytes(
+        fitted._canonical(fitted._inherited_receipt(identity, files, "f" * 64, digests))
+    )
+    with pytest.raises(ValueError, match="current56_fitted_inherited_cluster_mismatch"):
+        current56._verify_devval_catalog_evidence(
+            tmp_path, "postgres", 1, identity, files
+        )
+    inherited_evidence.write_bytes(
+        fitted._canonical(fitted._inherited_receipt(identity, files, cluster, digests))
+    )
     with pytest.raises(ValueError, match="source_or_test_changed"):
         current56._verify_devval_catalog_evidence(tmp_path, "postgres", 1, identity, {})
     for case in cases:

@@ -732,24 +732,7 @@ def verify_fitted_catalog_diagnostic(root, raw, files):
     )
     if junit != identity["tests"] or junit["passed"] != len(_FITTED_CASES):
         raise ValueError("fitted_catalog_diagnostic_test_scope_changed")
-    inherited_receipt = fitted_measurement.verify_inherited_measurement(
-        contract._read(
-            root, f"test-results/{fitted_measurement.INHERITED_FILE}", maximum=8192
-        ),
-        identity=identity,
-        source_files=files,
-    )
-    fitted_receipt = fitted_measurement.verify_measurement(
-        contract._read(root, f"test-results/{fitted_measurement.FILE}"),
-        identity=identity,
-        source_files=files,
-    )
-    if (
-        inherited_receipt["cluster_system_identifier_sha256"]
-        != fitted_receipt["cluster_system_identifier_sha256"]
-    ):
-        raise ValueError("fitted_catalog_diagnostic_cluster_mismatch")
-    return fitted_receipt
+    return contract.verify_fitted_and_inherited_catalogs(root, identity, files)
 
 
 if __name__ == "__main__":

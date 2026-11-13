@@ -129,6 +129,7 @@ def component_artifacts(mode, index):
     if requires_devval_catalog(mode, index):
         artifacts.add(f"test-results/{devval_catalog.HERMETIC_CATALOG_FILE}")
         artifacts.add(f"test-results/{fitted_measurement.FILE}")
+        artifacts.add(f"test-results/{fitted_measurement.INHERITED_FILE}")
     if component_is_anchor(mode, index):
         artifacts.update(
             f"{stage}.log" for stage in (*_PARENT_UPGRADE, *_EMPTY_ROUNDTRIP)
@@ -140,7 +141,11 @@ def _verify_devval_catalog_evidence(root, mode, index, identity, files):
     junit, _ = component_report_paths(mode, index)
     checked = shared.verify_pytest_report(
         root / junit,
-        required_cases=(devval_catalog.HERMETIC_CATALOG_CASE,),
+        required_cases=(
+            devval_catalog.HERMETIC_CATALOG_CASE,
+            fitted_measurement.CASE,
+            fitted_measurement.INHERITED_CASE,
+        ),
         allow_unrelated_skips=mode == "full",
     )
     if checked["sha256"] != identity["tests"]["sha256"] or any(
@@ -155,16 +160,27 @@ def _verify_devval_catalog_evidence(root, mode, index, identity, files):
             maximum=devval_catalog.MAX_HERMETIC_CATALOG_BYTES,
         )
     )
-    shared.verify_pytest_report(
-        root / junit,
-        required_cases=(fitted_measurement.CASE,),
-        allow_unrelated_skips=mode == "full",
-    )
-    fitted_measurement.verify_measurement(
+    verify_fitted_and_inherited_catalogs(root, identity, files)
+
+
+def verify_fitted_and_inherited_catalogs(root, identity, files):
+    """Replay both receipts against the exact archive and one actual cluster."""
+    fitted = fitted_measurement.verify_measurement(
         _read(root, f"test-results/{fitted_measurement.FILE}", maximum=1_200_000),
         identity=identity,
         source_files=files,
     )
+    inherited = fitted_measurement.verify_inherited_measurement(
+        _read(root, f"test-results/{fitted_measurement.INHERITED_FILE}", maximum=8_192),
+        identity=identity,
+        source_files=files,
+    )
+    if (
+        inherited["cluster_system_identifier_sha256"]
+        != fitted["cluster_system_identifier_sha256"]
+    ):
+        raise ValueError("current56_fitted_inherited_cluster_mismatch")
+    return fitted
 
 
 def migration_digest(files):
