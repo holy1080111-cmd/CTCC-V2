@@ -96,6 +96,10 @@ _FITTED_CASES = (
     ),
     (
         fitted_measurement.CASE[0],
+        "test_actual0056_stable_role_identity_on_distinct_connections",
+    ),
+    (
+        fitted_measurement.CASE[0],
         "test_actual0056_lab_only_recovery_cas_after_fresh_restricted_observations",
     ),
     (

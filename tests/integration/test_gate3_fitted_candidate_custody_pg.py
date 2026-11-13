@@ -118,6 +118,9 @@ _CANDIDATE_0056_SOURCE_PINS = {
         "69458555dea8f36c6b7773dfe86fd7598222b69220c1b6a6a64bc8ca632eef48"
     ),
 }
+_STABLE_ROLE_IDENTITY_V2_SOURCE_SHA256 = (
+    "e309e6847ca4cd0d94e932fe837fb70b95e184d6d8d30f822ca0cfed72e59290"
+)
 _READ = "gate3_fitted_binding_read(text)"
 _ACK_READ = "gate3_fitted_binding_ack_read(text)"
 _ROLES = {
@@ -2414,6 +2417,83 @@ async def test_actual0056_inert_startup_candidate_binds_source_roles_and_control
         == measured.server_incarnation_sha256
     )
     assert result.deployment_role_route_sha256 == measured.role_route_sha256
+
+
+async def test_actual0056_stable_role_identity_on_distinct_connections(
+    _actual_0056_role_observation_lab,
+):
+    from app.core import native_role_identity_0056_v2 as stable56
+
+    _, _, selected, _ = _actual_0056_role_observation_lab
+    identity, files, files_raw = fitted_measurement._read_hermetic_inputs()
+    source = fitted_measurement.source_identity(identity, files, files_raw)
+    relative = "app/core/native_role_identity_0056_v2.py"
+    assert files[relative]["sha256"] == _STABLE_ROLE_IDENTITY_V2_SOURCE_SHA256
+    assert sha((_SOURCE_ROOT / relative).read_bytes()) == (
+        _STABLE_ROLE_IDENTITY_V2_SOURCE_SHA256
+    )
+    assert source["manifest_sha256"] == sha(
+        (_SOURCE_ROOT / "MANIFEST.sha256").read_bytes()
+    )
+    factories = (
+        selected.writer_factory,
+        selected.custody_factory,
+        selected.frame_reader_factory,
+    )
+    assert all(
+        isinstance(factory.kw["bind"].sync_engine.pool, NullPool)
+        for factory in factories
+    )
+    # Hold one backend while two independently opened V2 observations run.
+    # This verifies distinct connections on one live PG incarnation, not a PG restart.
+    async with selected.writer_factory() as held:
+        held_pid = await held.scalar(text("SELECT pg_catalog.pg_backend_pid()"))
+        held_start = await held.scalar(
+            text("SELECT pg_catalog.pg_postmaster_start_time()")
+        )
+        first = await stable56.observe_restricted_role_identity_0056_v2(
+            selected, source=_SOURCE_ROOT
+        )
+        second = await stable56.observe_restricted_role_identity_0056_v2(
+            selected, source=_SOURCE_ROOT
+        )
+        async with selected.writer_factory() as probe:
+            probe_pid = await probe.scalar(text("SELECT pg_catalog.pg_backend_pid()"))
+            probe_start = await probe.scalar(
+                text("SELECT pg_catalog.pg_postmaster_start_time()")
+            )
+        assert type(held_pid) is type(probe_pid) is int
+        assert held_pid != probe_pid
+        assert held_start == probe_start
+    assert first.stable_identity_sha256 == second.stable_identity_sha256
+    assert first.server_incarnation_sha256 == second.server_incarnation_sha256
+    assert first.role_oids == second.role_oids
+    assert first.role_names == second.role_names
+    assert first.deployment_reference_authenticated is False
+    assert first.startup_admission is first.execution_authority is False
+    route = observation.selectors._database_route(
+        selected.writer_factory.kw["bind"].url
+    )
+    expected = {
+        "expected_database_oid": first.database_oid,
+        "expected_owner_oid": first.owner_oid,
+        "expected_role_names": first.role_names,
+        "expected_role_oids": first.role_oids,
+        "expected_route": route,
+        "expected_sha256": first.stable_identity_sha256,
+    }
+    matched = stable56.compare_static_role_identity_0056_v2(first, **expected)
+    assert matched["admission"] == "DENY"
+    assert matched["startup_admission"] is matched["execution_authority"] is False
+    changed = (
+        first.role_oids[0],
+        max(*first.role_oids, first.owner_oid) + 1,
+        first.role_oids[2],
+    )
+    with pytest.raises(stable56.NativeRoleIdentity0056Error):
+        stable56.compare_static_role_identity_0056_v2(
+            first, **{**expected, "expected_role_oids": changed}
+        )
 
 
 async def test_actual0056_lab_only_recovery_cas_after_fresh_restricted_observations(
