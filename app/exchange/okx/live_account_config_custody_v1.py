@@ -36,6 +36,9 @@ from app.exchange.okx.live_read_lease_v1 import (
     LivePinnedGetLeaseV1,
     OkxLivePinnedGetClientV1,
 )
+from app.trade_evidence.native_private_root_v2 import (
+    _open_new_windows_private_evidence_file,
+)
 from app.trade_evidence.storage import (
     _read_fd,
     _regular_file,
@@ -114,7 +117,7 @@ def _publish(directory, name: str, raw: bytes, *, body_limit: int = MAX_BODY) ->
         _deny("live_config_custody_file_size_invalid")
     if type(directory) is _WindowsDirectory:
         # Check the ACL of the reserved file before any private bytes are written.
-        fd = directory.api.open_file(directory.path / name, create=True)
+        fd = _open_new_windows_private_evidence_file(directory, name)
         try:
             _check_file(directory, name, fd)
             _write_fd(fd, raw)

@@ -3,6 +3,7 @@
 import ctypes
 import os
 import stat
+from contextlib import contextmanager
 from pathlib import Path
 
 
@@ -15,6 +16,90 @@ def _need(value):
         raise NativeEvidenceRootErrorV2(
             "native_demo_private_evidence_root_unavailable"
         ) from None
+
+
+def _windows_token_user(adv, kernel):
+    from ctypes import wintypes as w
+
+    pointer = ctypes.c_void_p
+    adv.OpenProcessToken.argtypes = [w.HANDLE, w.DWORD, ctypes.POINTER(w.HANDLE)]
+    adv.OpenProcessToken.restype = w.BOOL
+    adv.GetTokenInformation.argtypes = [
+        w.HANDLE,
+        ctypes.c_int,
+        pointer,
+        w.DWORD,
+        ctypes.POINTER(w.DWORD),
+    ]
+    adv.GetTokenInformation.restype = w.BOOL
+    kernel.GetCurrentProcess.argtypes = []
+    kernel.GetCurrentProcess.restype = w.HANDLE
+    kernel.CloseHandle.argtypes = [w.HANDLE]
+    kernel.CloseHandle.restype = w.BOOL
+    token = w.HANDLE()
+    _need(
+        bool(
+            adv.OpenProcessToken(
+                kernel.GetCurrentProcess(), 0x0008, ctypes.byref(token)
+            )
+        )
+    )
+    try:
+        size = w.DWORD()
+        adv.GetTokenInformation(token, 1, None, 0, ctypes.byref(size))
+        _need(0 < size.value <= 65536)
+        user_buffer = ctypes.create_string_buffer(size.value)
+        _need(
+            bool(
+                adv.GetTokenInformation(token, 1, user_buffer, size, ctypes.byref(size))
+            )
+        )
+        user_sid = ctypes.cast(user_buffer, ctypes.POINTER(pointer))[0]
+        _need(bool(user_sid))
+    finally:
+        _need(bool(kernel.CloseHandle(token)))
+    return user_buffer, user_sid  # The caller keeps the native SID buffer alive.
+
+
+@contextmanager
+def _windows_private_owner_attributes(kernel):
+    """Specify only the owner. The new object inherits the parent's DACL."""
+    from ctypes import wintypes as w
+
+    class SecurityDescriptor(ctypes.Structure):
+        _fields_ = [
+            ("revision", ctypes.c_ubyte),
+            ("reserved", ctypes.c_ubyte),
+            ("control", w.WORD),
+            ("owner", ctypes.c_void_p),
+            ("group", ctypes.c_void_p),
+            ("sacl", ctypes.c_void_p),
+            ("dacl", ctypes.c_void_p),
+        ]
+
+    class SecurityAttributes(ctypes.Structure):
+        _fields_ = [
+            ("size", w.DWORD),
+            ("descriptor", ctypes.c_void_p),
+            ("inherit_handle", w.BOOL),
+        ]
+
+    adv = ctypes.WinDLL("advapi32", use_last_error=True)
+    pointer = ctypes.c_void_p
+    adv.InitializeSecurityDescriptor.argtypes = [pointer, w.DWORD]
+    adv.InitializeSecurityDescriptor.restype = w.BOOL
+    adv.SetSecurityDescriptorOwner.argtypes = [pointer, pointer, w.BOOL]
+    adv.SetSecurityDescriptorOwner.restype = w.BOOL
+    _user_buffer, user_sid = _windows_token_user(adv, kernel)
+    descriptor = SecurityDescriptor()
+    _need(bool(adv.InitializeSecurityDescriptor(ctypes.byref(descriptor), 1)))
+    _need(
+        bool(adv.SetSecurityDescriptorOwner(ctypes.byref(descriptor), user_sid, False))
+    )
+    attributes = SecurityAttributes(
+        ctypes.sizeof(SecurityAttributes), ctypes.addressof(descriptor), False
+    )
+    yield ctypes.byref(attributes)
 
 
 def _windows_private(path):
@@ -34,47 +119,18 @@ def _windows_private(path):
         ctypes.POINTER(pointer),
     ]
     adv.GetNamedSecurityInfoW.restype = w.DWORD
-    adv.OpenProcessToken.argtypes = [w.HANDLE, w.DWORD, ctypes.POINTER(w.HANDLE)]
-    adv.OpenProcessToken.restype = w.BOOL
-    adv.GetTokenInformation.argtypes = [
-        w.HANDLE,
-        ctypes.c_int,
-        pointer,
-        w.DWORD,
-        ctypes.POINTER(w.DWORD),
-    ]
-    adv.GetTokenInformation.restype = w.BOOL
     adv.EqualSid.argtypes = [pointer, pointer]
     adv.EqualSid.restype = w.BOOL
     adv.ConvertStringSidToSidW.argtypes = [w.LPCWSTR, ctypes.POINTER(pointer)]
     adv.ConvertStringSidToSidW.restype = w.BOOL
     adv.GetAce.argtypes = [pointer, w.DWORD, ctypes.POINTER(pointer)]
     adv.GetAce.restype = w.BOOL
-    kernel.GetCurrentProcess.restype = w.HANDLE
-    kernel.CloseHandle.argtypes = [w.HANDLE]
-    kernel.CloseHandle.restype = w.BOOL
     kernel.LocalFree.argtypes = [pointer]
     kernel.LocalFree.restype = pointer
-    token, descriptor, owner, dacl = w.HANDLE(), pointer(), pointer(), pointer()
+    descriptor, owner, dacl = pointer(), pointer(), pointer()
     allocated = []
+    _user_buffer, user_sid = _windows_token_user(adv, kernel)
     try:
-        _need(
-            bool(
-                adv.OpenProcessToken(
-                    kernel.GetCurrentProcess(), 0x0008, ctypes.byref(token)
-                )
-            )
-        )
-        size = w.DWORD()
-        adv.GetTokenInformation(token, 1, None, 0, ctypes.byref(size))
-        _need(0 < size.value <= 65536)
-        user_buffer = ctypes.create_string_buffer(size.value)
-        _need(
-            bool(
-                adv.GetTokenInformation(token, 1, user_buffer, size, ctypes.byref(size))
-            )
-        )
-        user_sid = ctypes.cast(user_buffer, ctypes.POINTER(pointer))[0]
         _need(
             adv.GetNamedSecurityInfoW(
                 str(path),
@@ -121,8 +177,6 @@ def _windows_private(path):
             kernel.LocalFree(value)
         if descriptor.value:
             kernel.LocalFree(descriptor)
-        if token.value:
-            _need(bool(kernel.CloseHandle(token)))
 
 
 def require_private_evidence_base_v2(raw):
@@ -158,11 +212,53 @@ def require_private_evidence_base_v2(raw):
 
 def mkdir_private_evidence_child_v2(directory, name):
     """Create one child under the held, validated private evidence directory."""
-    from app.trade_evidence.storage import _WindowsDirectory
+    from app.trade_evidence.storage import _windows_native_path, _WindowsDirectory
 
     if type(directory) is _WindowsDirectory:
+        from ctypes import wintypes as w
+
         # Python's Windows 0o700 ACL differs from this service's private ACL.
         require_private_evidence_base_v2(str(directory.path))
-        directory.mkdir_inherited_acl(name)
+        directory.api.validate_publish_name(name)
+        kernel = directory.api.kernel
+        create = kernel.CreateDirectoryW
+        create.argtypes = [w.LPCWSTR, w.LPVOID]
+        create.restype = w.BOOL
+        with _windows_private_owner_attributes(kernel) as attributes:
+            if not create(_windows_native_path(directory.path / name), attributes):
+                raise ctypes.WinError(ctypes.get_last_error())
+        with directory.child(name) as child:
+            require_private_evidence_base_v2(str(child.path))
     else:
         directory.mkdir(name)
+
+
+def _open_new_windows_private_evidence_file(directory, name):
+    """Reserve a private file atomically, before its caller validates and writes."""
+    import msvcrt
+
+    from app.trade_evidence.storage import (
+        _REPARSE_POINT,
+        _windows_native_path,
+        _WindowsDirectory,
+    )
+
+    _need(type(directory) is _WindowsDirectory)
+    directory.api.validate_publish_name(name)
+    path = _windows_native_path(directory.path / name)
+    # GENERIC_WRITE, FILE_SHARE_READ, CREATE_NEW, FILE_FLAG_OPEN_REPARSE_POINT.
+    with _windows_private_owner_attributes(directory.api.kernel) as attributes:
+        handle = directory.api.create(
+            path, 0x40000000, 0x1, attributes, 1, 0x00200000, None
+        )
+        if handle == ctypes.c_void_p(-1).value:
+            raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        info = directory.api.info_type()
+        if not directory.api.info(handle, ctypes.byref(info)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        _need(not info.attributes & (_REPARSE_POINT | 0x10))
+        return msvcrt.open_osfhandle(handle, os.O_WRONLY | os.O_BINARY | os.O_NOINHERIT)
+    except BaseException:
+        directory.api.close(handle)
+        raise

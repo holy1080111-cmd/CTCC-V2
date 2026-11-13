@@ -169,6 +169,29 @@ async def test_live_config_custody_preserves_late_failed_attempt(
         )
 
 
+@pytest.mark.skipif(os.name != "nt", reason="requires native Windows ACLs")
+def test_windows_private_file_is_checked_before_write_and_remains_reserved(
+    private_root, monkeypatch
+):
+    check_file = custody._check_file
+
+    def refuse_after_check(directory, name, fd):
+        check_file(directory, name, fd)
+        assert os.fstat(fd).st_size == 0
+        raise custody.LiveConfigCustodyError("synthetic_private_file_refusal")
+
+    monkeypatch.setattr(custody, "_check_file", refuse_after_check)
+    with custody._root_context(private_root) as base:
+        custody.mkdir_private_evidence_child_v2(base, ATTEMPT)
+        with base.child(ATTEMPT) as attempt:
+            with pytest.raises(custody.LiveConfigCustodyError, match="file_refusal"):
+                custody._publish(attempt, "body.raw", b"private payload")
+            with pytest.raises(FileExistsError):
+                custody._publish(attempt, "body.raw", b"replacement")
+
+    assert (private_root / ATTEMPT / "body.raw").read_bytes() == b""
+
+
 @pytest.mark.asyncio
 async def test_live_config_custody_checks_root_privacy_before_request(private_root):
     if os.name == "nt":
