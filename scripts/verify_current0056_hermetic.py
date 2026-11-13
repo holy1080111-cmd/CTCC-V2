@@ -63,6 +63,10 @@ _FITTED_CASES = (
     ),
     (
         fitted_measurement.CASE[0],
+        "test_actual0056_fresh_owner_migration_has_independent_source_and_tls_readback",
+    ),
+    (
+        fitted_measurement.CASE[0],
         "test_actual0056_full_native_role_rejects_swapped_roles_and_extra_grant",
     ),
     (
@@ -517,6 +521,15 @@ def _run(args, index, raw, files, runner_sha, root):
                 "-e",
                 "CTCC_B3_SCALE_RECEIPT_DIR=/validation-results",
                 *(tls.pytest_environment if tls else ()),
+                *(
+                    (
+                        "-e",
+                        "CTCC_DEVVAL_CUSTODY_TEST_SOURCE_MANIFEST_SHA256="
+                        + identity["manifest_sha256"],
+                    )
+                    if needs_devval_tls
+                    else ()
+                ),
                 *(("-e", f"{HERMETIC_CATALOG_ENV}=1") if needs_devval_tls else ()),
             ),
             timeout=(

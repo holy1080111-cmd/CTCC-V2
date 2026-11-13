@@ -75,6 +75,9 @@ from tests.integration.test_gate3_committed_preregistration_seal import (
     append_seal,
     seal_record,
 )
+from tests.native_owner_migration_lab_0056_v1 import (
+    migrate_fresh_lab_owner_0056_v1,
+)
 from tests.unit.mie.test_devval_campaign_batch import synthetic_grid
 from tests.unit.mie.test_devval_candidate_trials import _inputs
 from tests.unit.mie.test_devval_fitted_binding import (
@@ -193,6 +196,52 @@ async def test_actual0056_verified_ca_rejects_wrong_server_hostname():
     finally:
         if connection is not None:
             await connection.close()
+
+
+async def test_actual0056_fresh_owner_migration_has_independent_source_and_tls_readback():
+    """The admitted archive pin and a second physical TLS connection both matter."""
+    url, admin_tls = _isolated_tls_database_config()
+    identity, files, files_raw = fitted_measurement._read_hermetic_inputs()
+    source = fitted_measurement.source_identity(identity, files, files_raw)
+    admitted_manifest = os.environ.get(
+        "CTCC_DEVVAL_CUSTODY_TEST_SOURCE_MANIFEST_SHA256"
+    )
+    assert admitted_manifest == source["manifest_sha256"]
+    database = f"ctcc_native_obs56_{uuid4().hex[:12]}"
+    admin = create_async_engine(
+        url, poolclass=NullPool, connect_args={"ssl": admin_tls}
+    )
+    created = False
+    try:
+        async with admin.connect() as connection:
+            await connection.execution_options(isolation_level="AUTOCOMMIT")
+            await connection.execute(
+                text(f"CREATE DATABASE {_delta56_identifier(database)}")
+            )
+            created = True
+        result = await migrate_fresh_lab_owner_0056_v1(
+            owner_url=url.set(database=database),
+            ca_file=Path(os.environ["CTCC_DEVVAL_CUSTODY_TEST_TLS_CA_FILE"]),
+            ca_sha256=os.environ["CTCC_DEVVAL_CUSTODY_TEST_TLS_CA_SHA256"],
+            manifest_sha256=admitted_manifest,
+        )
+        assert result.manifest_sha256 == admitted_manifest
+        assert result.migration_sha256 == source["migration_inventory_sha256"]
+        assert result.database_head == "0056"
+        assert result.actual_lab_connection_observed is True
+        assert result.startup_admission is result.execution_authority is False
+    finally:
+        try:
+            if created:
+                async with admin.connect() as connection:
+                    await connection.execution_options(isolation_level="AUTOCOMMIT")
+                    await connection.execute(
+                        text(
+                            f"DROP DATABASE {_delta56_identifier(database)} WITH (FORCE)"
+                        )
+                    )
+        finally:
+            await admin.dispose()
 
 
 @pytest.fixture
