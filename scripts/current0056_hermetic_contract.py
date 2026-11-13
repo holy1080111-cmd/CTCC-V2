@@ -78,6 +78,7 @@ CURRENT56_NATIVE_ROLE_CASES = tuple(
         "test_actual0056_owner_grant_lock_and_rollback",
         "test_actual0056_restricted_account_control_read_replays_exact_scope",
         "test_actual0056_restricted_ledger_replays_retained_control_bound_intent",
+        "test_actual0056_controlled_partition_uses_inherited_armed_append",
     )
 )
 CONTROL_MONITOR_CASE = (

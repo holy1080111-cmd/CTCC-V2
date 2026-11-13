@@ -6,6 +6,8 @@ checks below are copied exactly; actual current55 catalog is additionally
 checked before each owned session can read or append.
 """
 
+from contextlib import asynccontextmanager
+
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -20,6 +22,7 @@ records = original.records
 _utc = original._utc
 _readback = original._readback
 _READ_SQL = original._READ_SQL
+_CONTROLLED_APPEND = text(controlled.APPEND_SQL)
 digest = original.digest
 read_account_history_partition_catalog = original.read_account_history_partition_catalog
 verify_account_history_partition_catalog = (
@@ -61,9 +64,17 @@ class AccountHistoryPartitionRepository:
         await current55.verify_actual_control_catalog_v2(session)
 
     async def verify_deployment(self):
+        async with self._session():
+            pass
+        return expected_account_history_partition_schema()
+
+    def _session(self, *, append=False):
+        return asynccontextmanager(self._transaction)(append=append)
+
+    async def _transaction(self, *, append=False):
         async with self.session_factory() as session, session.begin():
             await self._settings(session)
-        return expected_account_history_partition_schema()
+            yield session
 
     async def _read_in_session(self, session, scope):
         value = await session.scalar(
@@ -78,8 +89,7 @@ class AccountHistoryPartitionRepository:
 
     async def read(self, scope):
         records._scope(scope)
-        async with self.session_factory() as session, session.begin():
-            await self._settings(session)
+        async with self._session() as session:
             return await self._read_in_session(session, scope)
 
     def append_member_and_checkpoint(
@@ -152,8 +162,7 @@ class AccountHistoryPartitionRepository:
         if _utc(self.clock()) >= expires:
             policy.deny("account_history_partition_expired")
         try:
-            async with self.session_factory() as first, first.begin():
-                await self._settings(first)
+            async with self._session(append=True) as first:
                 before = await self._read_in_session(first, scope)
                 if (
                     before.head_sha256 != head
@@ -193,7 +202,7 @@ class AccountHistoryPartitionRepository:
                     if expected.record_json != checkpoint:
                         policy.deny("account_history_partition_checkpoint_changed")
                 acknowledged = await first.scalar(
-                    text(controlled.APPEND_SQL),
+                    _CONTROLLED_APPEND,
                     {
                         "environment": scope.environment,
                         "account_id": scope.account_id,
@@ -215,10 +224,9 @@ class AccountHistoryPartitionRepository:
                 if _utc(self.clock()) >= expires:
                     policy.deny("account_history_partition_expired_before_commit")
             # first commit AND its session close precede opening the second one.
-            async with self.session_factory() as second, second.begin():
+            async with self._session() as second:
                 if second is first:
                     policy.deny("account_history_partition_distinct_session_required")
-                await self._settings(second)
                 after = await self._read_in_session(second, scope)
                 if (
                     after.transaction_id == before.transaction_id

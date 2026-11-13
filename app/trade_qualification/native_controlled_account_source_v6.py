@@ -38,6 +38,9 @@ from app.database.repositories import (
 from app.database.repositories import (
     account_history_partition_current55_v2 as partition_repository,
 )
+from app.database.repositories import (
+    account_history_partition_current56_v2 as partition56,
+)
 from app.database.repositories import account_issued_revision_current55_v1 as issuer55
 from app.database.repositories import (
     account_revision_collector_lineage_current55_v1 as lineage55,
@@ -985,6 +988,51 @@ async def _coverage_v6(state):
     return _same_coverage_v6(state, value)
 
 
+def _replay_owned_partition_repository_v6(
+    state, repository, *, opening=False, append=False
+):
+    stamp = _check_v6(state)
+    if (
+        type(repository) is not partition56.Db0056ControlledPartitionRepositoryV2
+        or (
+            opening
+            and (
+                state["phase"] != "BANK"
+                or state.get("partition_repository") is not None
+            )
+        )
+        or (not opening and state.get("partition_repository") is not repository)
+        or (append and (state["phase"] != "BANK" or state.get("partition") is not None))
+        or state.get("coverage_observation") is None
+        or state.get("mirror_observation") is None
+    ):
+        _deny("controlled_account_original_partition_repository_required")
+    database = _owned_database_0056_v6(state)
+    if database is None:
+        _deny("controlled_account_original_0056_owner_required")
+    factories, roles = database
+    ctrl = state["control"]
+    scope = _partition_scope_v6(state["facts"])
+    expected = ctrl["observation"]
+    captured = history._financial_state_v1(state["history"], key=native._HOOK_KEY)
+    at = utc_from_ns(stamp["utc_ns"])
+    if (
+        (scope.environment, scope.account_id, scope.settlement_currency)
+        != (
+            ctrl["ledger_scope"].environment,
+            ctrl["ledger_scope"].account_id,
+            ctrl["ledger_scope"].settlement_currency,
+        )
+        or expected.state.scope != ctrl["scope"]
+        or not expected.state.arm_intent_current(at)
+        or captured["factory"].kw["bind"] is not factories.writer_factory.kw["bind"]
+        or not opening
+        and repository.session_factory is not factories.writer_factory
+    ):
+        _deny("controlled_account_original_partition_repository_required")
+    return factories, roles, scope, expected, at, state["expires_at"]
+
+
 async def _register_prefix_v6(state):
     facts = state["facts"]
     observation = await _coverage_v6(state)
@@ -993,9 +1041,12 @@ async def _register_prefix_v6(state):
     def clock():
         return utc_from_ns(_check_v6(state)["utc_ns"])
 
-    repository = partition_repository.AccountHistoryPartitionRepository(
-        history_state["factory"], clock=clock
-    )
+    if _owned_database_0056_v6(state) is None:
+        repository = partition_repository.AccountHistoryPartitionRepository(
+            history_state["factory"], clock=clock
+        )
+    else:
+        repository = partition56.Db0056ControlledPartitionRepositoryV2(state)
     state["partition_repository"] = repository
     await repository.verify_deployment()
     _check_v6(state)
@@ -7649,6 +7700,7 @@ def _install_source_kernel_v6():
         "_consume_controlled_history_use_v6",
         "_replay_controlled_coverage_context_v6",
         "_replay_controlled_current_mirror_context_v6",
+        "_replay_owned_partition_repository_v6",
         "_take_owned_account_issuer_v1",
         "_replay_owned_account_issuer_v1",
         "_finish_owned_account_issuer_v1",
@@ -7727,6 +7779,8 @@ def _install_source_kernel_v6():
             partition_repository.original,
             partition_repository.policy,
             partition_repository.controlled,
+            partition56,
+            partition56.source,
             partition_policy,
             issuer55,
             issuer55.issuer_transaction,

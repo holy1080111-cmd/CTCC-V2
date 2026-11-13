@@ -3432,6 +3432,116 @@ async def test_actual0056_restricted_partition_reopens_existing_b3_prefix(
         await reader.read(scope)
 
 
+async def test_actual0056_controlled_partition_uses_inherited_armed_append(
+    monkeypatch, _actual_0056_role_observation_lab
+):
+    from app.core.native_role_witness_0056_v1 import (
+        observe_restricted_native_roles_0056_witness_v1,
+    )
+    from app.database.repositories import account_history_partition_current56_v2 as repo
+    from app.database.repositories.demo_control import ControlObservation
+    from app.trade_qualification import demo_control
+    from app.trade_qualification import native_controlled_account_source_v6 as native
+    from tests.controlled_writer_coverage_fixtures import _store_control_fixture
+    from tests.integration.test_account_history_partition_repository import _member
+    from tests.integration.test_account_observation_index_repository import stored
+
+    owner, _, selected, _ = _actual_0056_role_observation_lab
+    writer = selected.writer_factory
+    _, ledger_scope, _, _, batch = await stored(monkeypatch, (owner, writer))
+    scope = repo.previous.records.HistoryPartitionScopeV1(
+        "demo", ledger_scope.account_id, "USDT"
+    )
+    roles = await observe_restricted_native_roles_0056_witness_v1(
+        selected, source=_SOURCE_ROOT
+    )
+    with pytest.raises(native.ControlledAccountSourceError):
+        repo.Db0056ControlledPartitionRepositoryV2({})
+    timestamp = datetime.now(UTC)
+    control_scope = demo_control.ControlScope("demo", scope.account_id)
+    acquired = demo_control.acquire(
+        None,
+        scope=control_scope,
+        owner_sha256="a" * 64,
+        pins=demo_control.ControlPins("1" * 64, "2" * 64, "3" * 64),
+        now=timestamp,
+    )
+    armed = demo_control.advance(
+        acquired,
+        owner_sha256=acquired.owner_sha256,
+        owner_epoch=acquired.owner_epoch,
+        expected_revision=acquired.revision,
+        action="arm_requested",
+        command_id="6" * 64,
+        now=timestamp,
+        arm_expires_at=timestamp + timedelta(seconds=27),
+    )
+    async with owner.begin() as connection:
+        previous = await _store_control_fixture(
+            connection,
+            acquired,
+            command_id="5" * 64,
+            action="acquire",
+            previous_sha256=None,
+        )
+        event = await _store_control_fixture(
+            connection,
+            armed,
+            command_id="6" * 64,
+            action="arm_requested",
+            previous_sha256=previous,
+        )
+    expected = ControlObservation(armed, event, timestamp)
+    expires = timestamp + timedelta(seconds=25)
+    source = object()
+
+    # Only the synthetic owner registry handoff is replaced. The restricted
+    # transaction, native catalog/Control, RPC/schema and readback are real.
+    def replay(parent, repository, *, opening=False, append=False):
+        assert parent is source
+        assert type(repository) is repo.Db0056ControlledPartitionRepositoryV2
+        return selected, roles, scope, expected, datetime.now(UTC), expires
+
+    monkeypatch.setattr(native, "_replay_owned_partition_repository_v6", replay)
+    repository = repo.Db0056ControlledPartitionRepositoryV2(source)
+    before = await repository.read(scope)
+    assert before.head_sha256 == batch.event_sha256
+    assert before.members == before.checkpoints == ()
+    record, linkage = _member(scope, batch.document_json)
+    arguments = {
+        "b3_document_raw": batch.document_json,
+        "native_linkage_raw": linkage,
+        "expected_b3_policy_sha256": json.loads(batch.document_json)["policy_sha256"],
+        "expected_b3_event_sha256": batch.event_sha256,
+        "expected_previous_checkpoint_sha256": None,
+        "expected_control_revision": before.control_revision,
+        "expected_account_revision": before.account_revision,
+        "expected_ledger_revision": before.ledger_revision,
+        "expires_at": expires,
+    }
+    committed = await repository.append_member_and_checkpoint(scope, **arguments)
+    assert committed.members[0].record_json == record
+    assert not committed.account_complete and not committed.execution_authority
+    after = await repository.read(scope)
+    assert (
+        len({before.transaction_id, committed.transaction_id, after.transaction_id})
+        == 3
+    )
+    assert (
+        committed.members == after.members
+        and committed.head_sha256 == after.head_sha256
+    )
+    with pytest.raises(
+        repo.previous.policy.AccountHistoryPartitionError, match="attempt_burned"
+    ):
+        repository.append_member_and_checkpoint(scope, **arguments)
+    expected = ControlObservation(armed, "8" * 64, timestamp)
+    with pytest.raises(
+        repo.previous.policy.AccountHistoryPartitionError, match="original_arm_changed"
+    ):
+        await repository.read(scope)
+
+
 async def test_actual0056_restricted_writer_creates_only_exact_stopped_genesis(
     monkeypatch, _actual_0056_role_observation_lab
 ):
