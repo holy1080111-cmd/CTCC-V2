@@ -153,9 +153,9 @@ def _chain(chain, expected_head):
     for sequence, item in enumerate(chain, 1):
         if type(item) is not journal.JournalReadback:
             _deny("history_query_readback_required")
-        # Revalidate, including mutated/fabricated frozen objects, before reading.
-        journal.JournalReadback(item.event, item.db_recorded_at, item.readback_at)
+        # Revalidate the original bytes and both readback clocks before use.
         record = journal.checked_event(item.event)
+        journal._checked_readback_clocks(record, item.db_recorded_at, item.readback_at)
         if capture_id is None:
             capture_id = record["capture_id"]
         if (
