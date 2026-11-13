@@ -2121,6 +2121,7 @@ async def test_actual0056_lab_only_recovery_cas_after_fresh_restricted_observati
         )
 
     observations = []
+    inspect = native_only_lifespan.inspect_existing_control
 
     async def lab_only_preflight(expected_writer_factory):
         # The production DB0055 preflight is replaced only inside this test.
@@ -2153,9 +2154,7 @@ async def test_actual0056_lab_only_recovery_cas_after_fresh_restricted_observati
         assert first.admission == "DENY"
         assert first.startup_admission is first.execution_authority is False
         assert control.startup_admission is control.execution_authority is False
-        assert control.control == await native_only_lifespan.inspect_existing_control(
-            expected_writer_factory
-        )
+        assert control.control == await inspect(expected_writer_factory)
         observations.append((first, control, second))
         return {"startup_admission": False, "execution_authority": False}
 
@@ -2245,6 +2244,35 @@ async def test_actual0056_lab_only_recovery_cas_after_fresh_restricted_observati
         assert status.active_trades == [exposure]
     assert restarted_instance.state.native_only_recovery_confirmed is False
     assert await repository.load_state() == restarted
+
+    # A competing writer moves control after the startup snapshot. The next
+    # boot must refuse before recovery can write another revision.
+    async def snapshot_with_concurrent_update(factory):
+        snapshot = await inspect(factory)
+        assert snapshot.revision == 9
+        await repository.latch_emergency_stop("lab_concurrent_stop")
+        return snapshot
+
+    monkeypatch.setattr(
+        native_only_lifespan,
+        "inspect_existing_control",
+        snapshot_with_concurrent_update,
+    )
+    denied_automation = new_automation()
+    monkeypatch.setattr(app_main, "safe_demo_automation", denied_automation)
+    denied_instance = app_main._build_app()
+    with pytest.raises(
+        native_only_lifespan.NativeOnlyLifespanError,
+        match="^native_only_preflight_unavailable$",
+    ):
+        async with app_main.lifespan(denied_instance):
+            pytest.fail("concurrent control revision was incorrectly admitted")
+    current = await repository.load_state()
+    assert current is not None and current["_control_revision"] == 10
+    assert current["active_trades"] == active_trades
+    assert current["emergency_stop"] is current["locked"] is True
+    assert "lab_concurrent_stop" in current["lock_reasons"]
+    assert denied_instance.state.native_only_recovery_confirmed is False
 
 
 async def test_actual0056_restricted_account_control_read_replays_exact_scope(
