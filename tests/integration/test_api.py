@@ -7,6 +7,14 @@ from app.main import app
 def test_liveness() -> None:
     with TestClient(app) as client:
         response = client.get("/liveness")
+        version = client.get("/api/version")
+        overview = client.get("/")
+    assert version.status_code == overview.status_code == 200
+    assert (
+        version.json()["architecture_stage"]
+        == overview.json()["stage"]
+        == "qualification_execution_unavailable"
+    )
     assert response.status_code == 200
     assert response.json()["version"] == "1.6.9"
 
@@ -23,16 +31,30 @@ def test_capabilities_are_honest() -> None:
     assert "postgresql_paper_state_persistence" in body["completed"]
     assert "paper_restart_recovery" in body["completed"]
     assert "okx_demo_authenticated_rest" in body["completed"]
-    assert "okx_demo_explicitly_armed_automation" in body["completed"]
     assert "okx_demo_observability_watchdog" in body["completed"]
     assert "okx_demo_durable_soak_sessions" in body["completed"]
-    assert "okx_demo_execute_soak_preflight" in body["completed"]
-    assert "okx_demo_execute_soak_protection_verification" in body["completed"]
     assert "okx_demo_daily_performance_reports" in body["completed"]
     assert "okx_demo_operator_strategy_controls" in body["completed"]
-    assert "live_execution" in body["completed"]
-    assert "okx_live_protected_real_position_execution" in body["completed"]
-    assert "okx_live_real_account_operator_acceptance" in body["not_yet_available"]
+    assert "okx_live_authenticated_read_reconciliation" in body["completed"]
+    assert not set(body["completed"]) & set(body["not_yet_available"])
+    assert {
+        "okx_demo_manual_swap_orders",
+        "okx_demo_attached_stop_loss_take_profit",
+        "okx_demo_cancel_and_close",
+        "okx_demo_explicitly_armed_automation",
+        "okx_demo_strategy_risk_execution_pipeline",
+        "okx_demo_execute_soak_preflight",
+        "okx_demo_execute_soak_session_loss_budget",
+        "okx_demo_execute_soak_protection_verification",
+        "okx_demo_execute_soak_auto_disarm",
+        "okx_demo_execute_soak_emergency_safety_stop",
+        "okx_live_production_execution_transport",
+        "okx_live_explicit_arm_and_emergency_stop",
+        "okx_live_protected_real_position_execution",
+        "okx_live_one_shot_automation",
+        "live_execution",
+        "okx_live_real_account_operator_acceptance",
+    } <= set(body["not_yet_available"])
 
 
 def test_lifecycle_transition_map() -> None:

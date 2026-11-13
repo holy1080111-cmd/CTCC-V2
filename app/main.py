@@ -104,7 +104,7 @@ async def root() -> dict[str, str]:
     return {
         "name": settings.app_name,
         "version": settings.app_version,
-        "stage": "Controlled OKX Live execution boundary v1.6.9",
+        "stage": "qualification_execution_unavailable",
         "docs": "/docs",
     }
 
