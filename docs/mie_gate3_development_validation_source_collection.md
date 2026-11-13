@@ -499,6 +499,18 @@ before the next 5m close. For a future joint replay, retain both symbols'
 measured minute availability and companion readback times. Apply the
 same decision time to both and retain any missing or rejected event.
 
+`compile_devval_research_package_v1` prepares one offline package from
+explicit pinned choices. It binds the canonical research blueprint and
+exact source identifiers to the minute campaign manifest, both symbols'
+companion schedule, reviewed market policy, frozen raw scorer and
+Development-only calibration policy. Both capture rosters are regenerated
+from the same Development and Validation windows. The package records
+caller-declared times. Keep its digest separately and use
+`verify_devval_research_package_v1` to reproduce the package and both
+capture artifacts before further use. Independent custody must still
+retain and acknowledge this package before the Development window
+opens. These functions have no source, outcome or holdout reader.
+
 `audit_devval_joint_companion_coverage_v1` uses the verified schedule and
 batch digests to replay both companions at the later of the two measured
 aggregate availability times and the two companion readbacks. The audit
