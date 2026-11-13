@@ -136,6 +136,10 @@ _FITTED_CASES = (
     ),
     (
         fitted_measurement.CASE[0],
+        "test_actual0056_stopped_portfolio_keeps_absent_and_legacy_unknown",
+    ),
+    (
+        fitted_measurement.CASE[0],
         "test_actual0056_held_frame_reader_uses_same_transaction_and_real_catalog",
     ),
     (

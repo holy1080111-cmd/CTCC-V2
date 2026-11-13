@@ -3453,3 +3453,47 @@ async def test_actual0056_restart_recovery_revokes_existing_account_arm(
         is readback.execution_authority
         is False
     )
+
+
+async def test_actual0056_stopped_portfolio_keeps_absent_and_legacy_unknown(
+    _actual_0056_role_observation_lab,
+):
+    from app.core.native_role_witness_0056_v1 import (
+        observe_restricted_native_roles_0056_witness_v1,
+    )
+    from app.database.repositories.demo_control import DemoControlRepository
+    from app.demo_automation import native_restart_inventory_0056_v1 as restart
+    from app.domain.source_primitives import decode
+    from app.trade_qualification.demo_control import ControlScope
+
+    _, owner_factory, factories, _ = _actual_0056_role_observation_lab
+    roles = await observe_restricted_native_roles_0056_witness_v1(
+        factories, source=_SOURCE_ROOT
+    )
+    scope = ControlScope("demo", "730006")
+
+    def clock():
+        return datetime.now(UTC)
+
+    owner = DemoControlRepository(owner_factory, clock=clock)
+    stop = await owner.latch_stop(scope, command_id="1" * 64)
+    before, missing = await restart._observe_stopped_portfolio(
+        factories, scope, roles, "USDT"
+    )
+    assert before.control.event_sha256 == stop.event_sha256 and missing is None
+    later, local = await restart._observe_stopped_portfolio(
+        factories, scope, roles, "USDT", initialize_capture=True
+    )
+    _, reopened = await restart._observe_stopped_portfolio(
+        factories, scope, roles, "USDT"
+    )
+    assert local is not None and reopened is not None
+    assert later.control.state == before.control.state
+    assert later.control.event_sha256 == before.control.event_sha256
+    assert local.document_json == reopened.document_json
+    assert local.received_at <= reopened.observed_at
+    value = decode(local.document_json)
+    assert value["account_id"] == scope.account_id
+    assert [state["account_revision"] for state in value["currency_states"]] == [0]
+    assert value["future_writer_exclusion"] is value["execution_authority"] is False
+    assert "legacy_reconciliation_initialization_unknown" in value["blocking_reasons"]

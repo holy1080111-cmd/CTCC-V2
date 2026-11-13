@@ -147,7 +147,14 @@ def _source_document(operands, plan, plan_sha, before, after):
     }
 
 
-async def _capture(settings, instrument_id: str):
+async def _capture(settings, instrument_id: str, *, restart_inventory=False):
+    _need(type(restart_inventory) is bool, "native_current_0056_purpose_refused")
+    if restart_inventory:
+        from app.demo_automation.native_restart_inventory_0056_v1 import (
+            _inventory_document,
+            _observe_stopped_portfolio,
+        )
+
     selection = factories = None
     client = OkxDemoPrivateRestClient(settings=settings)
     try:
@@ -161,8 +168,18 @@ async def _capture(settings, instrument_id: str):
             roles = selection.source_roles_0056
             plan = selection.current_plan
             scope = ControlScope("demo", plan.expected_uid)
-            before = await _observe_control(factories, scope, roles)
-            root = _attempt(settings)
+            if restart_inventory:
+                before, local_before = await _observe_stopped_portfolio(
+                    factories,
+                    scope,
+                    roles,
+                    plan.settlement_currency,
+                    initialize_capture=True,
+                )
+                root = _attempt(settings, leaf_prefix="db0056-restart-inventory-")
+            else:
+                before = await _observe_control(factories, scope, roles)
+                root = _attempt(settings)
             plan_sha = capture.plan_sha256(plan)
             account = ControlledDemoAccountSession.from_pinned_read_session(
                 read_session=lease, plan=plan, expected_plan_sha256=plan_sha
@@ -178,7 +195,12 @@ async def _capture(settings, instrument_id: str):
                 ),
             )
             try:
-                after = await _observe_control(factories, scope, roles)
+                if restart_inventory:
+                    after, local_after = await _observe_stopped_portfolio(
+                        factories, scope, roles, plan.settlement_currency
+                    )
+                else:
+                    after = await _observe_control(factories, scope, roles)
                 _readback_control(before, after)
                 _need(
                     selection.current_plan == plan and selection.factories is factories,
@@ -190,17 +212,24 @@ async def _capture(settings, instrument_id: str):
                 # Errors between acquisition and consumption retire the local
                 # capability while retaining its already-committed audit data.
                 current._CURRENT.pop(owned, None)
-            return root, _source_document(operands, plan, plan_sha, before, after)
+            document = _source_document(operands, plan, plan_sha, before, after)
+            if restart_inventory:
+                document = _inventory_document(
+                    document, operands, plan, local_before, local_after
+                )
+            return root, document
     finally:
         await _dispose(selection, factories)
 
 
-def _publish(root: Path, document: dict) -> NativeCurrentSource0056ObservationV1:
+def _publish(
+    root: Path, document: dict, *, name: str = _RECEIPT
+) -> NativeCurrentSource0056ObservationV1:
     payload = canonical(document)
     with storage._root_context(root) as directory:
-        directory.publish(_RECEIPT, payload)
+        directory.publish(name, payload)
         _need(
-            directory.read(_RECEIPT, 32768) == payload,
+            directory.read(name, 32768) == payload,
             "native_current_0056_receipt_changed",
         )
     return NativeCurrentSource0056ObservationV1(sha(payload))

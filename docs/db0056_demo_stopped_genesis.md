@@ -48,3 +48,18 @@ an execution path can admit the account.
 Exit `2` marks an uncertain commit or an interrupted operation. Re-run with
 `--reconcile-only` to verify the current account stop without creating a new
 event. The readback alone cannot attribute a stop to a lost commit response.
+
+With the stop in place, record fresh position, ordinary order and eight
+separately paginated algo order observations.
+
+```text
+python -B -m scripts.observe_demo_current_source_0056 --instrument BTC-USDT-SWAP --restart-inventory
+```
+
+The command reopens the stopped Control lineage and local exposure checkpoint
+in restricted transactions on both sides of the new exchange reads. A changed
+local checkpoint or Control revision refuses the report. The usual source
+capture initialization can retain a missing local scope at revision zero,
+which stays unknown. The private receipt records row counts by
+query without adding or clearing positions, orders, protection or intents.
+The receipt cannot establish a flat start or grant execution.
