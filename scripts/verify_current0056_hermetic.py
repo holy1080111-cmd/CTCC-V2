@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from scripts import current0056_fitted_catalog_measurement_v1 as fitted_measurement
 from scripts import current0056_hermetic_contract as contract
+from scripts import current0056_postgrant_acl_measurement_v1 as postgrant_acl
 from scripts import verify_final_hermetic as shared
 from scripts.current0055_catalog_receipt import verify_current55_catalog_report
 from scripts.devval_campaign_physical_catalog_v1 import HERMETIC_CATALOG_ENV
@@ -38,6 +39,7 @@ _EXACT_HOST_HELPERS = (
     "current0056_fitted_catalog_measurement_v1.py",
     "current0056_fitted_catalog_pair_v1.py",
     "current0056_migration_pin.py",
+    "current0056_postgrant_acl_measurement_v1.py",
     "devval_campaign_physical_catalog_v1.py",
     "devval_hermetic_tls.py",
     "evidence_json.py",
@@ -658,6 +660,7 @@ def _diagnostic_artifacts(steps):
         f"test-results/{contract.devval_catalog.HERMETIC_CATALOG_FILE}",
         f"test-results/{fitted_measurement.FILE}",
         f"test-results/{fitted_measurement.INHERITED_FILE}",
+        f"test-results/{postgrant_acl.FILE}",
         *(f"{step['name']}.log" for step in steps),
     }
 

@@ -63,6 +63,7 @@ from scripts import current0055_runtime_grants as core_acl
 from scripts import current0056_fitted_catalog_measurement_v1 as fitted_measurement
 from scripts import current0056_fitted_delta_catalog_v1 as fitted_delta
 from scripts import current0056_native_owner_pregrant_v1 as owner_pregrant
+from scripts import current0056_postgrant_acl_measurement_v1 as postgrant_acl
 from scripts import current_contract_source_scopes_v1 as source_scopes
 from scripts import devval_campaign_physical_catalog_v1 as devval_catalog
 from tests.integration.test_gate3_canonical_schedule_claim import migrate, pin_record
@@ -1341,6 +1342,11 @@ async def test_actual0056_full_native_role_observation_tls(
     assert writer.native_definitions_sha256 == first.inherited_native_definitions_sha256
     assert writer.startup_admission is writer.execution_authority is False
     if pregrant is not None:
+        postgrant_acl.retain_hermetic_measurement(
+            cluster_system_identifier_sha256=pregrant.cluster_system_identifier_sha256,
+            full=first,
+            restricted=restricted,
+        )
         fitted_measurement.retain_hermetic_inherited_measurement(
             cluster_system_identifier_sha256=pregrant.cluster_system_identifier_sha256,
             owner_pregrant_inherited_sha256=pregrant.inherited_native_definitions_sha256,

@@ -8,8 +8,10 @@ import pytest
 
 from scripts import current0056_fitted_catalog_measurement_v1 as fitted
 from scripts import current0056_hermetic_contract as current56
+from scripts import current0056_postgrant_acl_measurement_v1 as postgrant_acl
 from scripts import devval_campaign_physical_catalog_v1 as catalog
 from tests.unit.mie import test_current0056_fitted_catalog_measurement_v1 as samples
+from tests.unit.mie import test_current0056_postgrant_acl_measurement_v1 as acl_samples
 
 
 def _document():
@@ -218,12 +220,23 @@ def test_current56_binds_linux_catalog_pair_to_the_exact_passing_junit(
     assert inherited_artifact in current56.component_artifacts("full", None)
     assert inherited_artifact not in current56.component_artifacts("postgres", 0)
     assert inherited_artifact not in current56.component_artifacts("shard", 1)
+    postgrant_artifact = f"test-results/{postgrant_acl.FILE}"
+    assert postgrant_artifact in current56.component_artifacts("postgres", 1)
+    assert postgrant_artifact in current56.component_artifacts("full", None)
+    assert postgrant_artifact not in current56.component_artifacts("postgres", 0)
+    assert postgrant_artifact not in current56.component_artifacts("shard", 1)
     evidence = tmp_path / artifact
     evidence.parent.mkdir()
     evidence.write_bytes(catalog._canonical(_linux_catalog_pair()))
     identity, files, _, document, roles = samples._inputs(monkeypatch)
     files.update(
         {name: {"sha256": digest} for name, digest in catalog.SQL_PINS.items()}
+    )
+    files.update(
+        {
+            postgrant_acl._ROLE_SOURCE: {"sha256": "b" * 64},
+            postgrant_acl._PRODUCER_SOURCE: {"sha256": "c" * 64},
+        }
     )
     source_map = fitted._canonical(files)
     identity["source_files_sha256"] = sha256(source_map).hexdigest()
@@ -244,6 +257,9 @@ def test_current56_binds_linux_catalog_pair_to_the_exact_passing_junit(
     inherited_evidence = tmp_path / inherited_artifact
     inherited_evidence.write_bytes(
         fitted._canonical(fitted._inherited_receipt(identity, files, cluster, digests))
+    )
+    (tmp_path / postgrant_artifact).write_bytes(
+        acl_samples._build((identity, files, source_map), cluster=cluster)
     )
 
     junit_path, _ = current56.component_report_paths("postgres", 1)
