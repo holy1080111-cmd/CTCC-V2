@@ -3602,3 +3602,161 @@ async def test_actual0056_stopped_portfolio_keeps_absent_and_legacy_unknown(
     assert [state["account_revision"] for state in value["currency_states"]] == [0]
     assert value["future_writer_exclusion"] is value["execution_authority"] is False
     assert "legacy_reconciliation_initialization_unknown" in value["blocking_reasons"]
+
+
+async def test_actual0056_restricted_ledger_preflight_holds_schema_fence(
+    _actual_0056_role_observation_lab,
+):
+    from app.core import native_ledger_preflight_0056_v1 as preflight
+    from app.core.native_role_witness_0056_v1 import (
+        observe_restricted_native_roles_0056_witness_v1,
+    )
+    from app.database.repositories.demo_control import DemoControlRepository
+    from app.database.repositories.qualification_ledger import (
+        QualificationLedgerRepository,
+    )
+    from app.trade_qualification.demo_control import ControlScope, account_lock_key
+    from app.trade_qualification.reservations import LedgerScope
+
+    owner, owner_factory, factories, _ = _actual_0056_role_observation_lab
+    roles = await observe_restricted_native_roles_0056_witness_v1(
+        factories, source=_SOURCE_ROOT
+    )
+    scope = LedgerScope(
+        environment="demo", account_id="730007", settlement_currency="USDT"
+    )
+    control_scope = ControlScope(scope.environment, scope.account_id)
+
+    def clock():
+        return datetime.now(UTC)
+
+    control = DemoControlRepository(owner_factory, clock=clock)
+    stopped = await control.latch_stop(control_scope, command_id="3" * 64)
+    with pytest.raises(preflight.NativeLedgerPreflight0056Error):
+        async with factories.writer_factory() as session, session.begin():
+            await preflight.read_locked_native_ledger_preflight_0056_v1(
+                factories, roles, session, scope
+            )
+    repository = QualificationLedgerRepository(owner_factory, clock=clock)
+    await repository.initialize_capture_scope(scope)
+
+    async with factories.writer_factory() as session, session.begin():
+        initial = session.sync_session.get_transaction()
+        observed = await preflight.read_locked_native_ledger_preflight_0056_v1(
+            factories, roles, session, scope
+        )
+        assert session.sync_session.get_transaction() is initial
+        assert observed.control_event_sha256 == stopped.event_sha256
+        assert observed.emergency_stop is True and observed.stored_arm_present is False
+        assert observed.scope_state == "BOOTSTRAP"
+        assert observed.account_revision == observed.ledger_revision == 0
+        assert (
+            observed.unresolved_reservation_count
+            == observed.unresolved_consumed_intent_count
+            == 0
+        )
+        assert observed.database_head == "0056" and observed.admission == "DENY"
+        assert (
+            observed.reconciliation_verified
+            is observed.account_complete
+            is observed.execution_authority
+            is False
+        )
+        async with owner.begin() as competing:
+            assert (
+                await competing.scalar(
+                    text("SELECT pg_catalog.pg_try_advisory_xact_lock(:key)"),
+                    {"key": account_lock_key(control_scope)},
+                )
+                is False
+            )
+            with pytest.raises(DBAPIError) as blocked:
+                await competing.exec_driver_sql(
+                    "LOCK TABLE public.qualification_reservation_transitions IN ROW EXCLUSIVE MODE NOWAIT"
+                )
+            assert blocked.value.orig.sqlstate == "55P03"
+    active = await repository.read_bootstrap_checkpoint(scope)
+    assert active.state.account_revision == active.state.ledger_revision == 0
+    assert not active.state.active
+
+    async with owner.begin() as competing:
+        assert (
+            await competing.scalar(
+                text("SELECT pg_catalog.pg_try_advisory_xact_lock(:key)"),
+                {"key": account_lock_key(control_scope)},
+            )
+            is True
+        )
+        await competing.exec_driver_sql(
+            "ALTER TABLE public.qualification_reservation_transitions "
+            "DISABLE TRIGGER qualification_transition_immutable"
+        )
+    try:
+        with pytest.raises(preflight.NativeLedgerPreflight0056Error):
+            async with factories.writer_factory() as session, session.begin():
+                await preflight.read_locked_native_ledger_preflight_0056_v1(
+                    factories, roles, session, scope
+                )
+    finally:
+        async with owner.begin() as competing:
+            await competing.exec_driver_sql(
+                "ALTER TABLE public.qualification_reservation_transitions "
+                "ENABLE TRIGGER qualification_transition_immutable"
+            )
+
+    async with factories.writer_factory() as session, session.begin():
+        with pytest.raises(preflight.NativeLedgerPreflight0056Error):
+            await preflight.read_locked_native_ledger_preflight_0056_v1(
+                factories, replace(roles, role_route_sha256="f" * 64), session, scope
+            )
+
+
+async def test_actual0056_terminal_report_reader_checks_grant_and_refuses_missing_spool(
+    _actual_0056_role_observation_lab,
+    monkeypatch,
+):
+    """Use the actual restricted writer and make no fake acceptable history."""
+    from app.database.repositories import native_closed_reporting_0056_v1 as reporting
+
+    _, owner_factory, selected, _ = _actual_0056_role_observation_lab
+    missing = sha(b"ctcc-db0056-synthetic-missing-terminal-spool")
+    async with selected.writer_factory() as session, session.begin():
+        first = await session.get(reporting.QualificationReportSpool, missing)
+        assert first is None
+        assert await session.scalar(reporting._ELIGIBILITY_ACCESS) is True
+
+    async with owner_factory.begin() as owner:
+        counters = text("""
+            SELECT (SELECT count(*) FROM public.qualification_reservations),
+                   (SELECT count(*) FROM public.qualification_submission_outcomes),
+                   (SELECT count(*) FROM public.qualification_report_spool),
+                   (SELECT count(*) FROM public.qualification_report_projection_receipts)
+        """)
+        before = tuple((await owner.execute(counters)).one())
+
+    readbacks = []
+    original_get = reporting.AsyncSession.get
+
+    async def observe_actual_get(session, model, identity, **options):
+        value = await original_get(session, model, identity, **options)
+        if model is reporting.QualificationReportSpool and identity == missing:
+            assert session.bind is selected.writer_factory.kw["bind"]
+            assert session.in_transaction()
+            readbacks.append((session, value))
+        return value
+
+    with monkeypatch.context() as observer:
+        observer.setattr(reporting.AsyncSession, "get", observe_actual_get)
+        with pytest.raises(
+            reporting.NativeTerminalReport0056Error,
+            match="^native_terminal_report_0056_unavailable$",
+        ):
+            await reporting.observe_terminal_lineage_0056_v1(selected, spool_id=missing)
+    assert len(readbacks) == 1
+    reader, absent = readbacks[0]
+    assert absent is None
+    assert not reader.in_transaction()
+    async with owner_factory.begin() as owner:
+        assert tuple((await owner.execute(counters)).one()) == before
+    async with selected.writer_factory() as session, session.begin():
+        assert await session.get(reporting.QualificationReportSpool, missing) is None

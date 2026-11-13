@@ -270,7 +270,8 @@ def _event_journal_schema_mismatch_detail(trigger_rows, required, unique_rows):
     return f"triggers={','.join(issues) or 'valid'};uid_unique={unique_status}"
 
 
-async def _require_event_journal_schema(session):
+async def _read_event_journal_schema_rows(session):
+    """Read the fixed ledger schema without choosing a deployment contract."""
     # pg_trigger.tgenabled is PostgreSQL's internal "char". Project it as SQL
     # text before applying the exact origin-enabled requirement in Python.
     trigger_rows = (
@@ -291,6 +292,50 @@ async def _require_event_journal_schema(session):
             )
         )
     ).all()
+    unique = (
+        await session.execute(
+            text(
+                "SELECT con.condeferrable, con.convalidated, "
+                "array_to_string(array_agg(att.attname ORDER BY ord_key.ordinality), ',') "
+                "FROM pg_catalog.pg_constraint con "
+                "JOIN pg_catalog.pg_class tab ON tab.oid=con.conrelid "
+                "JOIN pg_catalog.pg_namespace ns ON ns.oid=tab.relnamespace "
+                "JOIN LATERAL unnest(con.conkey) WITH ORDINALITY AS ord_key(attnum, ordinality) ON true "
+                "JOIN pg_catalog.pg_attribute att ON att.attrelid=tab.oid AND att.attnum=ord_key.attnum "
+                "WHERE ns.nspname='public' AND tab.relname='qualification_reservations' "
+                "AND con.conname='uq_qualification_reservations_uid_event' "
+                "AND con.contype='u' "
+                "GROUP BY con.oid, con.condeferrable, con.convalidated"
+            )
+        )
+    ).all()
+    unique_rows = [tuple(row) for row in unique]
+    function_rows = (
+        await session.execute(
+            text(
+                "SELECT proc.proname, "
+                "pg_catalog.encode(pg_catalog.sha256("
+                "pg_catalog.convert_to(proc.prosrc,'UTF8')),'hex'), "
+                "lang.lanname, proc.provolatile::text, proc.prosecdef, "
+                "proc.proconfig, proc.prokind::text, "
+                "proc.prorettype=pg_catalog.to_regtype('pg_catalog.trigger'), "
+                "proc.pronargs "
+                "FROM pg_catalog.pg_proc proc "
+                "JOIN pg_catalog.pg_namespace ns ON ns.oid=proc.pronamespace "
+                "JOIN pg_catalog.pg_language lang ON lang.oid=proc.prolang "
+                "WHERE ns.nspname='public' "
+                "AND proc.proname IN ('qualification_ledger_immutable', "
+                "'qualification_scope_update', 'qualification_reservation_update') "
+                "AND proc.pronargs=0"
+            )
+        )
+    ).all()
+    return trigger_rows, unique_rows, function_rows
+
+
+def _check_event_journal_schema_rows(
+    trigger_rows, unique_rows, function_rows, expected_functions
+):
     guards = {
         (table, trigger): (kind, function)
         for table, trigger, enabled, kind, function, nargs, function_schema, oid_match in trigger_rows
@@ -334,66 +379,6 @@ async def _require_event_journal_schema(session):
             "qualification_transition_no_truncate",
         ): (34, immutable),
     }
-    unique = (
-        await session.execute(
-            text(
-                "SELECT con.condeferrable, con.convalidated, "
-                "array_to_string(array_agg(att.attname ORDER BY ord_key.ordinality), ',') "
-                "FROM pg_catalog.pg_constraint con "
-                "JOIN pg_catalog.pg_class tab ON tab.oid=con.conrelid "
-                "JOIN pg_catalog.pg_namespace ns ON ns.oid=tab.relnamespace "
-                "JOIN LATERAL unnest(con.conkey) WITH ORDINALITY AS ord_key(attnum, ordinality) ON true "
-                "JOIN pg_catalog.pg_attribute att ON att.attrelid=tab.oid AND att.attnum=ord_key.attnum "
-                "WHERE ns.nspname='public' AND tab.relname='qualification_reservations' "
-                "AND con.conname='uq_qualification_reservations_uid_event' "
-                "AND con.contype='u' "
-                "GROUP BY con.oid, con.condeferrable, con.convalidated"
-            )
-        )
-    ).all()
-    unique_rows = [tuple(row) for row in unique]
-    function_rows = (
-        await session.execute(
-            text(
-                "SELECT proc.proname, "
-                "pg_catalog.encode(pg_catalog.sha256("
-                "pg_catalog.convert_to(proc.prosrc,'UTF8')),'hex'), "
-                "lang.lanname, proc.provolatile::text, proc.prosecdef, "
-                "proc.proconfig, proc.prokind::text, "
-                "proc.prorettype=pg_catalog.to_regtype('pg_catalog.trigger'), "
-                "proc.pronargs "
-                "FROM pg_catalog.pg_proc proc "
-                "JOIN pg_catalog.pg_namespace ns ON ns.oid=proc.pronamespace "
-                "JOIN pg_catalog.pg_language lang ON lang.oid=proc.prolang "
-                "WHERE ns.nspname='public' "
-                "AND proc.proname IN ('qualification_ledger_immutable', "
-                "'qualification_scope_update', 'qualification_reservation_update') "
-                "AND proc.pronargs=0"
-            )
-        )
-    ).all()
-    expected_functions = _EVENT_GUARD_FUNCTIONS
-    # Only an explicitly new body enters actual55 metadata admission. The old
-    # literal map and all old54 behavior remain unchanged.
-    from app.domain import native_filled_flat_closure_schema_v55 as native_closure55
-
-    if any(
-        row[0] == native_closure55.FUNCTION
-        and row[1] == native_closure55.CURRENT_BODY_SHA256
-        for row in function_rows
-    ):
-        from app.database.repositories.native_zero_fok_event_schema_v55 import (
-            require_actual_zero_fok_event_schema_v55,
-        )
-
-        await require_actual_zero_fok_event_schema_v55(session)
-        expected_functions = {
-            **_EVENT_GUARD_FUNCTIONS,
-            native_closure55.FUNCTION: (
-                native_closure55.CURRENT_BODY_SHA256,
-                ("search_path=pg_catalog, pg_temp",),
-            ),
-        }
     function_status = {}
     for (
         name,
@@ -439,6 +424,37 @@ async def _require_event_journal_schema(session):
         raise QualificationLedgerError(
             f"event_ledger_schema_retention_invalid:{detail}"
         )
+
+
+async def _require_event_journal_schema(session):
+    trigger_rows, unique_rows, function_rows = await _read_event_journal_schema_rows(
+        session
+    )
+    expected_functions = _EVENT_GUARD_FUNCTIONS
+    # Only an explicitly new body enters actual55 metadata admission. The old
+    # literal map and all old54 behavior remain unchanged.
+    from app.domain import native_filled_flat_closure_schema_v55 as native_closure55
+
+    if any(
+        row[0] == native_closure55.FUNCTION
+        and row[1] == native_closure55.CURRENT_BODY_SHA256
+        for row in function_rows
+    ):
+        from app.database.repositories.native_zero_fok_event_schema_v55 import (
+            require_actual_zero_fok_event_schema_v55,
+        )
+
+        await require_actual_zero_fok_event_schema_v55(session)
+        expected_functions = {
+            **_EVENT_GUARD_FUNCTIONS,
+            native_closure55.FUNCTION: (
+                native_closure55.CURRENT_BODY_SHA256,
+                ("search_path=pg_catalog, pg_temp",),
+            ),
+        }
+    _check_event_journal_schema_rows(
+        trigger_rows, unique_rows, function_rows, expected_functions
+    )
 
 
 def _account_uid_lock_key(scope):

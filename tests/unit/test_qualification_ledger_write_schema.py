@@ -91,6 +91,10 @@ async def test_write_schema_pins_uid_before_all_three_tables_and_catalog_read(
 async def test_schema_drift_aborts_before_account_row_mutation(
     monkeypatch, operation, source
 ):
+    # The genuine runtime seals the unmodified repository at import time.
+    # Load it before replacing the local write-schema check for this test.
+    from app.trade_qualification import native_ledger_runtime_v2  # noqa: F401
+
     session = _Session()
     repository = ledger.QualificationLedgerRepository(
         lambda: session, clock=lambda: source.now

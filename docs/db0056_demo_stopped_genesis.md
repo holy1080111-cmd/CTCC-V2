@@ -68,3 +68,12 @@ or conflicting evidence stays `UNKNOWN`. The receipt includes the number of
 position rows omitted from the bounded detail list. Verified protection still
 requires the durable intent and fill lineage. Restart inventory leaves the
 stop latched and denies flat-start and execution permission.
+
+## Check the configured Demo connection
+
+Run `python -B -m scripts.check_okx_demo_connection` with the configured
+Demo credentials and zero read retries. The command sends one signed
+account-configuration GET and prints a status without the account identifiers.
+`IP_NOT_WHITELISTED` indicates OKX code 50110 for the current connection.
+An observed configuration leaves full account collection and trade admission
+as separate checks.

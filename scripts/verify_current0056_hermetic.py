@@ -144,6 +144,14 @@ _FITTED_CASES = (
     ),
     (
         fitted_measurement.CASE[0],
+        "test_actual0056_restricted_ledger_preflight_holds_schema_fence",
+    ),
+    (
+        fitted_measurement.CASE[0],
+        "test_actual0056_terminal_report_reader_checks_grant_and_refuses_missing_spool",
+    ),
+    (
+        fitted_measurement.CASE[0],
         "test_actual0056_held_frame_reader_uses_same_transaction_and_real_catalog",
     ),
     (

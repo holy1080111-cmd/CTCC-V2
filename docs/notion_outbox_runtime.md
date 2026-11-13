@@ -212,3 +212,18 @@ create and readback followed by refusal to publish the final local journal. It
 checks that the earlier journal bytes survive and that a restarted worker moves
 to uncertain reconciliation without another page-create request. This is a
 synthetic failure test, not a real Notion delivery receipt.
+
+For a deployed DB0056 database, a separate command can verify an eligible
+terminal spool and any existing PostgreSQL projection receipt. Run it from
+the exact installed release with the administrator reference described in
+[DB0056 administrator startup reference](db0056_admin_startup_trust.md).
+Supply the exact spool digest from the private reconciliation tools.
+
+    python -B -m scripts.native_report_lineage_status_0056_v1 \
+      --descriptor-file /path/to/private/db0056-deployment-descriptor.json \
+      --source-archive-file /path/to/exact-release.tar \
+      --spool-sha256 <spool-digest>
+
+The command reads the original lineage under the restricted writer's
+transaction and rolls the transaction back. Its output records PostgreSQL
+verification. The local outbox and Notion delivery retain their own checks.

@@ -91,4 +91,33 @@ changing source. A new source is prepared with new volumes. If it fails, the
 old source, installation directory and volumes can be restarted together.
 The installer does not migrate saved Paper state across source versions.
 
+## Save and review the Paper ledger offline
+
+The local Windows Paper installation on port 8102 can save its simulated
+orders, positions and balances to a portable JSON file. Start the original
+Paper installation and wait for the dashboard to be ready. Pause manual
+operations during export and use a new private output directory outside the
+checkout. On Windows, use the existing
+`scripts.local_analysis_private_dir.create_private_work()` helper to create an
+owner-protected working directory. On Linux, use a directory owned by the
+operator with mode `0700`.
+
+    python -B -m scripts.paper_portable_ledger export --token-file "<original Paper directory>\api_token" --directory "<private output directory>"
+
+Record the returned export SHA-256 with the file. The tool makes two
+authenticated reads of the same persistent local runtime and verifies that
+the view is unchanged. It keeps the original simulated order and position
+identifiers in `paper-state.json`. The token and its raw installation
+binding stay out of the export. Existing files are preserved. Use an export
+only after the tool reports verification.
+
+    python -B -m scripts.paper_portable_ledger inspect --directory "<private output directory>" --sha256 "<recorded export SHA-256>"
+
+Inspection works with Paper stopped. It checks the file against the
+recorded digest, validates order-to-position links, recalculates statistics
+from the Paper view, and recomputes the existing durable Paper state
+checksum. The export captures the local API view at the time of the two
+reads. Keep the original Paper database and recovery journal for service
+restart and full database recovery.
+
 This is a local analysis profile. It does not implement the separate DB0056 native trading deployment, grant privileges, Arm trading, or send orders. Building the pinned image may fetch locked build dependencies; the API and storage services use the internal network during operation. Actual Docker startup, volume persistence, and Windows bind-mount access need runtime acceptance on the target machine.

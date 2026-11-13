@@ -35,6 +35,7 @@ from app.exchange.okx.private_rest import (
     DemoConfigSelectorObservationV2,
     DemoPinnedReadSession,
     OkxDemoPrivateRestClient,
+    prepare_demo_config_reader_v2,
 )
 from app.trade_qualification import account_capture as capture
 from app.trade_qualification import account_history_source_v1 as history
@@ -347,6 +348,7 @@ async def select_configured_demo_identity_v2(
                 and roles.get("execution_authority") is False,
                 "native_demo_source_only_pre_get_role_preflight_failed",
             )
+        prepare_demo_config_reader_v2()
         before = native_stamp()
         async with asyncio.timeout(5):
             if retain_read_transport:

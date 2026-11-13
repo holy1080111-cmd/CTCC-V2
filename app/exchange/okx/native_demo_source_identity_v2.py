@@ -17,7 +17,7 @@ _SOURCE_ROOT = Path(__file__).resolve().parents[3]
 _ROWS = (
     (
         "app/exchange/okx/private_rest.py",
-        "34d66da9949e18e926b29b54115e7d7ae904dde12b4809e3bb79ac0c6ed447ee",
+        "456f13016afd51dc0ceb27f628fd8739c413493700f3cddbffb6a87d29c71730",
     ),
     (
         "app/trade_qualification/private_write_authority.py",

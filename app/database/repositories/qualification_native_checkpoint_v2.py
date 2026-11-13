@@ -98,6 +98,11 @@ async def validate_positive_checkpoint_claims_v2(repository, session, scope, row
         or observation["native_baseline_admission"] is not True
     ):
         _deny("ledger55_finite_checkpoint_catalog_denied")
+    await _validate_held_finite_checkpoint_rows(session, scope, row, check=check)
+
+
+async def _validate_held_finite_checkpoint_rows(session, scope, row, *, check):
+    """Validate original history after the caller held its actual catalog fence."""
     raw = row.claims_json.encode("utf-8")
     claims = codec.decode_finite_account_ledger_claims_v1(raw)
     if (

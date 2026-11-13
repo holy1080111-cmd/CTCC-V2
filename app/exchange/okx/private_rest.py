@@ -51,6 +51,18 @@ class DemoConfigSelectorObservationV2:
     execution_authority: bool = field(default=False, init=False)
 
 
+def prepare_demo_config_reader_v2() -> None:
+    """Load shared dispatch checks before a caller starts an HTTP deadline."""
+    from app.exchange.okx import native_demo_write_v2 as native_write
+
+    # The request still goes through every native and default-deny check.
+    # Importing the checked module here keeps cold source review outside I/O.
+    if not callable(native_write._native_request_client_v2):
+        raise OkxPrivateApiError(
+            "Demo selector is unavailable", code="demo_selector_purpose_invalid"
+        )
+
+
 def _demo_selector_json_pairs_v2(pairs):
     result = {}
     for key, value in pairs:
@@ -102,6 +114,14 @@ _PRIVATE_PAGE_SIZE = 100
 _PRIVATE_MAX_PAGES = 16
 _CANCEL_ALL_AFTER_PATH = "/api/v5/trade/cancel-all-after"
 _READ_ONLY_HTTP_AUTH_CODES = frozenset({"50110", "50119"})
+_DEMO_SELECTOR_AUTH_CODES = _READ_ONLY_HTTP_AUTH_CODES | {
+    "50101",
+    "50102",
+    "50105",
+    "50109",
+    "50111",
+    "50113",
+}
 _MAX_HTTP_AUTH_ERROR_BYTES = 4096
 _SAFE_EXCHANGE_ERROR_CODE = re.compile(r"[0-9]{5}(?:_[0-9]{4})?\Z")
 _SAFE_ORDER_ID = re.compile(r"[1-9][0-9]{0,39}\Z")
@@ -355,11 +375,13 @@ def _private_response_rejection(code: Any, *, write: bool) -> OkxPrivateApiError
     return OkxPrivateApiError("OKX private read rejected", code=safe_code)
 
 
-def _read_only_http_auth_code(response: httpx.Response) -> str | None:
+def _read_only_http_auth_code(
+    response: httpx.Response, *, bounded_demo_selector: bool = False
+) -> str | None:
     """Recognize a bounded OKX auth code without retaining remote error text.
 
-    A non-2xx body is untrusted. Only two documented 401 codes are useful for
-    diagnosing a failed read; all other response bodies retain the old generic
+    Only documented and allowlisted 401 codes can diagnose a failed read.
+    Other response bodies retain the generic
     transport failure. In particular, never forward ``msg`` or ``data`` because
     the IP-whitelist message may contain the caller's public address.
     """
@@ -371,13 +393,20 @@ def _read_only_http_auth_code(response: httpx.Response) -> str | None:
     ):
         return None
     try:
-        payload = json.loads(response.content)
+        payload = json.loads(
+            response.content, object_pairs_hook=_demo_selector_json_pairs_v2
+        )
     except (TypeError, ValueError):
         return None
     if type(payload) is not dict:
         return None
     code = payload.get("code")
-    return code if type(code) is str and code in _READ_ONLY_HTTP_AUTH_CODES else None
+    codes = (
+        _DEMO_SELECTOR_AUTH_CODES
+        if bounded_demo_selector
+        else _READ_ONLY_HTTP_AUTH_CODES
+    )
+    return code if type(code) is str and code in codes else None
 
 
 @dataclass(slots=True, repr=False)
@@ -851,6 +880,9 @@ class _OkxPrivateRestClientBase:
                                         code="private_write_authority_unavailable",
                                     ) from None
                     if bounded_read:
+                        # The reader validates retained wire bytes and refuses
+                        # compressed bodies. Do not inherit HTTPX's gzip offer.
+                        headers["Accept-Encoding"] = "identity"
                         prepared_write_request = client.build_request(
                             "GET", request_url, headers=headers, content=None
                         )
@@ -986,7 +1018,9 @@ class _OkxPrivateRestClientBase:
                         )
                     self._after_response_check(method=method, path=path)
                     if method.upper() == "GET" and not write:
-                        auth_code = _read_only_http_auth_code(response)
+                        auth_code = _read_only_http_auth_code(
+                            response, bounded_demo_selector=demo_selector
+                        )
                         if auth_code is not None:
                             raise OkxPrivateApiError(
                                 "OKX private read authentication rejected",
@@ -1260,15 +1294,22 @@ class _OkxPrivateRestClientBase:
                 code="demo_selector_purpose_invalid",
             )
         lease.verify_current()
-        async with asyncio.timeout(5):
-            result = await self._request(
-                "GET",
-                "/api/v5/account/config",
-                _demo_selector_max_bytes=65536,
-                _demo_reconciliation_max_bytes=reconciliation_read.MAX_BODY
-                if retain_network
-                else None,
-            )
+        prepare_demo_config_reader_v2()
+        try:
+            async with asyncio.timeout(5):
+                result = await self._request(
+                    "GET",
+                    "/api/v5/account/config",
+                    _demo_selector_max_bytes=65536,
+                    _demo_reconciliation_max_bytes=reconciliation_read.MAX_BODY
+                    if retain_network
+                    else None,
+                )
+        except TimeoutError:
+            raise OkxPrivateApiError(
+                "Demo selector deadline exceeded",
+                code="demo_selector_deadline_exceeded",
+            ) from None
         lease.verify_current()
         if type(result) is not DemoConfigSelectorObservationV2:
             raise OkxPrivateApiError(

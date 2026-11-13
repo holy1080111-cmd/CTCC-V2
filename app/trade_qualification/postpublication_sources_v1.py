@@ -1470,7 +1470,7 @@ _KNOWN_SOURCE_HASHES = {
     "app/trade_qualification/g12_invocation_custody.py": "941274a9df5d2528abd6ec4ad5a733806e633e396b7fa89a23a0483f2a9cd111",
     "app/trade_qualification/owned_current_original_frame_v1.py": "73fc39319f3a0b5ab0a9972d556695cef396607b0d1dd3445ced4bf25fa99256",
     "app/database/repositories/public_runtime_bundle_custody.py": "6b331fa8e7607f352736642cd7adc9990fb01456f14fc410a4a6460252c8cfe6",
-    "app/exchange/okx/private_rest.py": "34d66da9949e18e926b29b54115e7d7ae904dde12b4809e3bb79ac0c6ed447ee",
+    "app/exchange/okx/private_rest.py": "456f13016afd51dc0ceb27f628fd8739c413493700f3cddbffb6a87d29c71730",
     "app/trade_qualification/account_runtime.py": "048c00f61dc814f473c0e2b894b45dc36b09e6a809693571fd9c301a651319c6",
     "app/trade_qualification/account_capture.py": "fe0c86997397ad30ec2391748bf5e137b4fa09b9e22f7024382ff86590385f95",
     "app/trade_evidence/gates.py": "7be0f614d16c42fab49e923a97890d6a09e9a512b789d940f8bb379c0e344d50",

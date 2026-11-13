@@ -67,9 +67,6 @@ def _need(condition):
 
 async def verify_native_terminal_spool_v55(repository, session, spool):
     """A version selector only routes DATA; actual rows/catalog decide admission."""
-    from app.database.repositories import native_postsubmit_v1 as native
-    from app.database.repositories.submission_reporting import spool_identity
-
     try:
         actual_catalog = await session.scalar(text(catalog.ACTOR_CATALOG_SQL))
         read_only = await session.scalar(
@@ -81,6 +78,19 @@ async def verify_native_terminal_spool_v55(repository, session, spool):
             else catalog.verify_actual_writer_catalog
         )
         verifier(actual_catalog)
+        return await _replay_native_terminal_spool(session, spool)
+    except Exception:  # noqa: BLE001 -- source, role, SQL and private data remain redacted.
+        raise SubmissionReportingError(
+            "native_terminal_report_lineage_unavailable"
+        ) from None
+
+
+async def _replay_native_terminal_spool(session, spool):
+    """Replay the inherited row policy after the owning path verifies its catalog."""
+    from app.database.repositories import native_postsubmit_v1 as native
+    from app.database.repositories.submission_reporting import spool_identity
+
+    try:
         outcome = await session.get(
             QualificationSubmissionOutcome, spool.outcome_id, populate_existing=True
         )
