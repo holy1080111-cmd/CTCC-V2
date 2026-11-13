@@ -290,6 +290,25 @@ async def test_forged_readback_clock_is_revalidated(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_query_chain_checks_original_event_once_per_readback(monkeypatch):
+    session, _, _, args, events = setup(monkeypatch)
+    await bootstrap.collect_bootstrap_recorded(session, **args)
+    expected_head = pins(events)["expected_head_sha256"]
+    checked_events = []
+    original_check = journal.checked_event
+
+    def observe_check(event):
+        checked_events.append(event)
+        return original_check(event)
+
+    monkeypatch.setattr(journal, "checked_event", observe_check)
+    records = verifier._chain(tuple(events), expected_head)
+
+    assert checked_events == [point.event for point in events]
+    assert records == [original_check(point.event) for point in events]
+
+
+@pytest.mark.asyncio
 async def test_foreign_runtime_result_cannot_enter_owned_path(monkeypatch):
     session, harness, _, args, events = setup(monkeypatch)
     old = await bootstrap.collect_bootstrap_recorded(session, **args)
