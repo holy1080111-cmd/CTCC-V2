@@ -80,7 +80,24 @@ _read = previous._read
 _api_readback = previous._api_readback
 _restart_time = previous._restart_time
 _cleanup = previous._cleanup
-_verify_platform_skips = previous._verify_platform_skips
+_LINUX_PLATFORM_SKIPS_0056 = (
+    (
+        (
+            "tests.unit.exchange.test_live_account_config_custody_v1",
+            "test_windows_private_file_is_checked_before_write_and_remains_reserved",
+        ),
+        "requires native Windows ACLs",
+    ),
+)
+
+
+def _verify_platform_skips(raw, *, mode, expected_skipped):
+    previous._verify_platform_skips(
+        raw,
+        mode=mode,
+        expected_skipped=expected_skipped,
+        additional_exact_skips=_LINUX_PLATFORM_SKIPS_0056,
+    )
 
 
 def component_stage_names(mode, index):

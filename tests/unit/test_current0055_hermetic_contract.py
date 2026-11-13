@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from scripts import current0055_hermetic_contract as contract
+from scripts import current0056_hermetic_contract as current56
 from scripts import verify_current0055_hermetic as runner
 
 
@@ -151,5 +152,118 @@ def test_current55_linux_skip_is_bound_to_native_case_and_reason(
     else:
         with pytest.raises(ValueError, match=f"^{error}$"):
             contract._verify_platform_skips(
+                raw, mode=mode, expected_skipped=expected_count
+            )
+
+
+_LIVE_CUSTODY_MODULE = "tests.unit.exchange.test_live_account_config_custody_v1"
+_WINDOWS_CUSTODY_CASE = (
+    "test_windows_private_file_is_checked_before_write_and_remains_reserved"
+)
+_WINDOWS_ACL_REASON = "requires native Windows ACLs"
+
+
+@pytest.mark.parametrize(
+    ("mode", "module", "name", "reason", "kind", "expected_count", "error"),
+    (
+        (
+            "shard",
+            _LIVE_CUSTODY_MODULE,
+            _WINDOWS_CUSTODY_CASE,
+            _WINDOWS_ACL_REASON,
+            "pytest.skip",
+            1,
+            None,
+        ),
+        (
+            "full",
+            _LIVE_CUSTODY_MODULE,
+            _WINDOWS_CUSTODY_CASE,
+            _WINDOWS_ACL_REASON,
+            "pytest.skip",
+            1,
+            None,
+        ),
+        (
+            "postgres",
+            _LIVE_CUSTODY_MODULE,
+            _WINDOWS_CUSTODY_CASE,
+            _WINDOWS_ACL_REASON,
+            "pytest.skip",
+            1,
+            "current55_unapproved_linux_skip",
+        ),
+        (
+            "shard",
+            "tests.unit.exchange.test_other_custody",
+            _WINDOWS_CUSTODY_CASE,
+            _WINDOWS_ACL_REASON,
+            "pytest.skip",
+            1,
+            "current55_unapproved_linux_skip",
+        ),
+        (
+            "shard",
+            _LIVE_CUSTODY_MODULE,
+            "test_live_config_custody_preserves_late_failed_attempt",
+            _WINDOWS_ACL_REASON,
+            "pytest.skip",
+            1,
+            "current55_unapproved_linux_skip",
+        ),
+        (
+            "shard",
+            _LIVE_CUSTODY_MODULE,
+            _WINDOWS_CUSTODY_CASE + "[forged]",
+            _WINDOWS_ACL_REASON,
+            "pytest.skip",
+            1,
+            "current55_unapproved_linux_skip",
+        ),
+        (
+            "shard",
+            _LIVE_CUSTODY_MODULE,
+            _WINDOWS_CUSTODY_CASE,
+            "wrong platform reason",
+            "pytest.skip",
+            1,
+            "current55_unapproved_linux_skip",
+        ),
+        (
+            "shard",
+            _LIVE_CUSTODY_MODULE,
+            _WINDOWS_CUSTODY_CASE,
+            _WINDOWS_ACL_REASON,
+            "pytest.xfail",
+            1,
+            "current55_unapproved_linux_skip",
+        ),
+        (
+            "shard",
+            _LIVE_CUSTODY_MODULE,
+            _WINDOWS_CUSTODY_CASE,
+            _WINDOWS_ACL_REASON,
+            "pytest.skip",
+            0,
+            "current55_linux_skip_count_mismatch",
+        ),
+    ),
+)
+def test_current56_linux_skip_adds_only_the_exact_native_custody_case(
+    mode, module, name, reason, kind, expected_count, error
+):
+    root = ET.Element("testsuite")
+    case = ET.SubElement(root, "testcase", classname=module, name=name)
+    ET.SubElement(case, "skipped", type=kind, message=reason)
+    raw = ET.tostring(root)
+    with pytest.raises(ValueError, match="^current55_unapproved_linux_skip$"):
+        contract._verify_platform_skips(raw, mode=mode, expected_skipped=expected_count)
+    if error is None:
+        current56._verify_platform_skips(
+            raw, mode=mode, expected_skipped=expected_count
+        )
+    else:
+        with pytest.raises(ValueError, match=f"^{error}$"):
+            current56._verify_platform_skips(
                 raw, mode=mode, expected_skipped=expected_count
             )

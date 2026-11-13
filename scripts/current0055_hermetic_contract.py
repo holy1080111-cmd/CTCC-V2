@@ -435,13 +435,18 @@ def _cleanup(raw, prefix, *, anchor):
         raise ValueError("current55_services_not_removed")
 
 
-def _verify_platform_skips(raw, *, mode, expected_skipped):
+def _verify_platform_skips(raw, *, mode, expected_skipped, additional_exact_skips=()):
     actual_skipped = 0
+    exact_reasons = dict(additional_exact_skips)
     for case in ET.fromstring(raw).iter("testcase"):
         for skipped in case.findall("skipped"):
             actual_skipped += 1
-            identity = (case.attrib["classname"], case.attrib["name"].partition("[")[0])
-            approved_reason = _LINUX_PLATFORM_SKIPS.get(identity)
+            module, name = case.attrib["classname"], case.attrib["name"]
+            approved_reason = _LINUX_PLATFORM_SKIPS.get(
+                (module, name.partition("[")[0])
+            )
+            if mode in {"shard", "full"} and approved_reason is None:
+                approved_reason = exact_reasons.get((module, name))
             if (
                 mode == "postgres"
                 or skipped.get("type") != "pytest.skip"
