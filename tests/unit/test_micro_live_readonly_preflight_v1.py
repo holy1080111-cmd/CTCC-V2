@@ -1,5 +1,6 @@
 """Synthetic checks for a redacted, retained Live GET-only readback."""
 
+from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
@@ -102,14 +103,19 @@ def readback(tmp_path, monkeypatch):
     def current(root, *, attempt_id, expected_custody_sha256):
         assert root == tmp_path and attempt_id == current_id
         assert expected_custody_sha256 == current_pin
-        return current_receipt
+        return subject.current.LiveCurrentAccountReadbackV1(
+            receipt=current_receipt,
+            usdt_available_equity=changes.get("equity"),
+        )
 
     def history(root, *, attempt_id, expected_custody_sha256):
         assert root == tmp_path
         assert expected_custody_sha256 == pins[int(attempt_id, 16) - 1].custody_sha256
         return by_attempt[attempt_id]
 
-    monkeypatch.setattr(subject.current, "read_live_current_account_v1", current)
+    monkeypatch.setattr(
+        subject.current, "read_live_current_account_with_balance_v1", current
+    )
     monkeypatch.setattr(subject.history, "read_live_account_history_v1", history)
     monkeypatch.setattr(subject, "_read_custodied_live_account_config", config)
     monkeypatch.setattr(subject.current, "_check_config", lambda body: account)
@@ -151,6 +157,30 @@ def test_exact_readback_records_only_observed_exchange_flatness(readback):
     assert occupied.exchange_flat_observed is False
     assert (
         occupied.exchange_position_count is occupied.exchange_pending_algo_count is None
+    )
+
+
+def test_private_equity_stays_out_of_shareable_artifact_and_grants_no_authority(
+    readback,
+):
+    arguments, _, _, changes = readback
+    observation = subject.current.LiveUsdtAvailableEquityObservationV1(
+        available_equity=Decimal("120.7654321"),
+        exchange_update_ms=1785000000000,
+        body_completed=ClockStamp(utc_ns=1_785_000_002_000_000_002, monotonic_ns=2),
+        raw_body_sha256=sha(b"synthetic balance body"),
+        page_metadata_sha256=sha(b"synthetic balance metadata"),
+    )
+    changes["equity"] = observation
+    private = subject.read_micro_live_private_preflight_v1(**arguments)
+    assert private.usdt_available_equity is observation
+    assert private.record == subject.build_micro_live_readonly_preflight_v1(**arguments)
+    assert private.record.available_usdt_equity is None
+    assert (
+        private.record.freshness_verified is private.record.execution_authority is False
+    )
+    assert b"120.7654321" not in subject.micro_live_readonly_preflight_bytes_v1(
+        private.record
     )
 
 

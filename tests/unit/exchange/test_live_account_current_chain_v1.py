@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 
 import pytest
 
-from app.domain.source_primitives import MAX_CLOCK_BATCH_NS, ClockStamp
+from app.domain.source_primitives import MAX_CLOCK_BATCH_NS, ClockStamp, sha
 from app.exchange.okx import live_account_current_chain_v1 as chain
 from app.exchange.okx.live_read_lease_v1 import OkxLivePinnedGetClientV1
 from tests.unit.exchange.test_live_account_config_custody_v1 import (
@@ -18,6 +19,7 @@ from tests.unit.exchange.test_live_account_config_observation_v1 import (
 
 ATTEMPT = "a" * 32
 SYMBOLS = ("BTC-USDT-SWAP", "ETH-USDT-SWAP")
+_BALANCE_UPDATE_MS = "1785000000000"
 
 
 @pytest.fixture
@@ -38,12 +40,14 @@ class CurrentAccount:
         config_drift=False,
         bad_position=False,
         missing_leverage=False,
+        balance_details=(),
     ):
         self.orders = orders
         self.repeat = repeat
         self.config_drift = config_drift
         self.bad_position = bad_position
         self.missing_leverage = missing_leverage
+        self.balance_details = balance_details
         self.configs = 0
         self.requests = []
 
@@ -76,7 +80,9 @@ class CurrentAccount:
             case "/api/v5/account/account-position-risk":
                 return _response([{"balData": [], "posData": []}])
             case "/api/v5/account/balance":
-                return _response([{"totalEq": "10.20", "details": []}])
+                return _response(
+                    [{"totalEq": "10.20", "details": self.balance_details}]
+                )
             case "/api/v5/account/positions":
                 return _response(
                     [{"instId": SYMBOLS[0], "posId": "1", "pos": ""}]
@@ -189,11 +195,102 @@ async def test_live_current_account_retains_and_replays_every_current_page(
     balance = private_root / ATTEMPT / "p-000001" / "body.raw"
     balance.write_bytes(balance.read_bytes().replace(b"10.20", b"20.10"))
     with pytest.raises(chain.LiveCurrentAccountChainError):
-        chain.read_live_current_account_v1(
+        chain.read_live_current_account_with_balance_v1(
             private_root,
             attempt_id=ATTEMPT,
             expected_custody_sha256=receipt["custody_sha256"],
         )
+
+
+@pytest.mark.asyncio
+async def test_retained_usdt_equity_is_exact_and_bound_to_the_balance_page(
+    private_root,
+):
+    currency = {
+        "ccy": "USDT",
+        "availEq": "0.000",
+        "availBal": "19",
+        "uTime": _BALANCE_UPDATE_MS,
+    }
+    receipt = await _collect(
+        CurrentAccount(balance_details=[{"ccy": "USDC"}, currency]), private_root
+    )
+    readback = chain.read_live_current_account_with_balance_v1(
+        private_root,
+        attempt_id=ATTEMPT,
+        expected_custody_sha256=receipt["custody_sha256"],
+    )
+    assert readback.receipt == receipt
+    equity = readback.usdt_available_equity
+    assert equity is not None
+    assert equity.available_equity.as_tuple() == Decimal("0.000").as_tuple()
+    assert equity.exchange_update_ms == int(_BALANCE_UPDATE_MS)
+    balance_page = private_root / ATTEMPT / "p-000001"
+    metadata = (balance_page / "observation.json").read_bytes()
+    assert equity.raw_body_sha256 == sha((balance_page / "body.raw").read_bytes())
+    assert equity.page_metadata_sha256 == sha(metadata)
+    assert (
+        equity.body_completed.model_dump()
+        == json.loads(metadata)["source"]["stamps"][3]
+    )
+
+
+@pytest.mark.parametrize(
+    ("details", "balance_fields", "expected"),
+    [
+        ([], {}, None),
+        ([{"ccy": "USDC", "availEq": "1", "uTime": _BALANCE_UPDATE_MS}], {}, None),
+        ([{"ccy": "USDT", "availBal": "1", "uTime": _BALANCE_UPDATE_MS}], {}, None),
+        ([{"ccy": "USDT", "availEq": 1, "uTime": _BALANCE_UPDATE_MS}], {}, None),
+        ([{"ccy": "USDT", "availEq": "1"}], {}, None),
+        ([{"ccy": "USDT", "availEq": "1", "uTime": "1000"}], {}, None),
+        ([{"ccy": "USDT", "availEq": "1", "uTime": "1785000000001"}], {}, None),
+        (
+            [
+                {"ccy": "USDT", "availEq": "1", "uTime": _BALANCE_UPDATE_MS},
+                {"ccy": "USDT"},
+            ],
+            {},
+            None,
+        ),
+        (
+            [
+                {"ccy": "USDT", "availEq": "1", "uTime": _BALANCE_UPDATE_MS},
+                {"ccy": " usdt"},
+            ],
+            {},
+            None,
+        ),
+        (
+            [{"ccy": "USDT", "availEq": "1", "uTime": _BALANCE_UPDATE_MS}],
+            {"uTime": "1785000000001"},
+            None,
+        ),
+        (
+            [{"ccy": "USDT", "availEq": "-0.01", "uTime": _BALANCE_UPDATE_MS}],
+            {"uTime": _BALANCE_UPDATE_MS},
+            Decimal("-0.01"),
+        ),
+    ],
+)
+def test_retained_balance_projection_validates_currency_and_timestamps(
+    details, balance_fields, expected
+):
+    from types import SimpleNamespace
+
+    raw = json.dumps(
+        {
+            "code": "0",
+            "data": [{"totalEq": "10.2", "details": details, **balance_fields}],
+        }
+    ).encode()
+    page = SimpleNamespace(
+        raw_body=raw,
+        raw_sha256=sha(raw),
+        stamps=(ClockStamp(utc_ns=1_785_000_000_000_000_000, monotonic_ns=1),) * 6,
+    )
+    equity = chain._usdt_available_equity(page, sha(b"synthetic metadata"))
+    assert (equity.available_equity if equity is not None else None) == expected
 
 
 @pytest.mark.asyncio

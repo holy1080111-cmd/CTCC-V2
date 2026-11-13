@@ -176,6 +176,12 @@ class MicroLiveReadonlyPreflightV1(QualificationModel):
         return self
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class MicroLivePrivatePreflightReadbackV1:
+    record: MicroLiveReadonlyPreflightV1
+    usdt_available_equity: current.LiveUsdtAvailableEquityObservationV1 | None
+
+
 def _off_settings(settings: Settings) -> LiveOffSettingsV1:
     if (
         type(settings) is not Settings
@@ -288,6 +294,26 @@ def build_micro_live_readonly_preflight_v1(
     history_pins: tuple[LiveHistoryCustodyPinV1, ...],
     expected_retained_lease_binding_id: str,
 ) -> MicroLiveReadonlyPreflightV1:
+    """Build the shareable V1 receipt with private account amounts excluded."""
+    return read_micro_live_private_preflight_v1(
+        settings=settings,
+        private_root=private_root,
+        current_attempt_id=current_attempt_id,
+        expected_current_custody_sha256=expected_current_custody_sha256,
+        history_pins=history_pins,
+        expected_retained_lease_binding_id=expected_retained_lease_binding_id,
+    ).record
+
+
+def read_micro_live_private_preflight_v1(
+    *,
+    settings: Settings,
+    private_root: Path,
+    current_attempt_id: str,
+    expected_current_custody_sha256: str,
+    history_pins: tuple[LiveHistoryCustodyPinV1, ...],
+    expected_retained_lease_binding_id: str,
+) -> MicroLivePrivatePreflightReadbackV1:
     """Replay independently pinned local custody. Do not contact the exchange."""
     try:
         off = _off_settings(settings)
@@ -320,11 +346,12 @@ def build_micro_live_readonly_preflight_v1(
         ):
             raise MicroLiveReadbackError("micro_live_custody_inventory_changed")
         lease = expected_retained_lease_binding_id
-        receipt = current.read_live_current_account_v1(
+        current_readback = current.read_live_current_account_with_balance_v1(
             private_root,
             attempt_id=current_attempt_id,
             expected_custody_sha256=expected_current_custody_sha256,
         )
+        receipt = current_readback.receipt
         if receipt["synthetic_mock"] is not False or receipt["plan_sha256"] != sha(
             current._plan(
                 current_attempt_id,
@@ -387,7 +414,7 @@ def build_micro_live_readonly_preflight_v1(
         if type(flat) is not bool:
             raise MicroLiveReadbackError("micro_live_exchange_flat_unknown")
         count = 0 if flat else None
-        return MicroLiveReadonlyPreflightV1(
+        record = MicroLiveReadonlyPreflightV1(
             settings=off,
             current_custody_sha256=expected_current_custody_sha256,
             current_capture_completed=current_completed,
@@ -398,6 +425,10 @@ def build_micro_live_readonly_preflight_v1(
             exchange_position_count=count,
             exchange_pending_order_count=count,
             exchange_pending_algo_count=count,
+        )
+        return MicroLivePrivatePreflightReadbackV1(
+            record=record,
+            usdt_available_equity=current_readback.usdt_available_equity,
         )
     except MicroLiveReadbackError:
         raise

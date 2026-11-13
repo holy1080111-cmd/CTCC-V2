@@ -60,6 +60,7 @@ _ID = re.compile(r"[1-9][0-9]{0,39}")
 _DIGEST = re.compile(r"[0-9a-f]{64}")
 _SWAP = re.compile(r"[A-Z0-9]{1,20}-USDT-SWAP")
 _DECIMAL = re.compile(r"-?[0-9]{1,40}(?:\.[0-9]{1,24})?")
+_EXCHANGE_MILLISECONDS = re.compile(r"[1-9][0-9]{12}")
 _ALGO_STREAMS = tuple(
     "algo_" + kind
     for kind in (
@@ -85,6 +86,23 @@ _STREAMS = (
 
 class LiveCurrentAccountChainError(ValueError):
     """Fixed capture refusal without provider fields or private paths."""
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class LiveUsdtAvailableEquityObservationV1:
+    """A retained balance field and its source, without a freshness decision."""
+
+    available_equity: Decimal
+    exchange_update_ms: int
+    body_completed: ClockStamp
+    raw_body_sha256: str
+    page_metadata_sha256: str
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class LiveCurrentAccountReadbackV1:
+    receipt: dict
+    usdt_available_equity: LiveUsdtAvailableEquityObservationV1 | None
 
 
 def _deny(code: str) -> None:
@@ -113,6 +131,49 @@ def _decimal(value) -> Decimal:
     if type(value) is not str or _DECIMAL.fullmatch(value) is None:
         _deny("live_current_account_numeric_field_invalid")
     return Decimal(value)
+
+
+def _usdt_available_equity(
+    page: LiveAccountRawPageV1, page_metadata_sha256: str
+) -> LiveUsdtAvailableEquityObservationV1 | None:
+    balance = _one(_rows(page.raw_body))
+    matches = []
+    for row in balance["details"]:
+        currency = row.get("ccy")
+        if type(currency) is not str or not currency.strip():
+            return None
+        if currency.strip().upper() == "USDT":
+            matches.append(row)
+    if len(matches) != 1 or matches[0]["ccy"] != "USDT":
+        return None
+    available = matches[0].get("availEq")
+    updated = matches[0].get("uTime")
+    if (
+        type(available) is not str
+        or _DECIMAL.fullmatch(available) is None
+        or type(updated) is not str
+        or _EXCHANGE_MILLISECONDS.fullmatch(updated) is None
+    ):
+        return None
+    exchange_update_ms = int(updated)
+    body_completed = page.stamps[3]
+    if exchange_update_ms * 1_000_000 > body_completed.utc_ns:
+        return None
+    if "uTime" in balance:
+        envelope_updated = balance["uTime"]
+        if (
+            type(envelope_updated) is not str
+            or _EXCHANGE_MILLISECONDS.fullmatch(envelope_updated) is None
+            or int(envelope_updated) * 1_000_000 > body_completed.utc_ns
+        ):
+            return None
+    return LiveUsdtAvailableEquityObservationV1(
+        available_equity=_decimal(available),
+        exchange_update_ms=exchange_update_ms,
+        body_completed=body_completed,
+        raw_body_sha256=page.raw_sha256,
+        page_metadata_sha256=page_metadata_sha256,
+    )
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -519,6 +580,17 @@ def read_live_current_account_v1(
     private_root: Path, *, attempt_id: str, expected_custody_sha256: str
 ) -> dict:
     """Replay current coverage from private bytes against a separately retained digest."""
+    return read_live_current_account_with_balance_v1(
+        private_root,
+        attempt_id=attempt_id,
+        expected_custody_sha256=expected_custody_sha256,
+    ).receipt
+
+
+def read_live_current_account_with_balance_v1(
+    private_root: Path, *, attempt_id: str, expected_custody_sha256: str
+) -> LiveCurrentAccountReadbackV1:
+    """Replay the pinned chain and project the exact retained USDT balance."""
     _check_name(attempt_id)
     if (
         type(expected_custody_sha256) is not str
@@ -561,6 +633,7 @@ def read_live_current_account_v1(
             _deny("live_current_account_plan_changed")
         coverage = _CurrentCoverage(before, instruments)
         previous = sha(plan)
+        balance_page = None
         with _attempt_at(private_root, attempt_id, identities) as attempt:
             for index in range(count):
                 selector = coverage.selector()
@@ -570,6 +643,8 @@ def read_live_current_account_v1(
                     _check_directory(directory)
                     page, previous = _read_page(directory, index, previous, selector)
                 coverage.accept(page)
+                if selector.stream == "balance":
+                    balance_page = page, previous
             coverage.finish(after, capture_completed)
             if (
                 set(attempt.names()) != expected
@@ -589,7 +664,12 @@ def read_live_current_account_v1(
             ):
                 _deny("live_current_account_receipt_readback_changed")
         del receipt["directory_identities"]
-        return {**receipt, "custody_sha256": expected_custody_sha256}
+        if balance_page is None:
+            _deny("live_current_account_balance_page_missing")
+        return LiveCurrentAccountReadbackV1(
+            receipt={**receipt, "custody_sha256": expected_custody_sha256},
+            usdt_available_equity=_usdt_available_equity(*balance_page),
+        )
     except LiveCurrentAccountChainError:
         raise
     except Exception:  # noqa: BLE001 - storage and parser details remain private
