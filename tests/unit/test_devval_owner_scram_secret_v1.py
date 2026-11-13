@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.devval_hermetic_tls import _POSTGRES_BOOT
+from scripts.devval_hermetic_tls import _HOST, _POSTGRES_BOOT
 from scripts.devval_owner_scram_secret_v1 import (
     OwnerScramLabSecretError,
     _boot_command,
@@ -17,6 +17,7 @@ from scripts.devval_owner_scram_secret_v1 import (
 from scripts.verify_owner_scram_0056_hermetic import (
     _arguments,
     _reject_secret_in_output,
+    _resource_names,
 )
 
 
@@ -53,6 +54,17 @@ def test_owner_scram_runner_requires_explicit_fixed_source_args():
     assert args.owner_scram_lab_only is True
     with pytest.raises(ValueError, match="owner_scram_lab_arguments_invalid"):
         _arguments([*arguments, "--owner-scram-lab-only", "--commit", "invalid"])
+
+
+def test_runner_postgres_name_satisfies_exact_tls_host_policy():
+    prefix, network, postgres = _resource_names("a" * 12)
+    assert prefix == "ctcc-final-" + "a" * 12 + "-"
+    assert network == prefix + "network"
+    assert postgres == prefix + "postgres"
+    assert _HOST.fullmatch(postgres) is not None
+    assert _HOST.fullmatch("ctcc-owner-scram-" + "a" * 12 + "-postgres") is None
+    with pytest.raises(ValueError, match="owner_scram_lab_run_identity_invalid"):
+        _resource_names("invalid")
 
 
 def test_secret_is_private_and_cleaned_or_posix_only():

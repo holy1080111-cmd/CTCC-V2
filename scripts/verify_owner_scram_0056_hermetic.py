@@ -49,6 +49,13 @@ _STAGES = (
 )
 
 
+def _resource_names(run_id: str) -> tuple[str, str, str]:
+    if type(run_id) is not str or re.fullmatch(r"[a-f0-9]{12}", run_id) is None:
+        raise ValueError("owner_scram_lab_run_identity_invalid")
+    prefix = f"ctcc-final-{run_id}-"
+    return prefix, prefix + "network", prefix + "postgres"
+
+
 def _arguments(argv: list[str] | None = None):
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument("--archive", type=Path, required=True)
@@ -213,8 +220,7 @@ def _run(args, raw, files, root, resources_stack):
     source_map.chmod(0o444)
     map_sha = contract.digest(source_map.read_bytes())
     run_id = uuid4().hex[:12]
-    prefix = f"ctcc-owner-scram-{run_id}-"
-    network, postgres = prefix + "network", prefix + "postgres"
+    prefix, network, postgres = _resource_names(run_id)
     image = f"ctcc-owner-scram:{args.commit[:12]}-{run_id}"
     label = f"org.ctcc.validation.run={run_id}"
     identity = {

@@ -24,13 +24,13 @@ from app.database.native_pg_tls_v1 import (
 from app.domain.source_primitives import sha
 from scripts import native_owner_route_preflight_0056_v1 as preflight
 from scripts.current_contract_source_scopes_v1 import actual_current_source_scope
+from scripts.devval_hermetic_tls import _HOST as _TLS_HOST
 from tests.integration.test_gate3_fitted_candidate_custody_pg import (
     _migrate_runtime_custody_head,
 )
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 _SOURCE = Path(__file__).resolve().parents[2]
-_HOST = re.compile(r"ctcc-owner-scram-[a-f0-9]{12}-postgres\Z", re.ASCII)
 _EVIDENCE = Path("/validation-results/owner-scram-lab.json")
 _CREATE_ROLE = """
 DO $ctcc$
@@ -59,7 +59,7 @@ def _inputs():
     if any(not value for value in values):
         pytest.fail("isolated_owner_scram_lab_inputs_incomplete", pytrace=False)
     host, secret_file, ca_file, ca_sha, manifest_sha = values
-    if _HOST.fullmatch(host) is None:
+    if _TLS_HOST.fullmatch(host) is None:
         pytest.fail("isolated_owner_scram_lab_host_invalid", pytrace=False)
     return host, Path(secret_file), Path(ca_file), ca_sha, manifest_sha
 
