@@ -33,6 +33,9 @@ _EXACT_HOST_HELPERS = (
     "current0055_catalog_receipt.py",
     "current0055_hermetic_contract.py",
     "current0056_hermetic_contract.py",
+    "current0056_fitted_delta_catalog_v1.py",
+    "current0056_fitted_catalog_measurement_v1.py",
+    "current0056_fitted_catalog_pair_v1.py",
     "current0056_migration_pin.py",
     "devval_campaign_physical_catalog_v1.py",
     "devval_hermetic_tls.py",
@@ -176,6 +179,10 @@ def _run(args, index, raw, files, runner_sha, root):
     source_mount = (
         "--mount",
         f"type=bind,src={source_map},dst=/ctcc-source-files.json,readonly",
+    )
+    identity_mount = (
+        "--mount",
+        f"type=bind,src={root / 'identity.json'},dst=/ctcc-run-identity.json,readonly",
     )
     identity = {
         "commit": args.commit,
@@ -433,7 +440,12 @@ def _run(args, index, raw, files, runner_sha, root):
         container(
             stage,
             *_test_command(args.suite, index),
-            mounts=(*test_mount, *(tls.pytest_mount if tls else ())),
+            mounts=(
+                *test_mount,
+                *(source_mount if needs_devval_tls else ()),
+                *(identity_mount if needs_devval_tls else ()),
+                *(tls.pytest_mount if tls else ()),
+            ),
             extra_environment=(
                 "-e",
                 "CTCC_RUN_B3_PREFIX_33=1",

@@ -61,8 +61,10 @@ from app.mie.validation.prospective_devval_fitted_binding_v1 import (
 from scripts import current0055_native_account_source_acl_v1 as account_acl
 from scripts import current0055_native_lifecycle_acl_v1 as lifecycle_acl
 from scripts import current0055_runtime_grants as core_acl
+from scripts import current0056_fitted_catalog_measurement_v1 as fitted_measurement
 from scripts import current0056_fitted_delta_catalog_v1 as fitted_delta
 from scripts import current_contract_source_scopes_v1 as source_scopes
+from scripts import devval_campaign_physical_catalog_v1 as devval_catalog
 from tests.integration.test_gate3_canonical_schedule_claim import migrate, pin_record
 from tests.integration.test_gate3_committed_preregistration_seal import (
     append_pin,
@@ -842,7 +844,9 @@ async def _delta56_two_fresh_databases():
                 await admin.dispose()
 
 
-async def _delta56_read_catalog(engine) -> tuple[dict, str, int]:
+async def _delta56_read_catalog(
+    engine, *, capture_cluster_identity=False
+) -> tuple[dict, str, int, str | None]:
     async with engine.connect() as connection, connection.begin():
         await connection.execute(
             text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
@@ -863,7 +867,15 @@ async def _delta56_read_catalog(engine) -> tuple[dict, str, int]:
             )
         ).one()
         assert type(identity[0]) is str and type(identity[1]) is int
-        return value, identity[0], identity[1]
+        cluster_identifier = None
+        if capture_cluster_identity:
+            cluster_identifier = await connection.scalar(
+                text(
+                    "SELECT system_identifier::text FROM pg_catalog.pg_control_system()"
+                )
+            )
+            assert type(cluster_identifier) is str and cluster_identifier.isdecimal()
+        return value, identity[0], identity[1], cluster_identifier
 
 
 async def _delta56_owner_change(engine, sql: str) -> None:
@@ -876,8 +888,11 @@ async def test_actual0056_two_fresh_fitted_catalogs_and_drift_refusal(
 ):
     engines, fitted, demo, databases = _delta56_two_fresh_databases
     roles = {"owner": "ctcc", "demo_roles": demo, "fitted_roles": fitted}
-    first, first_name, first_oid = await _delta56_read_catalog(engines[0])
-    second, second_name, second_oid = await _delta56_read_catalog(engines[1])
+    retain_measurement = os.environ.get(devval_catalog.HERMETIC_CATALOG_ENV) == "1"
+    first, first_name, first_oid, cluster_identifier = await _delta56_read_catalog(
+        engines[0], capture_cluster_identity=retain_measurement
+    )
+    second, second_name, second_oid, _ = await _delta56_read_catalog(engines[1])
     assert (first_name, second_name) == databases and first_oid != second_oid
     expected_commit_guards = [
         ("gate3_fitted_ack_commit_guard", "gate3_fitted_candidate_acks"),
@@ -897,6 +912,15 @@ async def test_actual0056_two_fresh_fitted_catalogs_and_drift_refusal(
     digest = fitted_delta.inspect_catalog_document(first, **roles)
     assert fitted_delta.inspect_catalog_document(second, **roles) == digest
     assert sha(canonical(first)) == digest
+    if retain_measurement:
+        assert cluster_identifier is not None
+        fitted_measurement.retain_hermetic_measurement(
+            catalog=first,
+            **roles,
+            cluster_system_identifier=cluster_identifier,
+            database_name=first_name,
+            database_oid=first_oid,
+        )
     with pytest.raises(
         fitted_delta.CatalogRefusal, match="fitted_catalog_native_reference_unsealed"
     ):
@@ -951,14 +975,14 @@ async def test_actual0056_two_fresh_fitted_catalogs_and_drift_refusal(
     for mutation, undo, refusal in trials:
         await _delta56_owner_change(engines[1], mutation)
         try:
-            changed, name, oid = await _delta56_read_catalog(engines[1])
+            changed, name, oid, _ = await _delta56_read_catalog(engines[1])
             assert (name, oid) == (second_name, second_oid)
             with pytest.raises(fitted_delta.CatalogRefusal, match=refusal):
                 fitted_delta.inspect_catalog_document(changed, **roles)
             assert changed != first
         finally:
             await _delta56_owner_change(engines[1], undo)
-        restored, name, oid = await _delta56_read_catalog(engines[1])
+        restored, name, oid, _ = await _delta56_read_catalog(engines[1])
         assert (name, oid) == (second_name, second_oid)
         assert fitted_delta.inspect_catalog_document(restored, **roles) == digest
 
