@@ -9,10 +9,23 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import NullPool
 
 from app.config.settings import get_settings
+from app.database.native_pg_tls_v1 import configured_native_pg_tls_context_v1
 
 settings = get_settings()
+native_pg_tls_settings_pin = (
+    settings.database_url,
+    settings.ctcc_native_pg_tls_ca_file,
+    settings.ctcc_native_pg_tls_ca_sha256,
+)
+native_pg_tls_context = configured_native_pg_tls_context_v1(
+    ca_file=settings.ctcc_native_pg_tls_ca_file,
+    ca_sha256=settings.ctcc_native_pg_tls_ca_sha256,
+    database_url=settings.database_url,
+)
 
 engine_options: dict[str, object] = {"pool_pre_ping": True}
+if native_pg_tls_context is not None:
+    engine_options["connect_args"] = {"ssl": native_pg_tls_context}
 if settings.environment == "test":
     # TestClient and pytest-asyncio may use different event loops. Never reuse
     # asyncpg connections across those loops.

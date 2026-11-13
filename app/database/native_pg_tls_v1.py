@@ -18,10 +18,13 @@ import ssl
 import stat
 from pathlib import Path
 
+from sqlalchemy.engine import URL, make_url
+
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z", re.ASCII)
 _MAX_CA_BYTES = 1_048_576
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
 _PATH_TYPE = type(Path())
+_HOST = re.compile(r"[a-z0-9][a-z0-9.-]{0,252}\Z", re.ASCII)
 
 
 class NativePgTlsError(ValueError):
@@ -112,7 +115,9 @@ def verified_native_pg_tls_context_v1(
             type(context) is not ssl.SSLContext
             or context.verify_mode != ssl.CERT_REQUIRED
             or context.check_hostname is not True
+            or context.minimum_version < ssl.TLSVersion.TLSv1_2
             or context.cert_store_stats()["x509_ca"] < 1
+            or context.keylog_filename is not None
             or context._msg_callback is not None
             or context.sni_callback is not None
         ):
@@ -122,3 +127,44 @@ def verified_native_pg_tls_context_v1(
         raise
     except Exception:  # noqa: BLE001 -- fixed denial hides private path and PEM
         raise NativePgTlsError("native_pg_tls_unavailable") from None
+
+
+def reviewed_native_pg_tls_route_v1(raw_url: str) -> URL:
+    """Validate an explicit asyncpg TCP route before an SSL engine exists."""
+    try:
+        if type(raw_url) is not str or not raw_url:
+            _deny()
+        url = make_url(raw_url)
+        if (
+            type(url) is not URL
+            or url.drivername != "postgresql+asyncpg"
+            or type(url.username) is not str
+            or not url.username
+            or type(url.host) is not str
+            or _HOST.fullmatch(url.host) is None
+            or type(url.database) is not str
+            or not url.database
+            or url.port is not None
+            and (type(url.port) is not int or not 1 <= url.port <= 65535)
+            or url.query
+        ):
+            _deny()
+        return url
+    except NativePgTlsError:
+        raise
+    except Exception:  # noqa: BLE001 -- never expose a private URL.
+        raise NativePgTlsError("native_pg_tls_unavailable") from None
+
+
+def configured_native_pg_tls_context_v1(
+    *, ca_file: str, ca_sha256: str, database_url: str
+) -> ssl.SSLContext | None:
+    """Return no context for legacy configuration; otherwise bind reviewed CA."""
+    if type(ca_file) is not str or type(ca_sha256) is not str:
+        _deny()
+    if not ca_file and not ca_sha256:
+        return None
+    if not ca_file or not ca_sha256:
+        _deny()
+    reviewed_native_pg_tls_route_v1(database_url)
+    return verified_native_pg_tls_context_v1(Path(ca_file), ca_sha256)
