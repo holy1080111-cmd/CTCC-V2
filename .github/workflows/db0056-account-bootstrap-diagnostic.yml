@@ -1,0 +1,54 @@
+name: DB0056 original account bootstrap diagnostic
+
+on:
+  push:
+    branches: [work/db0056-account-bootstrap-diagnostic]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  original-bootstrap:
+    if: github.ref == 'refs/heads/work/db0056-account-bootstrap-diagnostic'
+    name: DB0056 original account bootstrap cluster ${{ matrix.cluster }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        cluster: [1, 2]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Replay exact original cases in a fresh isolated DB0056 cluster
+        shell: bash
+        run: |
+          set -euo pipefail
+          commit=$(git rev-parse HEAD)
+          test "$commit" = "$GITHUB_SHA"
+          tree=$(git rev-parse 'HEAD^{tree}')
+          archive="$RUNNER_TEMP/ctcc-source.tar"
+          git -c core.autocrlf=false -c core.eol=lf archive --format=tar --output="$archive" "$commit"
+          digest=$(sha256sum "$archive" | cut -d ' ' -f 1)
+          python3 -m scripts.verify_current0056_hermetic \
+            --archive "$archive" --archive-sha256 "$digest" \
+            --commit "$commit" --tree "$tree" \
+            --suite postgres --postgres-component-index 1 --account-bootstrap-diagnostic \
+            --output "$RUNNER_TEMP/ctcc-account-bootstrap"
+      - name: Preserve exact source and bounded redacted telemetry
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ctcc-db0056-account-bootstrap-${{ matrix.cluster }}-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/ctcc-source.tar
+            ${{ runner.temp }}/ctcc-account-bootstrap/identity.json
+            ${{ runner.temp }}/ctcc-account-bootstrap/steps.json
+            ${{ runner.temp }}/ctcc-account-bootstrap/cleanup.json
+            ${{ runner.temp }}/ctcc-account-bootstrap/source-files.json
+            ${{ runner.temp }}/ctcc-account-bootstrap/results.sha256.json
+            ${{ runner.temp }}/ctcc-account-bootstrap/account-bootstrap-diagnostic.json
+          if-no-files-found: error
+          retention-days: 30

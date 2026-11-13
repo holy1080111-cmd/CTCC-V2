@@ -3,6 +3,7 @@
 import argparse
 import io
 import json
+import os
 import re
 import tarfile
 from contextlib import ExitStack
@@ -12,11 +13,16 @@ from uuid import uuid4
 from scripts import current0056_fitted_catalog_measurement_v1 as fitted_measurement
 from scripts import current0056_hermetic_contract as contract
 from scripts import current0056_postgrant_acl_measurement_v1 as postgrant_acl
+from scripts import pg_account_bootstrap_diagnostic as account_bootstrap
 from scripts import verify_final_hermetic as shared
 from scripts.current0055_catalog_receipt import verify_current55_catalog_report
 from scripts.devval_campaign_physical_catalog_v1 import HERMETIC_CATALOG_ENV
 from scripts.devval_hermetic_tls import devval_tls
 from scripts.evidence_json import read_evidence_json
+from scripts.prospective_capture_custody import (
+    settle_owned_capture_writers,
+    stable_read,
+)
 from scripts.verify_current0055_hermetic import (
     _COPIED_SOURCE,
     _PG_READY,
@@ -43,6 +49,8 @@ _EXACT_HOST_HELPERS = (
     "devval_campaign_physical_catalog_v1.py",
     "devval_hermetic_tls.py",
     "evidence_json.py",
+    "pg_account_bootstrap_diagnostic.py",
+    "prospective_capture_custody.py",
     "verify_current0055_hermetic.py",
     "verify_final_hermetic.py",
     "verify_linux_shard.py",
@@ -134,14 +142,16 @@ def _arguments():
     parser.add_argument("--shard-index", type=int)
     parser.add_argument("--postgres-component-index", type=int)
     parser.add_argument("--fitted-catalog-diagnostic", action="store_true")
+    parser.add_argument("--account-bootstrap-diagnostic", action="store_true")
     args = parser.parse_args()
     if (
         (args.shard_index is not None and args.suite != "shard")
         or (args.postgres_component_index is not None and args.suite != "postgres")
         or (
-            args.fitted_catalog_diagnostic
+            (args.fitted_catalog_diagnostic or args.account_bootstrap_diagnostic)
             and (args.suite != "postgres" or args.postgres_component_index != 1)
         )
+        or (args.fitted_catalog_diagnostic and args.account_bootstrap_diagnostic)
         or not re.fullmatch(r"[0-9a-f]{40}", args.commit)
         or not re.fullmatch(r"[0-9a-f]{40}", args.tree)
         or not re.fullmatch(r"[0-9a-f]{64}", args.archive_sha256)
@@ -199,7 +209,8 @@ def main(*, archive_bytes=None):
 
 
 def _run(args, index, raw, files, runner_sha, root):
-    diagnostic = args.fitted_catalog_diagnostic
+    bootstrap_diagnostic = args.account_bootstrap_diagnostic
+    diagnostic = args.fitted_catalog_diagnostic or bootstrap_diagnostic
     test_results = root / "test-results"
     test_results.mkdir(mode=0o777)
     test_results.chmod(
@@ -256,7 +267,9 @@ def _run(args, index, raw, files, runner_sha, root):
         "external_order_writes": 0,
         "trading_acceptance": False,
     }
-    if diagnostic:
+    if bootstrap_diagnostic:
+        identity["validation_scope"] = "account_bootstrap_diagnostic_only"
+    elif diagnostic:
         identity["validation_scope"] = "fitted_catalog_diagnostic_only"
     _write(root / "identity.json", identity)
     run = shared.Run(root)
@@ -491,7 +504,18 @@ def _run(args, index, raw, files, runner_sha, root):
             identity["recovery"] = shared.verify_pytest_report(
                 root / contract.RECOVERY_REPORT, required_cases=contract.RECOVERY_CASES
             )
-        if diagnostic:
+        if bootstrap_diagnostic:
+            stage = account_bootstrap.STAGE
+            junit = f"test-results/{account_bootstrap.JUNIT}"
+            test_command = (
+                *_PYTEST,
+                "-p",
+                "scripts.pg_account_bootstrap_trace",
+                "--tb=no",
+                f"--junitxml=/validation-results/{account_bootstrap.JUNIT}",
+                *account_bootstrap.NODES,
+            )
+        elif diagnostic:
             stage, junit = "fitted-catalog-diagnostic", _FITTED_JUNIT
             test_command = (
                 *_PYTEST,
@@ -516,18 +540,31 @@ def _run(args, index, raw, files, runner_sha, root):
                 "CTCC_RUN_B3_PREFIX_33=1",
                 "-e",
                 "CTCC_B3_SCALE_RECEIPT_DIR=/validation-results",
+                *(
+                    ("-e", "CTCC_ACCOUNT_BOOTSTRAP_DIAGNOSTIC=1")
+                    if bootstrap_diagnostic
+                    else ()
+                ),
                 *(tls.pytest_environment if tls else ()),
                 *(("-e", f"{HERMETIC_CATALOG_ENV}=1") if needs_devval_tls else ()),
             ),
             timeout=(
-                shared.POSTGRES_TEST_TIMEOUT_SECONDS
+                20 * 60
+                if bootstrap_diagnostic
+                else shared.POSTGRES_TEST_TIMEOUT_SECONDS
                 if args.suite == "postgres" and not diagnostic
                 else shared.FULL_TEST_TIMEOUT_SECONDS
             ),
         )
         identity["tests"] = shared.verify_pytest_report(
             root / junit,
-            required_cases=_FITTED_CASES if diagnostic else (),
+            required_cases=(
+                account_bootstrap.CASES
+                if bootstrap_diagnostic
+                else _FITTED_CASES
+                if diagnostic
+                else ()
+            ),
             allow_unrelated_skips=not diagnostic,
         )
         if anchor:
@@ -614,21 +651,37 @@ def _run(args, index, raw, files, runner_sha, root):
         raise
     finally:
         try:
-            cleanup = shared.cleanup_resources(resources, run_id)
+            if bootstrap_diagnostic:
+                cleanup = settle_owned_capture_writers(
+                    resources, run_id, {"deadline": None}
+                )
+                cleanup_passed = cleanup["verified_absent"] is True
+            else:
+                cleanup = shared.cleanup_resources(resources, run_id)
+                cleanup_passed = all(item["status"] != "FAIL" for item in cleanup)
         finally:
             tls_resources.close()
         _write(root / "cleanup.json", cleanup)
-        identity["cleanup"] = (
-            "PASS" if all(item["status"] != "FAIL" for item in cleanup) else "FAIL"
-        )
+        identity["cleanup"] = "PASS" if cleanup_passed else "FAIL"
         if identity["cleanup"] == "FAIL" and not diagnostic:
             identity.update(component_validation="FAIL", hermetic_regression="FAIL")
         _write(root / "identity.json", identity)
-        expected = (
-            _diagnostic_artifacts(run.steps)
-            if diagnostic
-            else contract.component_artifacts(args.suite, index)
-        )
+        if bootstrap_diagnostic:
+            _export_account_bootstrap(root, raw, files, identity, run.steps)
+            expected = {
+                "identity.json",
+                "source-files.json",
+                "steps.json",
+                "cleanup.json",
+            }
+            if (root / account_bootstrap.EXPORT).is_file():
+                expected.add(account_bootstrap.EXPORT)
+        else:
+            expected = (
+                _diagnostic_artifacts(run.steps)
+                if diagnostic
+                else contract.component_artifacts(args.suite, index)
+            )
         hashes = {
             name: contract.digest((root / name).read_bytes())
             for name in sorted(expected)
@@ -636,7 +689,10 @@ def _run(args, index, raw, files, runner_sha, root):
         }
         _write(root / "results.sha256.json", hashes)
     try:
-        if diagnostic:
+        if bootstrap_diagnostic:
+            if not (root / account_bootstrap.EXPORT).is_file():
+                raise ValueError("account_bootstrap_diagnostic_missing")
+        elif diagnostic:
             verify_fitted_catalog_diagnostic(root, raw, files)
         else:
             contract.verify_current56_component(
@@ -657,6 +713,109 @@ def _run(args, index, raw, files, runner_sha, root):
         _write(root / "results.sha256.json", hashes)
         raise
     return 0
+
+
+def _export_account_bootstrap(root, raw, files, identity, steps):
+    """Publish fixed telemetry only after exact-source and cleanup readback."""
+    stage = account_bootstrap.STAGE
+    required = (*contract.component_stage_names("postgres", 1)[:-1], stage)
+    if (
+        tuple(step["name"] for step in steps) != required
+        or any(
+            type(step["exit_code"]) is not int
+            or step["exit_code"] != 0
+            or "failure_type" in step
+            for step in steps[:-1]
+        )
+        or identity["cleanup"] != "PASS"
+        or contract.digest(raw) != identity["archive_sha256"]
+        or contract.migration_readback(
+            contract._read(root, "migration-identity.log"),
+            contract.migration_digest(files),
+        )
+        != identity["migration"]
+        or contract._read(root, "copied-source-exact.log").strip()
+        != str(len(files)).encode()
+    ):
+        return
+    settlement = read_evidence_json(contract._read(root, "cleanup.json"))
+    if (
+        settlement.get("verified_absent") is not True
+        or (root / "test-results").resolve(strict=True) != root / "test-results"
+    ):
+        raise ValueError("account_bootstrap_diagnostic_resource_present")
+    authority_log = contract._read(root, stage + ".log")
+    if authority_log.splitlines().count(b"HERMETIC_EXECUTION_AUTHORITY=0") != 1:
+        return
+    result = {
+        "schema": "ctcc.pg_account_bootstrap_diagnostic.v1",
+        "commit": identity["commit"],
+        "tree": identity["tree"],
+        "manifest_sha256": identity["manifest_sha256"],
+        "archive_sha256": identity["archive_sha256"],
+        "image_id": identity["image_id"],
+        "migration": identity["migration"],
+        "exact_node_sha256s": account_bootstrap.NODE_DIGESTS,
+        "case_exit_code": steps[-1]["exit_code"],
+        "cleanup_verified": True,
+        "trace": None,
+        "junit": None,
+        "full_postgresql_acceptance": False,
+        "execution_authority": False,
+    }
+    try:
+        trace, _ = stable_read(
+            root / "test-results" / account_bootstrap.TRACE,
+            account_bootstrap.MAX_TRACE,
+        )
+        records, complete, outcomes = account_bootstrap.read_trace(trace)
+        result["trace"] = {
+            "sha256": contract.digest(trace),
+            "complete": complete,
+            "records": records,
+            "results": outcomes,
+        }
+    except (OSError, ValueError):
+        result["trace"] = None
+    try:
+        junit, _ = stable_read(
+            root / "test-results" / account_bootstrap.JUNIT,
+            account_bootstrap.MAX_REPORT,
+        )
+        result["junit"] = {
+            "sha256": contract.digest(junit),
+            "results": account_bootstrap.read_junit(junit),
+        }
+    except (OSError, ValueError):
+        result["junit"] = None
+    verified = (
+        result["trace"] is not None
+        and result["trace"]["complete"]
+        and result["junit"] is not None
+        and result["trace"]["results"] == result["junit"]["results"]
+    )
+    result["diagnostic_outcome"] = (
+        "INCOMPLETE"
+        if not verified
+        else "ORIGINAL_CASES_PASSED"
+        if steps[-1]["exit_code"] == 0
+        and set(result["junit"]["results"].values()) == {"passed"}
+        else "ORIGINAL_CASES_DID_NOT_PASS"
+    )
+    wire = json.dumps(result, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+    output = root / account_bootstrap.EXPORT
+    with output.open("xb") as stream:
+        stream.write(wire)
+        stream.flush()
+        os.fsync(stream.fileno())
+    readback, _ = stable_read(output, 2 * account_bootstrap.MAX_TRACE)
+    if readback != wire:
+        raise ValueError("account_bootstrap_diagnostic_export_changed")
+    if (
+        steps[-1]["exit_code"] == 0
+        and result["diagnostic_outcome"] != "ORIGINAL_CASES_PASSED"
+    ):
+        raise ValueError("account_bootstrap_diagnostic_completion_invalid")
 
 
 def _diagnostic_artifacts(steps):
