@@ -298,7 +298,7 @@ def _reconstruct_owned_lab_archive(tmp_path, identity, files):
 async def test_actual0056_non_superuser_owner_upgrades_0055_once_with_fresh_readback(
     tmp_path,
 ):
-    """One hosted TLS owner transaction, lock refusal, then no-grant readback."""
+    """Historical superuser genesis, then a fresh restricted 0056 owner session."""
     url, tls = _isolated_tls_database_config()
     identity, files, files_raw = fitted_measurement._read_hermetic_inputs()
     source = fitted_measurement.source_identity(identity, files, files_raw)
@@ -342,7 +342,7 @@ async def test_actual0056_non_superuser_owner_upgrades_0055_once_with_fresh_read
                 BEGIN
                   SELECT name,password INTO STRICT role_name,role_password
                   FROM pg_temp.ctcc_owner_setup;
-                  EXECUTE pg_catalog.format('CREATE ROLE %I LOGIN PASSWORD %L',
+                  EXECUTE pg_catalog.format('CREATE ROLE %I LOGIN SUPERUSER PASSWORD %L',
                                             role_name,role_password);
                 END $ctcc$"""
             )
@@ -368,6 +368,21 @@ async def test_actual0056_non_superuser_owner_upgrades_0055_once_with_fresh_read
         )
         async with owner.begin() as connection:
             await connection.run_sync(_migrate_owned_empty_to_0055)
+        # Immutable 0050 requires the historical parent owner to be a
+        # superuser. End that lab-only genesis session before the 0056 actor;
+        # the actor must open a new, non-superuser physical connection.
+        await owner.dispose()
+        owner = None
+        async with admin.begin() as connection:
+            await connection.exec_driver_sql(
+                f"ALTER ROLE {_delta56_identifier(login)} NOSUPERUSER"
+            )
+        owner = create_async_engine(
+            owner_url,
+            poolclass=NullPool,
+            connect_args={"ssl": tls, "timeout": 10},
+            hide_parameters=True,
+        )
         async with owner.connect() as connection:
             row = tuple(
                 (
@@ -375,7 +390,8 @@ async def test_actual0056_non_superuser_owner_upgrades_0055_once_with_fresh_read
                         text("""SELECT d.oid::bigint,d.datdba::bigint,
                                  r.rolsuper,r.rolcreatedb,r.rolcreaterole,
                                  (SELECT system_identifier::text
-                                  FROM pg_catalog.pg_control_system())
+                                  FROM pg_catalog.pg_control_system()),
+                                 current_user,session_user
                           FROM pg_catalog.pg_database d
                           JOIN pg_catalog.pg_roles r ON r.oid=d.datdba
                           WHERE d.datname=pg_catalog.current_database()""")
@@ -383,6 +399,7 @@ async def test_actual0056_non_superuser_owner_upgrades_0055_once_with_fresh_read
                 ).one()
             )
         assert row[2:5] == (False, False, False)
+        assert row[6:] == (login, login)
         route = owner_route.OwnerRoutePinsV1(
             source_manifest_sha256=source["manifest_sha256"],
             ca_sha256=ca_sha,
@@ -438,32 +455,46 @@ async def test_actual0056_non_superuser_owner_upgrades_0055_once_with_fresh_read
                 source_archive_file=archive,
             )
     finally:
-        if owner is not None:
-            await owner.dispose()
         try:
-            if database_created:
-                async with admin.connect() as connection:
-                    await connection.execution_options(isolation_level="AUTOCOMMIT")
-                    await connection.exec_driver_sql(
-                        f"DROP DATABASE {_delta56_identifier(database)} WITH (FORCE)"
-                    )
+            if owner is not None:
+                await owner.dispose()
         finally:
             try:
-                if control_granted:
+                if role_created:
                     async with admin.begin() as connection:
                         await connection.exec_driver_sql(
-                            "REVOKE EXECUTE ON FUNCTION pg_catalog.pg_control_system() "
-                            f"FROM {_delta56_identifier(login)}"
+                            f"ALTER ROLE {_delta56_identifier(login)} NOSUPERUSER"
                         )
             finally:
                 try:
-                    if role_created:
-                        async with admin.begin() as connection:
+                    if database_created:
+                        async with admin.connect() as connection:
+                            await connection.execution_options(
+                                isolation_level="AUTOCOMMIT"
+                            )
                             await connection.exec_driver_sql(
-                                f"DROP ROLE {_delta56_identifier(login)}"
+                                f"DROP DATABASE {_delta56_identifier(database)} WITH (FORCE)"
                             )
                 finally:
-                    await admin.dispose()
+                    try:
+                        if control_granted:
+                            async with admin.begin() as connection:
+                                await connection.exec_driver_sql(
+                                    "REVOKE EXECUTE ON FUNCTION pg_catalog.pg_control_system() "
+                                    f"FROM {_delta56_identifier(login)}"
+                                )
+                    finally:
+                        try:
+                            if role_created:
+                                async with admin.begin() as connection:
+                                    await connection.exec_driver_sql(
+                                        f"DROP ROLE {_delta56_identifier(login)}"
+                                    )
+                        finally:
+                            try:
+                                await admin.dispose()
+                            finally:
+                                secret_file.unlink(missing_ok=True)
 
 
 async def test_actual0056_password_bearing_owner_route_preflight_is_readonly(
