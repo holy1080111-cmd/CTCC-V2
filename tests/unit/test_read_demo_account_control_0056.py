@@ -49,7 +49,12 @@ def sample(monkeypatch):
             "roles": roles,
             "purpose": reader.NativeWriterControlPurpose0056.PREPARE_OBSERVATION,
         }
-        yield SimpleNamespace(observation=proof, check_held=checkpoints)
+        try:
+            yield SimpleNamespace(observation=proof, check_held=checkpoints)
+        except reader.startup.deployment.NativeDeploymentDescriptor0056Error as exc:
+            raise RuntimeError(
+                "held control context normalized an internal error"
+            ) from exc
 
     monkeypatch.setattr(reader, "held_native_writer_control_0056_v1", held)
     selected = SimpleNamespace(writer_factory=Session)

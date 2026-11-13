@@ -42,18 +42,20 @@ async def _read_selected_control(selected, roles, event):
             ) as held:
                 held.check_held()
                 proof = held.observation
-                deployment._need(
+                actual_event = proof.control.event_sha256
+                authorized = (
                     proof.issuance_authority is proof.execution_authority is False
-                    and proof.control.event_sha256 == event
-                    and proof.control.state.scope == scope
                 )
                 state = proof.control.state
-                return {
-                    "control_event_sha256": event,
-                    "control_revision": state.revision,
-                    "emergency_stop": state.emergency_stop,
-                    "arm_request_recorded": state.arm_request_id is not None,
-                }
+            deployment._need(
+                authorized and actual_event == event and state.scope == scope
+            )
+            return {
+                "control_event_sha256": actual_event,
+                "control_revision": state.revision,
+                "emergency_stop": state.emergency_stop,
+                "arm_request_recorded": state.arm_request_id is not None,
+            }
         finally:
             await tx.rollback()
 
