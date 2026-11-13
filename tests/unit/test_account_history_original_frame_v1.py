@@ -11,11 +11,13 @@ from app.domain import account_history_original_frame_v1 as policy
 from app.trade_qualification import account_capture_journal as journal
 from app.trade_qualification import account_history_original_stream_v1 as stream
 from app.trade_qualification import account_history_source_v1 as native
+from app.trade_qualification import account_native_proof as proof
 from app.trade_qualification import account_observation_index as observed
 from tests.unit.test_account_history_original_source_catalog_v1 import (
     declared_source_catalog,
 )
 from tests.unit.test_account_history_original_stream_v1 import (
+    LEDGER_SCOPE,
     SCOPE,
     original_chain,
     originals,
@@ -168,6 +170,136 @@ async def test_original_bytes_and_recording_times_remain_exact_with_separate_rec
     )
     with pytest.raises(native.NativeHistorySourceError):
         native.consume_owned_native_history_source_facts_v1(result)
+
+
+async def test_private_original_wire_readback_matches_public_validation(original_wire):
+    frames, _, _ = original_wire
+    point = frames[-1].chain[0]
+    event, sequence, predecessor = journal._original_wire_event(
+        journal._ISSUER,
+        point.event.event_json,
+        point.event.raw_body,
+        point.event.packet_payload,
+    )
+    legacy = journal.JournalReadback(event, point.db_recorded_at, RECEIVED)
+    current, current_sequence, current_predecessor = journal._original_wire_readback(
+        journal._ISSUER,
+        point.event.event_json,
+        point.event.raw_body,
+        point.event.packet_payload,
+        point.db_recorded_at,
+        RECEIVED,
+    )
+    assert (current_sequence, current_predecessor) == (sequence, predecessor)
+    assert type(current) is journal.JournalReadback
+    assert current == legacy
+    assert current.receipt_json == legacy.receipt_json
+
+
+async def test_private_original_wire_readback_checks_each_event_once(
+    original_wire, monkeypatch
+):
+    frames, _, _ = original_wire
+    point = frames[-1].chain[0]
+    checked = journal.checked_event
+    count = 0
+
+    def count_checked_event(value):
+        nonlocal count
+        count += 1
+        return checked(value)
+
+    monkeypatch.setattr(journal, "checked_event", count_checked_event)
+    journal._original_wire_readback(
+        journal._ISSUER,
+        point.event.event_json,
+        point.event.raw_body,
+        point.event.packet_payload,
+        point.db_recorded_at,
+        RECEIVED,
+    )
+    assert count == 1
+
+
+@pytest.mark.parametrize("defect", ["issuer", "event", "packet", "clock"])
+async def test_private_original_wire_readback_keeps_exact_denials(
+    original_wire, defect
+):
+    frames, _, _ = original_wire
+    point = frames[-1].chain[0]
+    arguments = [
+        journal._ISSUER,
+        point.event.event_json,
+        point.event.raw_body,
+        point.event.packet_payload,
+        point.db_recorded_at,
+        RECEIVED,
+    ]
+    if defect == "issuer":
+        arguments[0] = object()
+    elif defect == "event":
+        arguments[1] = b"{}"
+    elif defect == "packet":
+        arguments[3] = b"changed"
+    else:
+        arguments[4] = point.db_recorded_at - timedelta(days=1)
+    with pytest.raises(journal.AccountJournalError) as denied:
+        journal._original_wire_readback(*arguments)
+    with pytest.raises(journal.AccountJournalError) as legacy_denied:
+        event, _, _ = journal._original_wire_event(*arguments[:4])
+        journal.JournalReadback(event, arguments[4], arguments[5])
+    assert denied.value.args == legacy_denied.value.args
+
+
+async def test_same_chain_native_proof_retains_reference_and_records(original_wire):
+    frames, _, _ = original_wire
+    chain = frames[-1].chain
+    reference, _, records, _ = proof._source(chain, LEDGER_SCOPE)
+    assert observed.reference_document(reference) == observed.reference_document(
+        observed.source_reference(chain)
+    )
+    assert tuple(records) == tuple(
+        journal.checked_event(point.event) for point in chain
+    )
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "event_json",
+        "raw_body",
+        "packet_payload",
+        "db_recorded_at",
+        "readback_at",
+    ),
+)
+async def test_same_chain_native_proof_denies_intermediate_event_swap(
+    original_wire, monkeypatch, field
+):
+    frames, _, _ = original_wire
+    chain = frames[-1].chain
+    original_query = proof.history._verify_original_page_query
+
+    def tamper_after_query(points, **pins):
+        result = original_query(points, **pins)
+        point = points[0]
+        if field in {"db_recorded_at", "readback_at"}:
+            object.__setattr__(
+                point,
+                field,
+                getattr(point, field) + timedelta(microseconds=1),
+            )
+        else:
+            object.__setattr__(point.event, field, b"changed")
+        return result
+
+    monkeypatch.setattr(
+        proof.history, "_verify_original_page_query", tamper_after_query
+    )
+    with pytest.raises(
+        proof.NativeAccountProofError, match="exact_source_chain_required"
+    ):
+        proof._source(chain, LEDGER_SCOPE)
 
 
 @pytest.mark.parametrize(
