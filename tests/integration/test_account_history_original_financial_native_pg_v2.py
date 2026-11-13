@@ -6,6 +6,7 @@ new test must run on its own actual stage; existing43 results cannot be reused.
 
 import asyncio
 import json
+import os
 from dataclasses import replace
 
 import pytest
@@ -34,6 +35,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 async def test_pg_financial_synthetic_wire_original33_uses_same_expiry_and_measured_finish(
     monkeypatch,
     original_frame_database,
+    request,
 ):
     admin = original_frame_database
     (
@@ -46,14 +48,31 @@ async def test_pg_financial_synthetic_wire_original33_uses_same_expiry_and_measu
     async with original.collector(admin, grant=True) as (reader, oid):
         # FIRST construction follows real role setup, exactly as the existing
         # native acceptance. No existing request expiry or Control lease resets.
-        request = original._request(scope, documents, revisions, lease)
-        result = await native.replay_original_history_financial_from_pg_v2(
-            async_sessionmaker(reader, expire_on_commit=False, autoflush=False),
-            genesis_request=request,
-            expected_checkpoint_sha256=checkpoint,
-            approved_collector_role_oid=oid,
-            expected_financial_policy_sha256=stream.original_history_financial_stream_policy_sha256_v2(),
-        )
+        genesis = original._request(scope, documents, revisions, lease)
+        try:
+            result = await native.replay_original_history_financial_from_pg_v2(
+                async_sessionmaker(reader, expire_on_commit=False, autoflush=False),
+                genesis_request=genesis,
+                expected_checkpoint_sha256=checkpoint,
+                approved_collector_role_oid=oid,
+                expected_financial_policy_sha256=stream.original_history_financial_stream_policy_sha256_v2(),
+            )
+        except native.OriginalHistoryFinancialPgReadError as error:
+            if os.environ.get("CTCC_ORIGINAL_FINANCIAL_DIAGNOSTIC") != "1":
+                raise
+            code = (
+                error.args[0]
+                if len(error.args) == 1
+                and type(error.args[0]) is str
+                and error.args[0] in native.ERROR_CODES
+                else "original_pg_read_uncertain"
+            )
+            request.node.user_properties.append(
+                ("ctcc_pg52_original_financial_closed_code_v1", code)
+            )
+            pytest.fail(
+                "ctcc_pg52_original_financial_closed_code_v1=" + code, pytrace=False
+            )
         await original._assert_reader_gone(admin, reader)
         acquisition = json.loads(result.acquisition_receipt_json)
         joined = json.loads(result.replay.receipt_json)
@@ -71,7 +90,7 @@ async def test_pg_financial_synthetic_wire_original33_uses_same_expiry_and_measu
             == checkpoint
             == original_receipt["checkpoint_sha256"]
         )
-        assert acquisition["original_expires_at"] == request.expires_at.isoformat()
+        assert acquisition["original_expires_at"] == genesis.expires_at.isoformat()
         assert acquisition["composite_receipt_sha256"] == result.replay.receipt_sha256
         assert (
             joined["checked_at"]
@@ -83,7 +102,7 @@ async def test_pg_financial_synthetic_wire_original33_uses_same_expiry_and_measu
             <= result.last_rpc_received_at
             <= result.measured_validation_at
             <= result.session_closed_at
-            < request.expires_at
+            < genesis.expires_at
         )
         assert "native_acquisition_not_owned" in joined["remaining_obligations"]
         assert facts["native_position_archive_sha256"] is None

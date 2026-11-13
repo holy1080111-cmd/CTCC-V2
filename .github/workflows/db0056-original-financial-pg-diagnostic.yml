@@ -1,0 +1,53 @@
+name: DB0056 original financial PostgreSQL diagnostic
+
+on:
+  push:
+    branches: [work/n225-pg-original-diagnostic-20261113]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  original-financial:
+    if: github.ref == 'refs/heads/work/n225-pg-original-diagnostic-20261113'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Checkout exact diagnostic source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run two fixed synthetic PostgreSQL cases
+        shell: bash
+        run: |
+          set -euo pipefail
+          commit=$(git rev-parse HEAD)
+          test "$commit" = "$GITHUB_SHA"
+          tree=$(git rev-parse 'HEAD^{tree}')
+          archive="$RUNNER_TEMP/ctcc-source.tar"
+          git -c core.autocrlf=false -c core.eol=lf archive --format=tar --output="$archive" "$commit"
+          digest=$(sha256sum "$archive" | cut -d ' ' -f 1)
+          python3 -m scripts.verify_current0056_hermetic \
+            --archive "$archive" --archive-sha256 "$digest" \
+            --commit "$commit" --tree "$tree" \
+            --suite postgres --postgres-component-index 0 \
+            --original-financial-diagnostic \
+            --output "$RUNNER_TEMP/ctcc-original-financial"
+
+      - name: Preserve only redacted diagnostic and source identity
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ctcc-db0056-original-financial-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/ctcc-source.tar
+            ${{ runner.temp }}/ctcc-original-financial/identity.json
+            ${{ runner.temp }}/ctcc-original-financial/source-files.json
+            ${{ runner.temp }}/ctcc-original-financial/steps.json
+            ${{ runner.temp }}/ctcc-original-financial/cleanup.json
+            ${{ runner.temp }}/ctcc-original-financial/results.sha256.json
+            ${{ runner.temp }}/ctcc-original-financial/test-results/original-financial-redacted.json
+          if-no-files-found: warn
+          retention-days: 30

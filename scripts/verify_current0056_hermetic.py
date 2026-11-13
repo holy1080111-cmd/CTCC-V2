@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from scripts import current0056_fitted_catalog_measurement_v1 as fitted_measurement
 from scripts import current0056_hermetic_contract as contract
+from scripts import current0056_original_financial_diagnostic_v1 as original_diagnostic
 from scripts import verify_final_hermetic as shared
 from scripts.current0055_catalog_receipt import verify_current55_catalog_report
 from scripts.devval_campaign_physical_catalog_v1 import HERMETIC_CATALOG_ENV
@@ -38,6 +39,7 @@ _EXACT_HOST_HELPERS = (
     "current0056_fitted_catalog_measurement_v1.py",
     "current0056_fitted_catalog_pair_v1.py",
     "current0056_migration_pin.py",
+    "current0056_original_financial_diagnostic_v1.py",
     "devval_campaign_physical_catalog_v1.py",
     "devval_hermetic_tls.py",
     "evidence_json.py",
@@ -47,6 +49,9 @@ _EXACT_HOST_HELPERS = (
 )
 _PARENT_HEAD_SQL = "SELECT version_num FROM public.alembic_version"
 _FITTED_JUNIT = "test-results/fitted-catalog-diagnostic.xml"
+_ORIGINAL_FINANCIAL_JUNIT = "test-results/original-financial-diagnostic.xml"
+_ORIGINAL_FINANCIAL_COLLECTION = "test-results/original-financial-collection.json"
+_ORIGINAL_FINANCIAL_REDACTED = "test-results/original-financial-redacted.json"
 _FITTED_CASES = (
     contract.devval_catalog.HERMETIC_CATALOG_CASE,
     fitted_measurement.CASE,
@@ -115,6 +120,7 @@ def _arguments():
     parser.add_argument("--shard-index", type=int)
     parser.add_argument("--postgres-component-index", type=int)
     parser.add_argument("--fitted-catalog-diagnostic", action="store_true")
+    parser.add_argument("--original-financial-diagnostic", action="store_true")
     args = parser.parse_args()
     if (
         (args.shard_index is not None and args.suite != "shard")
@@ -123,6 +129,12 @@ def _arguments():
             args.fitted_catalog_diagnostic
             and (args.suite != "postgres" or args.postgres_component_index != 1)
         )
+        or (
+            args.original_financial_diagnostic
+            and (args.suite != "postgres" or args.postgres_component_index != 0)
+        )
+        or args.fitted_catalog_diagnostic
+        and args.original_financial_diagnostic
         or not re.fullmatch(r"[0-9a-f]{40}", args.commit)
         or not re.fullmatch(r"[0-9a-f]{40}", args.tree)
         or not re.fullmatch(r"[0-9a-f]{64}", args.archive_sha256)
@@ -180,7 +192,8 @@ def main(*, archive_bytes=None):
 
 
 def _run(args, index, raw, files, runner_sha, root):
-    diagnostic = args.fitted_catalog_diagnostic
+    original_financial = args.original_financial_diagnostic
+    diagnostic = args.fitted_catalog_diagnostic or original_financial
     test_results = root / "test-results"
     test_results.mkdir(mode=0o777)
     test_results.chmod(
@@ -238,11 +251,15 @@ def _run(args, index, raw, files, runner_sha, root):
         "trading_acceptance": False,
     }
     if diagnostic:
-        identity["validation_scope"] = "fitted_catalog_diagnostic_only"
+        identity["validation_scope"] = (
+            "original_financial_diagnostic_only"
+            if original_financial
+            else "fitted_catalog_diagnostic_only"
+        )
     _write(root / "identity.json", identity)
     run = shared.Run(root)
     resources = []
-    anchor = contract.component_is_anchor(args.suite, index)
+    anchor = contract.component_is_anchor(args.suite, index) and not original_financial
     needs_devval_tls = contract.requires_devval_catalog(args.suite, index)
     tls_resources = ExitStack()
 
@@ -471,7 +488,24 @@ def _run(args, index, raw, files, runner_sha, root):
             identity["recovery"] = shared.verify_pytest_report(
                 root / contract.RECOVERY_REPORT, required_cases=contract.RECOVERY_CASES
             )
-        if diagnostic:
+        if original_financial:
+            stage, junit = "original-financial-diagnostic", _ORIGINAL_FINANCIAL_JUNIT
+            test_command = (
+                *_PYTEST,
+                "-p",
+                "scripts.verify_linux_shard",
+                "--ctcc-linux-suite=postgres",
+                "--ctcc-linux-postgres-component-index=0",
+                f"--ctcc-linux-collection-json=/validation-results/{Path(_ORIGINAL_FINANCIAL_COLLECTION).name}",
+                POSTGRES_PROGRESS_OPTION,
+                "--tb=no",
+                "--show-capture=no",
+                "-o",
+                "junit_logging=no",
+                f"--junitxml=/validation-results/{Path(junit).name}",
+                *_cases_to_nodes(original_diagnostic.CASES),
+            )
+        elif diagnostic:
             stage, junit = "fitted-catalog-diagnostic", _FITTED_JUNIT
             test_command = (
                 *_PYTEST,
@@ -496,18 +530,31 @@ def _run(args, index, raw, files, runner_sha, root):
                 "CTCC_RUN_B3_PREFIX_33=1",
                 "-e",
                 "CTCC_B3_SCALE_RECEIPT_DIR=/validation-results",
+                *(
+                    ("-e", "CTCC_ORIGINAL_FINANCIAL_DIAGNOSTIC=1")
+                    if original_financial
+                    else ()
+                ),
                 *(tls.pytest_environment if tls else ()),
                 *(("-e", f"{HERMETIC_CATALOG_ENV}=1") if needs_devval_tls else ()),
             ),
             timeout=(
-                shared.POSTGRES_TEST_TIMEOUT_SECONDS
+                1200
+                if original_financial
+                else shared.POSTGRES_TEST_TIMEOUT_SECONDS
                 if args.suite == "postgres" and not diagnostic
                 else shared.FULL_TEST_TIMEOUT_SECONDS
             ),
         )
         identity["tests"] = shared.verify_pytest_report(
             root / junit,
-            required_cases=_FITTED_CASES if diagnostic else (),
+            required_cases=(
+                original_diagnostic.CASES
+                if original_financial
+                else _FITTED_CASES
+                if diagnostic
+                else ()
+            ),
             allow_unrelated_skips=not diagnostic,
         )
         if anchor:
@@ -604,8 +651,29 @@ def _run(args, index, raw, files, runner_sha, root):
         if identity["cleanup"] == "FAIL" and not diagnostic:
             identity.update(component_validation="FAIL", hermetic_regression="FAIL")
         _write(root / "identity.json", identity)
+        if original_financial:
+            progress = test_results / "postgres-progress.log"
+            junit_path = root / _ORIGINAL_FINANCIAL_JUNIT
+            try:
+                summary = original_diagnostic.redacted_diagnostic(
+                    progress.read_bytes() if progress.is_file() else None,
+                    junit_path.read_bytes() if junit_path.is_file() else None,
+                )
+            except Exception:  # noqa: BLE001 - Never export raw failure content.
+                summary = {
+                    "schema": "ctcc.current0056.original_financial_pg_diagnostic.v1",
+                    "status": "REDACTION_UNAVAILABLE",
+                    "full_regression_passed": False,
+                    "gate3_accepted": False,
+                    "execution_authority": False,
+                    "provider_requests": 0,
+                    "order_writes": 0,
+                }
+            _write(root / _ORIGINAL_FINANCIAL_REDACTED, summary)
         expected = (
-            _diagnostic_artifacts(run.steps)
+            _original_financial_artifacts(run.steps)
+            if original_financial
+            else _diagnostic_artifacts(run.steps)
             if diagnostic
             else contract.component_artifacts(args.suite, index)
         )
@@ -616,7 +684,9 @@ def _run(args, index, raw, files, runner_sha, root):
         }
         _write(root / "results.sha256.json", hashes)
     try:
-        if diagnostic:
+        if original_financial:
+            verify_original_financial_diagnostic(root, raw, files)
+        elif diagnostic:
             verify_fitted_catalog_diagnostic(root, raw, files)
         else:
             contract.verify_current56_component(
@@ -651,6 +721,143 @@ def _diagnostic_artifacts(steps):
         f"test-results/{fitted_measurement.INHERITED_FILE}",
         *(f"{step['name']}.log" for step in steps),
     }
+
+
+def _original_financial_artifacts(steps):
+    return {
+        "identity.json",
+        "source-files.json",
+        "steps.json",
+        "cleanup.json",
+        _ORIGINAL_FINANCIAL_JUNIT,
+        _ORIGINAL_FINANCIAL_COLLECTION,
+        _ORIGINAL_FINANCIAL_REDACTED,
+        "test-results/postgres-progress.log",
+        *(f"{step['name']}.log" for step in steps),
+    }
+
+
+def verify_original_financial_diagnostic(root, raw, files):
+    """Verify two fixed synthetic nodes; never grant full-suite acceptance."""
+    identity = read_evidence_json(contract._read(root, "identity.json"))
+    steps = read_evidence_json(contract._read(root, "steps.json"))
+    hashes = read_evidence_json(contract._read(root, "results.sha256.json"))
+    stage = "original-financial-diagnostic"
+    required = (*contract.component_stage_names("postgres", 1)[:-1], stage)
+    if (
+        identity.get("validation_scope") != "original_financial_diagnostic_only"
+        or identity.get("suite") != "postgres"
+        or identity.get("postgres_component_index") != 0
+        or identity.get("shard_index") is not None
+        or identity.get("component_validation") != "NOT_RUN"
+        or identity.get("hermetic_regression") != "NOT_RUN"
+        or identity.get("cleanup") != "PASS"
+        or "failure_type" in identity
+        or identity.get("host_credentials") is not False
+        or identity.get("host_env") is not False
+        or identity.get("trading_acceptance") is not False
+        or identity.get("external_order_writes") != 0
+        or contract.digest(raw) != identity.get("archive_sha256")
+        or tuple(step["name"] for step in steps) != required
+        or any(
+            type(step["exit_code"]) is not int
+            or step["exit_code"] != 0
+            or "failure_type" in step
+            or "policy_refusal" in step
+            for step in steps
+        )
+        or set(hashes) != _original_financial_artifacts(steps)
+        or any(
+            contract.digest(contract._read(root, name)) != digest
+            for name, digest in hashes.items()
+        )
+    ):
+        raise ValueError("original_financial_diagnostic_identity_invalid")
+    mapping = contract._read(root, "source-files.json")
+    if (
+        read_evidence_json(mapping) != files
+        or contract.digest(mapping) != identity["source_files_sha256"]
+    ):
+        raise ValueError("original_financial_diagnostic_source_changed")
+    with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as archive:
+        if (
+            archive.pax_headers.get("comment") != identity["commit"]
+            or shared.archive_tree(archive) != identity["tree"]
+            or shared.archive_files(archive) != files
+        ):
+            raise ValueError("original_financial_diagnostic_source_changed")
+    network = read_evidence_json(contract._read(root, "network-inspect.log"))
+    image = read_evidence_json(contract._read(root, "image-identity.log"))
+    lock = read_evidence_json(contract._read(root, "dependency-lock.log"))
+    prefix = f"ctcc-final-{identity['run_id']}-"
+    if (
+        network["Name"] != prefix + "network"
+        or network["Internal"] is not True
+        or network["Containers"] not in ({}, None)
+        or network["Labels"]["org.ctcc.validation.run"] != identity["run_id"]
+        or image["Id"] != identity["image_id"]
+        or not re.fullmatch(r"sha256:[0-9a-f]{64}", image["Id"])
+        or image["Config"]["Labels"]["org.opencontainers.image.revision"]
+        != identity["commit"]
+        or image["Config"]["Labels"]["org.ctcc.source.tree"] != identity["tree"]
+        or lock["target"] != "linux"
+        or lock["lock_sha256"]
+        != files["requirements/validation-linux-py312.lock"]["sha256"]
+        or lock["accepted_full_validation_baseline"] is not False
+        or contract._read(root, "copied-source-exact.log").strip()
+        != str(len(files)).encode()
+        or b"manifest check passed:" not in contract._read(root, "copied-manifest.log")
+        or contract._read(root, "redis-ready.log").strip() != b"PONG"
+        or b"accepting connections" not in contract._read(root, "postgres-ready.log")
+        or contract._read(root, "migration-reservation-unique.log").strip()
+        != contract.RESERVATION_UNIQUE
+        or b"No new upgrade operations detected"
+        not in contract._read(root, "migration-drift.log")
+        or contract.migration_readback(
+            contract._read(root, "migration-identity.log"),
+            contract.migration_digest(files),
+        )
+        != identity["migration"]
+    ):
+        raise ValueError("original_financial_diagnostic_runtime_changed")
+    contract._cleanup(contract._read(root, "cleanup.json"), prefix, anchor=False)
+    collection = read_evidence_json(
+        contract._read(root, _ORIGINAL_FINANCIAL_COLLECTION)
+    )
+    if (
+        collection.get("schema") != "ctcc.linux_postgres_component_collection.v1"
+        or collection.get("mode") != "postgres"
+        or collection.get("postgres_component_index") != 0
+        or collection.get("full_nodeids") != list(original_diagnostic.NODES)
+        or collection.get("selected_nodeids") != list(original_diagnostic.NODES)
+        or collection.get("observed_nodeids") != list(original_diagnostic.NODES)
+        or collection.get("pytest_exitstatus") != 0
+    ):
+        raise ValueError("original_financial_diagnostic_collection_changed")
+    junit_path = root / _ORIGINAL_FINANCIAL_JUNIT
+    junit = shared.verify_pytest_report(
+        junit_path, required_cases=original_diagnostic.CASES
+    )
+    if (
+        junit != identity.get("tests")
+        or junit["tests"] != junit["passed"]
+        or junit["passed"] != 2
+    ):
+        raise ValueError("original_financial_diagnostic_test_scope_changed")
+    shared.verify_selected_junit_nodes(
+        junit_path, original_diagnostic.NODES, expected_sha256=junit["sha256"]
+    )
+    redacted = read_evidence_json(contract._read(root, _ORIGINAL_FINANCIAL_REDACTED))
+    if (
+        redacted
+        != original_diagnostic.redacted_diagnostic(
+            contract._read(root, "test-results/postgres-progress.log"),
+            contract._read(root, _ORIGINAL_FINANCIAL_JUNIT),
+        )
+        or redacted["status"] != "PASS_DIAGNOSTIC_ONLY"
+    ):
+        raise ValueError("original_financial_diagnostic_redacted_changed")
+    return redacted
 
 
 def verify_fitted_catalog_diagnostic(root, raw, files):
