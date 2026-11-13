@@ -23,14 +23,21 @@ if ((Get-FileHash -Algorithm SHA256 -LiteralPath $sslFile).Hash -ine
 }
 
 # Reproduce the existing reviewed desktop trust policy in the CI runtime.
+$lf = [string][char]10
+$crlf = [string][char]13 + $lf
 $rejectedCa = Join-Path $PSScriptRoot 'codex-rejected-cas.pem'
 if ((Get-FileHash -Algorithm SHA256 -LiteralPath $rejectedCa).Hash -ine
+    '8eff8829fead3440b04ad306d16ab7de76b1b11046e8a33fdcb50170db938d57') {
+    throw 'WINDOWS_VALIDATION_REJECTED_CA_SOURCE_CHANGED'
+}
+$runtimeCa = Join-Path $stdlib 'codex-rejected-cas.pem'
+$certificate = [IO.File]::ReadAllText($rejectedCa).Replace($lf, $crlf)
+[IO.File]::WriteAllText($runtimeCa, $certificate, [Text.UTF8Encoding]::new($false))
+if ((Get-FileHash -Algorithm SHA256 -LiteralPath $runtimeCa).Hash -ine
     'c916ce1b14ed8ca69e9b5c9fab22799a900dd610d6d4ec9b1347f4fd48e53718') {
     throw 'WINDOWS_VALIDATION_REJECTED_CA_CHANGED'
 }
-[IO.File]::Copy($rejectedCa, (Join-Path $stdlib 'codex-rejected-cas.pem'), $false)
 $sslSource = [IO.File]::ReadAllText($sslFile)
-$lf = [string][char]10
 $anchor = '        self = _SSLContext.__new__(cls, protocol)' + $lf
 $restriction = @(
     '        # Codex: distrust emSign ECC Root CA - G3.'
