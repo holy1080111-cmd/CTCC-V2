@@ -513,7 +513,7 @@ def test_fitted_diagnostic_is_explicit_and_cases_only(
     if accepted:
         args, observed = current56._arguments()
         assert args.fitted_catalog_diagnostic is True and observed == 1
-        assert len(current56._FITTED_CASES) == 24
+        assert len(set(current56._FITTED_CASES)) == len(current56._FITTED_CASES) == 32
         assert current56_contract.devval_catalog.HERMETIC_CATALOG_CASE in (
             current56._FITTED_CASES
         )
@@ -534,8 +534,15 @@ def test_fitted_diagnostic_is_explicit_and_cases_only(
             "test_actual0056_stable_role_identity_on_distinct_connections",
             "test_actual0056_owner_grant_lock_and_rollback",
             "test_actual0056_draft_locked_owner_grant_and_separate_role_readback",
+            "test_actual0056_reviewed_owner_target_plan_has_no_grant",
             "test_actual0056_restricted_account_control_read_replays_exact_scope",
             "test_actual0056_restricted_writer_control_replays_and_holds_uid_lock",
+            "test_actual0056_restricted_writer_creates_only_exact_stopped_genesis",
+            "test_actual0056_restart_recovery_revokes_existing_account_arm",
+            "test_actual0056_policy_counter_observes_absence_under_account_lock",
+            "test_actual0056_stopped_portfolio_keeps_absent_and_legacy_unknown",
+            "test_actual0056_restricted_ledger_preflight_holds_schema_fence",
+            "test_actual0056_terminal_report_reader_checks_grant_and_refuses_missing_spool",
         ):
             assert (
                 "tests.integration.test_gate3_fitted_candidate_custody_pg",
