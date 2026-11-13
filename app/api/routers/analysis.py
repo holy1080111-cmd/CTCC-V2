@@ -36,6 +36,14 @@ router = APIRouter(prefix="/api/analysis", tags=["analysis"])
     },
 )
 async def analyze_imported_snapshot(request: Request) -> OfflineSnapshotAnalysis:
+    raw = await _read_imported_snapshot_body(request)
+    return await run_in_threadpool(
+        _analyze_imported_snapshot, raw, get_settings().app_version
+    )
+
+
+async def _read_imported_snapshot_body(request: Request) -> bytes:
+    """Shared bounded upload; callers choose their own authentication source."""
     media_type = request.headers.get("content-type", "").partition(";")[0]
     if media_type.strip().lower() != "application/json":
         raise HTTPException(status_code=415, detail="snapshot_json_required")
@@ -48,9 +56,7 @@ async def analyze_imported_snapshot(request: Request) -> OfflineSnapshotAnalysis
                 body.extend(chunk)
     except TimeoutError:
         raise HTTPException(status_code=408, detail="snapshot_body_timeout") from None
-    return await run_in_threadpool(
-        _analyze_imported_snapshot, bytes(body), get_settings().app_version
-    )
+    return bytes(body)
 
 
 def _analyze_imported_snapshot(raw: bytes, version: str) -> OfflineSnapshotAnalysis:

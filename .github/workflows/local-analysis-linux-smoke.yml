@@ -437,29 +437,102 @@ jobs:
                   raise RuntimeError("paper_unauthorized_guard_missing")
 
               phase = "offline_snapshot"
-              fixture_command = (
-                  "from tests.unit.test_qualification_data import market; "
-                  "print(market.__wrapped__().model_dump_json())"
+              substep = "build_synthetic_snapshot"
+              fixture_command = """
+          import sys
+          from datetime import UTC, datetime, timedelta
+          from decimal import Decimal
+
+          try:
+              from app.domain.market import Candle, MarketSnapshot, OrderBook, OrderBookLevel, SwapTickerV2
+              from app.market.quality.candles import BAR_SECONDS
+          except ImportError:
+              sys.exit(31)
+
+          try:
+              # Fixed, wholly synthetic prices and clocks. Supply no source proof.
+              received = datetime(2025, 1, 1, 0, 0, 1, tzinfo=UTC)
+              quote_at = received - timedelta(seconds=1)
+              instrument = "BTC-USDT-SWAP"
+              frames = {}
+              for bar, seconds in BAR_SECONDS.items():
+                  frames[bar] = []
+                  for row in range(40):
+                      close = Decimal("100") + Decimal(row % 11 - 5) / 100
+                      frames[bar].append(Candle(
+                          timestamp=quote_at - timedelta(seconds=seconds * (40 - row)),
+                          open=close, high=close + Decimal("0.1"),
+                          low=close - Decimal("0.1"), close=close,
+                          volume_contracts=Decimal(100 + row % 7),
+                          volume_currency=Decimal("0.1"), volume_quote=Decimal("10"),
+                          confirmed=True,
+                      ))
+              snapshot = MarketSnapshot(
+                  symbol="BTC/USDT:USDT", instrument_id=instrument,
+                  ticker=SwapTickerV2(
+                      schema_version="okx-swap-ticker-v2", instrument_id=instrument,
+                      last=Decimal("100.005"), bid=Decimal(100), ask=Decimal("100.01"),
+                      bid_size=Decimal(2), ask_size=Decimal(3), open_24h=Decimal(100),
+                      high_24h=Decimal(101), low_24h=Decimal(99),
+                      volume_contracts_24h=Decimal(100), volume_currency_24h=Decimal("0.1"),
+                      timestamp=quote_at,
+                  ),
+                  mark_price=Decimal(100), funding_rate=Decimal(0),
+                  next_funding_time=quote_at + timedelta(hours=8),
+                  open_interest_contracts=Decimal(100), open_interest_currency=Decimal("0.1"),
+                  order_book=OrderBook(
+                      instrument_id=instrument, timestamp=quote_at,
+                      bids=[OrderBookLevel(price=Decimal(100), size=Decimal(2))],
+                      asks=[OrderBookLevel(price=Decimal("100.01"), size=Decimal(3))],
+                  ),
+                  candles=frames, quality={}, received_at=received,
               )
-              fixture_result = subprocess.run(
-                  [*compose, "exec", "-T", "api", "python", "-B", "-c", fixture_command],
-                  check=True, capture_output=True, timeout=40,
-              )
-              fixture = fixture_result.stdout.strip()
+              sys.stdout.write(snapshot.model_dump_json(round_trip=True))
+          except (ValueError, ArithmeticError, TypeError):
+              sys.exit(32)
+          """
+              try:
+                  fixture_result = subprocess.run(
+                      [*compose, "exec", "-T", "api", "python", "-B", "-c", fixture_command],
+                      capture_output=True, timeout=40,
+                  )
+              except subprocess.TimeoutExpired:
+                  raise RuntimeError("synthetic_snapshot_exec_timeout") from None
+              except OSError:
+                  raise RuntimeError("synthetic_snapshot_command_failed") from None
+              if fixture_result.returncode:
+                  raise RuntimeError({
+                      31: "synthetic_snapshot_dependency_missing",
+                      32: "synthetic_snapshot_model_invalid",
+                  }.get(fixture_result.returncode, "synthetic_snapshot_command_failed"))
+              fixture = fixture_result.stdout
               if not fixture or len(fixture) > 1_000_000:
                   raise RuntimeError("synthetic_snapshot_size_refused")
-              status, raw = request(
-                  "/api/analysis/snapshot", raw_body=fixture, auth=True
-              )
-              snapshot = json.loads(raw)
+              substep = "submit_synthetic_snapshot"
+              try:
+                  status, raw = request(
+                      "/api/analysis/snapshot", raw_body=fixture, auth=True
+                  )
+              except urllib.error.HTTPError:
+                  raise RuntimeError("synthetic_snapshot_http_refused") from None
+              substep = "verify_synthetic_receipt"
+              try:
+                  snapshot = json.loads(raw)
+              except (json.JSONDecodeError, UnicodeError):
+                  raise RuntimeError("offline_snapshot_response_invalid") from None
+              if type(snapshot) is not dict or type(snapshot.get("analysis")) is not dict:
+                  raise RuntimeError("offline_snapshot_response_invalid")
+              analysis = snapshot["analysis"]
+              frames = analysis.get("timeframe_analyses")
+              blockers = analysis.get("blockers")
               if (
                   status != 200
                   or snapshot.get("input_sha256") != hashlib.sha256(fixture).hexdigest()
                   or snapshot.get("source_authenticity_verified") is not False
                   or snapshot.get("execution_authority") is not False
-                  or snapshot.get("analysis", {}).get("trade_ready") is not False
-                  or "imported_snapshot_unverified" not in snapshot.get("analysis", {}).get("blockers", [])
-                  or set(snapshot.get("analysis", {}).get("timeframe_analyses", {})) != {"4H", "1H", "15m", "5m"}
+                  or analysis.get("trade_ready") is not False
+                  or type(blockers) is not list or "imported_snapshot_unverified" not in blockers
+                  or type(frames) is not dict or set(frames) != {"4H", "1H", "15m", "5m"}
               ):
                   raise RuntimeError("offline_snapshot_contract_refused")
 
@@ -537,6 +610,9 @@ jobs:
                   "local_page_refused", "legacy_route_exposed", "write_route_exposed",
                   "paper_unauthorized_guard_refused", "paper_unauthorized_guard_missing",
                   "synthetic_snapshot_size_refused", "offline_snapshot_contract_refused",
+                  "synthetic_snapshot_exec_timeout", "synthetic_snapshot_command_failed",
+                  "synthetic_snapshot_dependency_missing", "synthetic_snapshot_model_invalid",
+                  "synthetic_snapshot_http_refused", "offline_snapshot_response_invalid",
                   "paper_order_refused", "paper_restart_recovery_refused",
                   "paper_account_recovery_refused",
                   "runtime_mode_mismatch", "runtime_local_profile_missing",
@@ -556,6 +632,7 @@ jobs:
               fixed_substeps = {
                   "await_ready", "inspect_topology", "inspect_image",
                   "inspect_runtime_env", "inspect_socket_custody", "route_checks",
+                  "build_synthetic_snapshot", "submit_synthetic_snapshot", "verify_synthetic_receipt",
                   "restart_api", "inspect_after_restart",
               }
               fixed_kinds = {
