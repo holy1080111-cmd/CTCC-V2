@@ -67,6 +67,7 @@ class NativeRoles0056ObservationV1:
     frame_writer_observation_sha256: str
     raw_custody_catalog_sha256: str
     fitted_owner_catalog_sha256: str
+    granted_inherited_acl_shape_sha256: str
     schema: Literal["ctcc.native_only.actual0056_role_observation.v1"] = field(
         default="ctcc.native_only.actual0056_role_observation.v1", init=False
     )
@@ -86,6 +87,7 @@ class RestrictedNativeRoles0056ObservationV1:
     inherited_native_definitions_sha256: str
     frame_writer_observation_sha256: str
     raw_custody_catalog_sha256: str
+    granted_inherited_acl_shape_sha256: str
     schema: Literal["ctcc.native_only.restricted0056_role_observation.v1"] = field(
         default="ctcc.native_only.restricted0056_role_observation.v1", init=False
     )
@@ -110,6 +112,48 @@ def _is_digest(value) -> bool:
         type(value) is str
         and len(value) == 64
         and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _granted_inherited_acl_shape_sha256(names, native_definitions_sha256):
+    """Role-neutral shape of the *checked* inherited postgrant ACL phase.
+
+    Call only after the actual effective ACL and fitted exclusion probes in
+    the same writer transaction. This describes their exact checked scope; it
+    is not a digest of a raw catalog, an independent reference, or admission.
+    """
+    _need(
+        type(names) is tuple
+        and len(names) == 3
+        and len(set(names)) == 3
+        and _is_digest(native_definitions_sha256)
+    )
+    core, account = current55.account_acl._plans(*names)
+    previous, lifecycle = current55.lifecycle_acl._plans(*names)
+    _need(
+        len(core) == 28
+        and len(account) == 11
+        and len(lifecycle) == 3
+        and previous == core + account
+    )
+    labels = dict(zip(names, ("writer", "custody", "frame_reader"), strict=True))
+    plan = previous + lifecycle
+    _need(all(item.login in labels for item in plan))
+    return sha(
+        canonical(
+            {
+                "schema": "ctcc.native_only.db0056.granted_inherited_acl_shape.v1",
+                "database_head": "0056",
+                "phase": "postgrant_checked_effective_acl",
+                "inherited_native_definitions_sha256": native_definitions_sha256,
+                "grant_count": 42,
+                "grant_plan": [
+                    [item.kind, item.target, list(item.rights), labels[item.login]]
+                    for item in plan
+                ],
+                "fitted_demo_execute": False,
+            }
+        )
     )
 
 
@@ -206,6 +250,9 @@ async def _restricted_frame_writer(writer, frame, names):
             and pair["execution_authority"] is False
             and _is_digest(pair["native_definitions_sha256"])
         )
+        acl_phase_sha = _granted_inherited_acl_shape_sha256(
+            names[:3], pair["native_definitions_sha256"]
+        )
         pair_sha = sha(
             canonical(
                 {
@@ -219,7 +266,29 @@ async def _restricted_frame_writer(writer, frame, names):
                 }
             )
         )
-    return writer_identity, frame_identity, owner_oid, pair, pair_sha
+    return writer_identity, frame_identity, owner_oid, pair, pair_sha, acl_phase_sha
+
+
+async def _recheck_granted_writer(writer, names, native_sha, acl_phase_sha):
+    """Re-read the granted ACL and inherited definitions in a fresh writer session."""
+    async with writer() as session, session.begin():
+        identity = await _restricted_identity(session, names[0], frame=False)
+        await current55._exact_existing_acl(
+            await session.connection(), names[:3], identity[3]
+        )
+        await _require_no_effective_demo_fitted_execute(session, names[:3])
+        graph = await _catalog(session, inherited.ACTOR_CATALOG_SQL)
+        observed = inherited.observe_writer_0056(graph)
+        _need(
+            observed["database_head"] == "0056"
+            and observed["native_definitions_sha256"] == native_sha
+            and observed["native_baseline_admission"] is False
+            and observed["execution_authority"] is False
+            and await _identity_at_0056(session, names[0]) == identity
+            and _granted_inherited_acl_shape_sha256(names[:3], native_sha)
+            == acl_phase_sha
+        )
+    return identity
 
 
 async def observe_restricted_native_roles_0056_v1(
@@ -261,6 +330,7 @@ async def observe_restricted_native_roles_0056_v1(
                 owner_oid,
                 pair,
                 pair_sha,
+                acl_phase_sha,
             ) = await _restricted_frame_writer(writer, frame, names)
             async with carrier() as session, session.begin():
                 await session.execute(
@@ -273,10 +343,9 @@ async def observe_restricted_native_roles_0056_v1(
                 custody_identity = await _identity_at_0056(session, names[1])
                 custody_sha = await raw_custody._catalog(session)
                 _need(_is_digest(custody_sha))
-            async with writer() as session, session.begin():
-                writer_after = await _restricted_identity(
-                    session, names[0], frame=False
-                )
+            writer_after = await _recheck_granted_writer(
+                writer, names, pair["native_definitions_sha256"], acl_phase_sha
+            )
             current55._same_server(
                 writer_identity, custody_identity, frame_identity, writer_after
             )
@@ -289,7 +358,7 @@ async def observe_restricted_native_roles_0056_v1(
                 == routes
             )
         return RestrictedNativeRoles0056ObservationV1(
-            pair["native_definitions_sha256"], pair_sha, custody_sha
+            pair["native_definitions_sha256"], pair_sha, custody_sha, acl_phase_sha
         )
     except asyncio.CancelledError:
         raise
@@ -333,6 +402,7 @@ async def observe_native_roles_0056_v1(
                 owner_oid,
                 pair,
                 pair_sha,
+                acl_phase_sha,
             ) = await _restricted_frame_writer(writer, frame, names)
             async with carrier() as session, session.begin():
                 # One snapshot binds the observed 0056 head to all custody
@@ -347,10 +417,9 @@ async def observe_native_roles_0056_v1(
                 custody_identity = await _identity_at_0056(session, names[1])
                 custody_sha = await raw_custody._catalog(session)
                 _need(_is_digest(custody_sha))
-            async with writer() as session, session.begin():
-                writer_after = await _restricted_identity(
-                    session, names[0], frame=False
-                )
+            writer_after = await _recheck_granted_writer(
+                writer, names, pair["native_definitions_sha256"], acl_phase_sha
+            )
             owner_after = await _owner_fitted_catalog(
                 owner_factory, names[3], names[:3]
             )
@@ -369,7 +438,11 @@ async def observe_native_roles_0056_v1(
                 == routes
             )
         return NativeRoles0056ObservationV1(
-            pair["native_definitions_sha256"], pair_sha, custody_sha, owner[1]
+            pair["native_definitions_sha256"],
+            pair_sha,
+            custody_sha,
+            owner[1],
+            acl_phase_sha,
         )
     except asyncio.CancelledError:
         raise

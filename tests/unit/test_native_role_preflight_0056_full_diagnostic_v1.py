@@ -327,10 +327,12 @@ def scenario(monkeypatch):
         )
 
     async def acl(session, names, role):
-        assert session.name == "writer"
+        assert session.name in {"writer", "writer-final"}
         assert names == ("writer", "custody", "frame")
         assert role == 201
         state["events"].append((session.name, "acl"))
+        if session.name == "writer-final" and state.get("final_acl_drift"):
+            raise ValueError("synthetic final ACL drift")
 
     def fitted_catalog(document, **roles):
         assert roles == {
@@ -367,6 +369,16 @@ def scenario(monkeypatch):
             **state["pair_override"],
         }
 
+    def final_writer_definitions(graph):
+        assert graph == {"schema": inherited.SCHEMA, "role": "writer-final"}
+        state["events"].append(("writer-final", "inherited-definitions"))
+        return {
+            "database_head": "0056",
+            "native_definitions_sha256": state.get("final_native_digest", "1" * 64),
+            "native_baseline_admission": False,
+            "execution_authority": False,
+        }
+
     class _Custody:
         def __init__(self, factory):
             assert factory is carrier
@@ -394,6 +406,7 @@ def scenario(monkeypatch):
         lambda _: None,
     )
     monkeypatch.setattr(multirole, "verify_0056_pair", verify_pair)
+    monkeypatch.setattr(inherited, "observe_writer_0056", final_writer_definitions)
     return state, selected, owner
 
 
@@ -411,6 +424,7 @@ async def test_full_observation_binds_sessions_and_never_admits(scenario):
     assert subject.EXPECTED_0056_NATIVE_REFERENCE_SHA256 == ""
     assert result.inherited_native_definitions_sha256 == "1" * 64
     assert result.raw_custody_catalog_sha256 == "2" * 64
+    assert subject._is_digest(result.granted_inherited_acl_shape_sha256)
     events = state["events"]
     assert events.count(("owner", subject.fitted.CATALOG_SQL)) == 2
     assert events.count(("owner-final", subject.fitted.CATALOG_SQL)) == 2
@@ -423,6 +437,10 @@ async def test_full_observation_binds_sessions_and_never_admits(scenario):
     assert events.index(("writer", "acl")) < events.index(
         ("writer", str(subject._FITTED_DEMO_ACCESS))
     )
+    assert events.index(("writer-final", "acl")) < events.index(
+        ("writer-final", str(subject._FITTED_DEMO_ACCESS))
+    )
+    assert ("writer-final", "inherited-definitions") in events
     assert events.index(
         ("custody", "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
     ) < events.index(("custody", str(subject._HEAD)))
@@ -444,18 +462,59 @@ async def test_restricted_observation_uses_only_three_roles_and_never_admits(sce
     assert result.account_complete is False
     assert result.inherited_native_definitions_sha256 == "1" * 64
     assert result.raw_custody_catalog_sha256 == "2" * 64
+    assert subject._is_digest(result.granted_inherited_acl_shape_sha256)
     events = state["events"]
     assert all(name != "owner" and name != "owner-final" for name, _ in events)
     assert ("writer+frame", "pair") in events
     assert events.index(("writer", "acl")) < events.index(
         ("writer", str(subject._FITTED_DEMO_ACCESS))
     )
+    assert events.index(("writer-final", "acl")) < events.index(
+        ("writer-final", str(subject._FITTED_DEMO_ACCESS))
+    )
+    assert ("writer-final", "inherited-definitions") in events
     assert events.index(("custody", str(subject._HEAD))) < events.index(
         ("custody", "raw-custody")
     )
     assert events.index(("custody", "raw-custody")) < events.index(
         ("writer-final", str(subject._HEAD))
     )
+
+
+def test_granted_acl_shape_is_role_neutral_and_bound_to_inherited_definitions():
+    first = subject._granted_inherited_acl_shape_sha256(
+        ("writer_a", "custody_a", "frame_a"), "1" * 64
+    )
+    assert first == subject._granted_inherited_acl_shape_sha256(
+        ("writer_b", "custody_b", "frame_b"), "1" * 64
+    )
+    assert first != subject._granted_inherited_acl_shape_sha256(
+        ("writer_a", "custody_a", "frame_a"), "2" * 64
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner_session", [False, True])
+@pytest.mark.parametrize("fault", ["acl", "inherited_definitions"])
+async def test_second_writer_actual_drift_is_denied(scenario, owner_session, fault):
+    state, selected, owner = scenario
+    if fault == "acl":
+        state["final_acl_drift"] = True
+    else:
+        state["final_native_digest"] = "2" * 64
+    with pytest.raises(
+        subject.NativeRoles0056ObservationError,
+        match="^native_roles_0056_observation_unavailable$",
+    ):
+        if owner_session:
+            await subject.observe_native_roles_0056_v1(
+                selected, owner_factory=owner, source=Path("synthetic")
+            )
+        else:
+            await subject.observe_restricted_native_roles_0056_v1(
+                selected, source=Path("synthetic")
+            )
+    assert ("writer-final", "acl") in state["events"]
 
 
 @pytest.mark.asyncio

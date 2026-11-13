@@ -1451,6 +1451,67 @@ async def test_actual0056_full_native_role_rejects_swapped_roles_and_extra_grant
     assert await observation.observe_native_roles_0056_v1(selected, **args) == baseline
 
 
+async def test_actual0056_between_snapshot_grant_denies_fresh_writer_recheck(
+    _actual_0056_role_observation_lab, monkeypatch
+):
+    owner, _, selected, _ = _actual_0056_role_observation_lab
+    baseline = await observation.observe_restricted_native_roles_0056_v1(
+        selected, source=_SOURCE_ROOT
+    )
+    assert baseline.startup_admission is baseline.execution_authority is False
+    writer_name = _delta56_identifier(selected.writer_factory.kw["bind"].url.username)
+    relation = "public.gate3_fitted_candidate_bindings"
+    original = observation._restricted_frame_writer
+    injected = False
+
+    async def grant_after_first_snapshot(*args):
+        nonlocal injected
+        first = await original(*args)
+        # The first writer/frame transactions have closed. This independent
+        # owner transaction commits an actual extra grant before fresh readback.
+        async with owner.begin() as connection:
+            await connection.execute(
+                text(f"GRANT SELECT ON TABLE {relation} TO {writer_name}")
+            )
+        async with selected.writer_factory() as session, session.begin():
+            assert (
+                await session.scalar(
+                    text(
+                        "SELECT pg_catalog.has_table_privilege("
+                        "current_user,:relation,'SELECT')"
+                    ),
+                    {"relation": relation},
+                )
+                is True
+            )
+        injected = True
+        return first
+
+    monkeypatch.setattr(
+        observation, "_restricted_frame_writer", grant_after_first_snapshot
+    )
+    try:
+        with pytest.raises(
+            observation.NativeRoles0056ObservationError, match=_ROLE_OBS56_REFUSAL
+        ):
+            await observation.observe_restricted_native_roles_0056_v1(
+                selected, source=_SOURCE_ROOT
+            )
+        assert injected
+    finally:
+        monkeypatch.setattr(observation, "_restricted_frame_writer", original)
+        async with owner.begin() as connection:
+            await connection.execute(
+                text(f"REVOKE SELECT ON TABLE {relation} FROM {writer_name}")
+            )
+    assert (
+        await observation.observe_restricted_native_roles_0056_v1(
+            selected, source=_SOURCE_ROOT
+        )
+        == baseline
+    )
+
+
 async def test_actual0056_native_lifespan_denies_before_recovery_cas(
     _actual_0056_role_observation_lab, monkeypatch
 ):

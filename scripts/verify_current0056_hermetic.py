@@ -57,6 +57,10 @@ _FITTED_CASES = (
     ),
     (
         fitted_measurement.CASE[0],
+        "test_actual0056_between_snapshot_grant_denies_fresh_writer_recheck",
+    ),
+    (
+        fitted_measurement.CASE[0],
         "test_actual0056_native_lifespan_denies_before_recovery_cas",
     ),
     (
