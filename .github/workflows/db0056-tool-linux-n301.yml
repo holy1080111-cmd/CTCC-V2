@@ -37,11 +37,11 @@ jobs:
           destination="$RUNNER_TEMP/operator-tools"
           docker build --build-arg CTCC_SOURCE_COMMIT=7c036ef08b3fef778e9b6f0c442c5b97a6717d70 --build-arg CTCC_SOURCE_TREE=86573b68edd28475426b7ce86bbf938f7edbb9c2 -t ctcc-n301-tool "$destination/context"
           docker image inspect ctcc-n301-tool --format '{{.Id}}' > "$destination/results/image-id.txt"
-          docker run --rm --network none --user 0:0 --cap-drop ALL \
+          container=$(docker create --network none --user 0:0 --cap-drop ALL \
             --cap-add SYS_CHROOT --cap-add SETUID --cap-add SETGID \
-            --mount "type=bind,src=$destination/results,dst=/output" \
             --mount "type=bind,src=$destination/exact.tar,dst=/archive/exact.tar,readonly" \
             ctcc-n301-tool sh -euc '
+              mkdir /output
               python -B -m pytest -o addopts= -q -p no:cacheprovider \
                 --junitxml /output/linux-operator-tools.xml \
                 tests/unit/test_native_startup_trust_0056_v1.py \
@@ -52,7 +52,12 @@ jobs:
               python -B -m scripts.verify_offline_chaos_subset_v1 \
                 --archive /archive/exact.tar \
                 --archive-sha256 84538a6f33d4627bc215b3647c5c3c20001e90b7e8c37195376ee767fa53d1eb \
-                --output /output/component-chaos'
+                --output /output/component-chaos')
+          trap 'docker rm -f "$container" >/dev/null' EXIT
+          status=0
+          docker start --attach "$container" || status=$?
+          docker cp "$container:/output/." "$destination/results/"
+          exit "$status"
       - name: Retain exact-source diagnostics
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
