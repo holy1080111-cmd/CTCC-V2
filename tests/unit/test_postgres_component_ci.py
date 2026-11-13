@@ -505,7 +505,7 @@ def test_fitted_diagnostic_is_explicit_and_cases_only(
     if accepted:
         args, observed = current56._arguments()
         assert args.fitted_catalog_diagnostic is True and observed == 1
-        assert len(current56._FITTED_CASES) == 5
+        assert len(current56._FITTED_CASES) == 6
         for name in (
             "test_actual0056_native_lifespan_denies_before_recovery_cas",
             "test_actual0056_owner_grant_lock_and_rollback",

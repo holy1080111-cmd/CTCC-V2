@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import sys
 from datetime import timedelta
 
 import pytest
@@ -10,6 +11,10 @@ from sqlalchemy import select
 from app.database.models.qualification_ledger import QualificationReservationTransition
 from app.database.repositories.qualification_ledger import QualificationLedgerRepository
 from app.trade_qualification.reservations import QualificationLedgerError
+from app.trade_qualification.submission_intent import (
+    build_submission_intent,
+    replay_submission_intent,
+)
 from tests.integration import test_qualification_ledger_repository as fixtures
 from tests.unit.qualification_execution_binding_fixtures import execution_binding
 
@@ -163,6 +168,60 @@ async def test_uncertain_and_expired_intent_read_is_audit_only_and_hold_remains(
         await repo.consume_with_submission_intent(
             reserved.scope, reserved.original_event_key, expected_revision=4
         )
+
+
+async def test_diagnose_uncertain_v1_intent_replay_without_raw_values(
+    ledger_database, fixture
+):
+    """Exercise the original PostgreSQL case and report fixed replay stages."""
+    replay_code = replay_submission_intent.__code__
+    build_code = build_submission_intent.__code__
+    ordinal = 0
+    failures = []
+
+    def trace_replay(frame, event, arg):
+        if event == "exception" and len(failures) < 12:
+            kind, error, _ = arg
+            fixed_stage = str(error) if kind is ValueError else ""
+            if fixed_stage not in {"canonical", "version", "legacy_size", "changed"}:
+                fixed_stage = "fixed_stage_unavailable"
+            kind_name = (
+                kind.__name__
+                if kind.__name__
+                in {
+                    "ValueError",
+                    "ValidationError",
+                    "QualificationLedgerError",
+                    "TypeError",
+                    "KeyError",
+                }
+                else "OtherError"
+            )
+            failures.append(
+                (ordinal, frame.f_code.co_name, frame.f_lineno, kind_name, fixed_stage)
+            )
+        return trace_replay
+
+    def trace_call(frame, event, _):
+        nonlocal ordinal
+        if event == "call" and frame.f_code is replay_code:
+            ordinal += 1
+            return trace_replay
+        if event == "call" and frame.f_code is build_code:
+            return trace_replay
+        return None
+
+    original = sys.gettrace()
+    try:
+        sys.settrace(trace_call)
+        await test_uncertain_and_expired_intent_read_is_audit_only_and_hold_remains(
+            ledger_database, fixture
+        )
+    except QualificationLedgerError:
+        pytest.fail(f"isolated intent replay diagnostic {failures}", pytrace=False)
+    finally:
+        sys.settrace(original)
+    assert ordinal == 2 and not failures
 
 
 @pytest.mark.parametrize("fixture", ("long", "short"), indirect=True)
