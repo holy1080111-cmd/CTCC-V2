@@ -3262,3 +3262,58 @@ async def test_actual0056_restricted_partition_reopens_existing_b3_prefix(
         )
     with pytest.raises(partition56.Db0056SourcePartitionError):
         await reader.read(scope)
+
+
+async def test_actual0056_restricted_writer_creates_only_exact_stopped_genesis(
+    monkeypatch, _actual_0056_role_observation_lab
+):
+    from types import SimpleNamespace
+
+    from app.core import native_stopped_control_genesis_0056_v1 as genesis
+    from app.core.native_role_witness_0056_v1 import (
+        observe_restricted_native_roles_0056_witness_v1,
+    )
+    from app.database.repositories.demo_control import DemoControlRepository
+    from app.trade_qualification.demo_control import ControlScope
+
+    _, owner_factory, factories, _ = _actual_0056_role_observation_lab
+    witness = await observe_restricted_native_roles_0056_witness_v1(
+        factories, source=_SOURCE_ROOT
+    )
+    account = SimpleNamespace(expected_uid="730001")
+    selection = SimpleNamespace(source_roles_0056=witness, scope_config=account)
+    selected = {"factories": factories}
+    # Only the exchange selection is synthetic. SQLAlchemy, role/ACL checks,
+    # UID and row locks, transaction and both trigger checks are actual PG17.
+    monkeypatch.setattr(genesis.selectors, "_record", lambda _: selected)
+
+    with pytest.raises(genesis.locked.NativeLockedDemoControl0056Error):
+        await genesis._operate_selected_genesis(selection, reconcile_only=True)
+    created = await genesis._operate_selected_genesis(selection, reconcile_only=False)
+    repeated = await genesis._operate_selected_genesis(selection, reconcile_only=False)
+    reopened = await genesis._operate_selected_genesis(selection, reconcile_only=True)
+    assert (created.status, repeated.status, reopened.status) == (
+        "CREATED_STOPPED",
+        "EXISTING_STOPPED",
+        "EXISTING_STOPPED",
+    )
+    assert (
+        created.control_event_sha256
+        == repeated.control_event_sha256
+        == reopened.control_event_sha256
+    )
+    assert reopened.control_revision == 1 and reopened.emergency_stop
+    assert reopened.armed is reopened.execution_authority is False
+
+    # Legitimate prior stop from another purpose is explicitly out of scope.
+    account.expected_uid = "730002"
+    scope = ControlScope("demo", account.expected_uid)
+    owner_repository = DemoControlRepository(
+        owner_factory, clock=lambda: datetime.now(UTC)
+    )
+    original = await owner_repository.latch_stop(scope, command_id="7" * 64)
+    with pytest.raises(genesis.NativeStoppedControlGenesis0056Error):
+        await genesis._operate_selected_genesis(selection, reconcile_only=False)
+    preserved = await owner_repository.read(scope)
+    assert preserved.state == original.state
+    assert preserved.event_sha256 == original.event_sha256

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import ssl
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -102,6 +103,64 @@ def _direct_tls_route(engine) -> tuple[str, str, int, str]:
     return url_route
 
 
+@asynccontextmanager
+async def _verified_locked_demo_control_0056(
+    selected: ConfiguredNativeDemoFactoriesV2,
+    session: AsyncSession,
+    scope: ControlScope,
+):
+    """Internal verified UID lock shared by the read and stopped genesis."""
+    checked(scope, ControlScope)
+    pins = _factory_pins(selected)
+    _, engine, names, _ = pins
+    url_route = _direct_tls_route(engine)
+    _require(type(session) is AsyncSession)
+    transaction = session.sync_session.get_transaction()
+    _require_session(session, engine, transaction)
+    # The V2 readers map SQL rows through this session's identity map.
+    # Require a cold ORM view so a prior unbound read cannot supply a row.
+    _require(not session.identity_map)
+    pinned_migration(_SOURCE)
+
+    async with asyncio.timeout(15):
+        for setting in _LOCAL_SETTINGS:
+            await session.execute(text(setting))
+            _require_session(session, engine, transaction)
+
+        first = await writer56._session_identity(session, engine)
+        actor = await roles56.current55._identity(session, names[0])
+        _require(actor[3:6] == (first[5], first[6], first[8]))
+        _require_session(session, engine, transaction)
+        catalog = await writer56.observe_restricted_readwrite_writer_0056_v1(session)
+        _require_session(session, engine, transaction)
+        await _exact_existing_acl(await session.connection(), names, actor[3])
+        _require_session(session, engine, transaction)
+        # The writer catalog checks its own login; cover both other
+        # configured roles against the same installed fitted functions.
+        await roles56._require_no_effective_demo_fitted_execute(session, names[1:])
+        _require_session(session, engine, transaction)
+
+        await session.execute(text("SET LOCAL statement_timeout='1000ms'"))
+        _require_session(session, engine, transaction)
+        row = await DemoControlRepository._locked(session, scope)
+        _require_session(session, engine, transaction)
+        # All configured routes have already been checked to be identical.
+        witness = runtime_witness_0056(actor, names, (url_route,) * 3)
+
+        def require_held_transaction():
+            _require_session(session, engine, transaction)
+
+        yield row, catalog, witness, first[9], require_held_transaction
+        _require_session(session, engine, transaction)
+
+        _require(await roles56.current55._identity(session, names[0]) == actor)
+        _require(await writer56._session_identity(session, engine) == first)
+        _require_session(session, engine, transaction)
+        _require(
+            _factory_pins(selected) == pins and _direct_tls_route(engine) == url_route
+        )
+
+
 async def read_locked_demo_control_0056_v1(
     selected: ConfiguredNativeDemoFactoriesV2,
     session: AsyncSession,
@@ -114,62 +173,17 @@ async def read_locked_demo_control_0056_v1(
     retain the transaction for any future operations relying on these locks.
     """
     try:
-        checked(scope, ControlScope)
-        pins = _factory_pins(selected)
-        _, engine, names, _ = pins
-        url_route = _direct_tls_route(engine)
-        _require(type(session) is AsyncSession)
-        transaction = session.sync_session.get_transaction()
-        _require_session(session, engine, transaction)
-        # The V2 readers map SQL rows through this session's identity map.
-        # Require a cold ORM view so a prior unbound read cannot supply a row.
-        _require(not session.identity_map)
-        pinned_migration(_SOURCE)
-
-        async with asyncio.timeout(15):
-            for setting in _LOCAL_SETTINGS:
-                await session.execute(text(setting))
-                _require_session(session, engine, transaction)
-
-            first = await writer56._session_identity(session, engine)
-            actor = await roles56.current55._identity(session, names[0])
-            _require(actor[3:6] == (first[5], first[6], first[8]))
-            _require_session(session, engine, transaction)
-            catalog = await writer56.observe_restricted_readwrite_writer_0056_v1(
-                session
-            )
-            _require_session(session, engine, transaction)
-            await _exact_existing_acl(await session.connection(), names, actor[3])
-            _require_session(session, engine, transaction)
-            # The writer catalog checks its own login; cover both other
-            # configured roles against the same installed fitted functions.
-            await roles56._require_no_effective_demo_fitted_execute(session, names[1:])
-            _require_session(session, engine, transaction)
-
-            await session.execute(text("SET LOCAL statement_timeout='1000ms'"))
-            _require_session(session, engine, transaction)
-            row = await DemoControlRepository._locked(session, scope)
-            _require_session(session, engine, transaction)
+        async with _verified_locked_demo_control_0056(
+            selected, session, scope
+        ) as proof:
+            row, catalog, witness, started_at, require_held_transaction = proof
             state, event = await DemoControlRepositoryV2._snapshot(session, row)
-            _require_session(session, engine, transaction)
+            require_held_transaction()
             _require(state.scope == scope)
-            observed_at = await session.scalar(_CLOCK)
-            control = ControlObservation(state, event, observed_at)
-            _require(observed_at >= first[9])
-
-            _require(await roles56.current55._identity(session, names[0]) == actor)
-            _require(await writer56._session_identity(session, engine) == first)
-            _require_session(session, engine, transaction)
-            _require(
-                _factory_pins(selected) == pins
-                and _direct_tls_route(engine) == url_route
-            )
-            # All configured routes have already been checked to be identical.
-            witness = runtime_witness_0056(actor, names, (url_route,) * 3)
+            control = ControlObservation(state, event, await session.scalar(_CLOCK))
+            _require(control.observed_at >= started_at)
         return NativeLockedDemoControl0056V1(control, catalog, *witness)
-    except asyncio.CancelledError:
+    except (asyncio.CancelledError, NativeLockedDemoControl0056Error):
         raise
-    except NativeLockedDemoControl0056Error:
-        raise
-    except Exception:  # noqa: BLE001 -- Do not expose stored control or SQL details.
+    except Exception:  # noqa: BLE001 -- Never expose stored control or SQL details.
         _require(False)
