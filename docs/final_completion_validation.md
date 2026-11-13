@@ -1,5 +1,26 @@
 # Final completion validation state
 
+## 2026-11-14 DB0056 current Demo source observation
+
+`python -B -m scripts.observe_demo_current_source_0056 --instrument BTC-USDT-SWAP`
+is an explicit diagnostic for a configured, restricted Demo deployment. It
+requires the native-only profile, zero retries, the fixed Global Demo route,
+three separately restricted TLS database roles and an owner-private evidence
+root. The tool checks the actual DB0056 catalog before its first exchange
+request. The signed selector derives the exact account from the retained
+credential session. A locally constructed account ID or saved selector receipt
+cannot start this acquisition.
+
+It reuses the native V4 CURRENT page-chain acquisition and separate committed
+custody readback. An account Control observation under the UID lock precedes
+collection. Another independent transaction checks the same Control state,
+event and database identity before the CURRENT owner is consumed. No Control
+lock spans exchange I/O. A changed or armed Control endpoint prevents the
+summary. The published private summary carries hashes and shows
+`admission=DENY`. It establishes no historical balance coverage, portfolio
+completeness, startup admission, or order authority. The account proof and
+original captured bytes may remain after a late refusal.
+
 ## 2026-10-24 DB0048 host dependency correction under validation
 
 Exact source `baaffa12d59e409ae6318fe7f19d162a8af6829a`, tree
