@@ -97,6 +97,11 @@ async def _read_counter_row(session, scope, state, check_held) -> bytes | None:
         row.measured_genesis_json.encode("ascii"),
     )
     ack = original._validate_counter_row(row, stored)
+    await _verify_row_control(session, scope, state, ack, check_held)
+    return original._row_raw(row, original._COUNTER_COLUMNS)
+
+
+async def _verify_row_control(session, scope, state, ack, check_held) -> None:
     _need(
         ack.scope == state.scope
         and ack.settlement_currency == scope.settlement_currency
@@ -114,7 +119,6 @@ async def _read_counter_row(session, scope, state, check_held) -> bytes | None:
         and event.event_sha256 == ack.control_event_sha256
         and event.state_sha256 == ack.control_state_sha256
     )
-    return original._row_raw(row, original._COUNTER_COLUMNS)
 
 
 async def _read_once(factories, roles, scope, control_scope) -> _Read:

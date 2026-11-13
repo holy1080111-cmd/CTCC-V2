@@ -12,6 +12,7 @@ CURRENT freshness or dispatch authority through these DATA-only contexts.
 
 import asyncio
 from collections.abc import Coroutine
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, fields, is_dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Context, Decimal, localcontext
@@ -25,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings as configured
 from app.core import native_frame_reader_0056_v1 as frame56
 from app.core import native_locked_demo_control_0056_v1 as control56
+from app.core import native_policy_counter_readback_0056_v1 as counter56
 from app.core import native_role_witness_0056_v1 as witness56
 from app.database.models.account_revision_collector_lineage import (
     DemoCollectorCurrentRevisionLineage as Lineage,
@@ -1522,6 +1524,54 @@ class _CounterOriginV6:
     original_measurement: bytes = field(repr=False)
 
 
+async def _held_selected_live_control_v6(state, session):
+    ctrl = state["control"]
+    profile = _owned_database_0056_v6(state)
+    if profile is None:
+        for statement in (
+            "SET LOCAL search_path TO pg_catalog,public,pg_temp",
+            "SET LOCAL TIME ZONE 'UTC'",
+            "SET LOCAL lock_timeout='1000ms'",
+            "SET LOCAL statement_timeout='1000ms'",
+        ):
+            await session.execute(text(statement))
+            _check_v6(state)
+        await catalog55.verify_actual_control_catalog_v2(session)
+        _check_v6(state)
+        actual, event = await DemoControlRepositoryV2.read_in_transaction(
+            session, ctrl["scope"]
+        )
+        _check_v6(state)
+        yield actual, event, None
+        return
+    selected, roles = profile
+    async with control56.held_native_writer_control_0056_v1(
+        selected,
+        session,
+        ctrl["scope"],
+        roles=roles,
+        purpose=control56.NativeWriterControlPurpose0056.PREPARE_OBSERVATION,
+    ) as held:
+        _check_v6(state)
+        held.check_held()
+        observation = held.observation.control
+        if (
+            not observation.state.arm_intent_current(observation.observed_at)
+            or not ctrl["observation"].observed_at
+            <= observation.observed_at
+            < state["expires_at"]
+            or session.get_bind(mapper=CounterRow) is not session.bind.sync_engine
+            or session.get_bind(mapper=counter56.DemoControlJournal)
+            is not session.bind.sync_engine
+            or session.get_bind(clause=lineage55._META_SQL)
+            is not session.bind.sync_engine
+        ):
+            _deny("controlled_account_counter_0056_original_control_required")
+        yield observation.state, observation.event_sha256, held
+        _check_v6(state)
+        held.check_held()
+
+
 async def _read_counter_v6(state):
     ctrl = state["control"]
     scope = ctrl["ledger_scope"]
@@ -1533,26 +1583,26 @@ async def _read_counter_v6(state):
     )
     for _ in range(2):
         _check_v6(state)
-        async with ctrl["factory"]() as session, session.begin():
-            for statement in (
-                "SET LOCAL search_path TO pg_catalog,public,pg_temp",
-                "SET LOCAL TIME ZONE 'UTC'",
-                "SET LOCAL lock_timeout='1000ms'",
-                "SET LOCAL statement_timeout='1000ms'",
-            ):
-                await session.execute(text(statement))
-                _check_v6(state)
-            await catalog55.verify_actual_control_catalog_v2(session)
-            _check_v6(state)
-            actual, event = await DemoControlRepositoryV2.read_in_transaction(
-                session, ctrl["scope"]
-            )
+        async with (
+            ctrl["factory"]() as session,
+            session.begin(),
+            asynccontextmanager(_held_selected_live_control_v6)(state, session) as (
+                actual,
+                event,
+                held,
+            ),
+        ):
             _check_v6(state)
             if (
                 actual != ctrl["observation"].state
                 or event != ctrl["observation"].event_sha256
             ):
                 _deny("controlled_account_counter_Control_changed")
+            if held is not None and any(
+                session.get_bind(mapper=model) is not session.bind.sync_engine
+                for model in (CounterRow, counter56.DemoControlJournal)
+            ):
+                _deny("controlled_account_counter_0056_original_connection_required")
             values = tuple(
                 (
                     await session.scalars(
@@ -1574,15 +1624,28 @@ async def _read_counter_v6(state):
             metadata.append(meta)
             if values:
                 ack = operator55._validate_counter_row(values[0], reference)
-                snapshots.append(
-                    operator55._row_raw(values[0], operator55._COUNTER_COLUMNS)
-                )
+                raw = operator55._row_raw(values[0], operator55._COUNTER_COLUMNS)
+                if held is not None:
+                    if (
+                        not ack.owner_sampled_at
+                        <= values[0].db_recorded_at
+                        <= meta[9]
+                        < state["expires_at"]
+                        or ack.db_role_oid != meta[3]
+                    ):
+                        _deny("controlled_account_counter_0056_original_row_changed")
+                    await counter56._verify_row_control(
+                        session, scope, actual, ack, held.check_held
+                    )
+                    _check_v6(state)
+                snapshots.append(raw)
                 rows.append((ack, values[0].initialized_at, values[0].db_recorded_at))
             else:
                 snapshots.append(None)
                 rows.append(None)
     if (
         snapshots[0] != snapshots[1]
+        or metadata[0][3] != metadata[1][3]
         or metadata[0][8] == metadata[1][8]
         or metadata[0][9] > metadata[1][9]
     ):
@@ -1739,13 +1802,21 @@ async def _prepare_issuer_v6(state):
     state["hwm_retained"] = retained
     _check_v6(state)
     ctrl = state["control"]
-    async with ctrl["factory"]() as session, session.begin():
-        await catalog55.verify_actual_issuer_catalog_v2(session)
+    async with (
+        ctrl["factory"]() as session,
+        session.begin(),
+        asynccontextmanager(_held_selected_live_control_v6)(state, session) as (
+            actual,
+            event,
+            held,
+        ),
+    ):
         _check_v6(state)
-        actual, event = await DemoControlRepositoryV2.read_in_transaction(
-            session, ctrl["scope"]
-        )
-        _check_v6(state)
+        if held is None:
+            await catalog55.verify_actual_issuer_catalog_v2(session)
+            _check_v6(state)
+        elif session.get_bind(mapper=Lineage) is not session.bind.sync_engine:
+            _deny("controlled_account_original_0056_lineage_connection_changed")
         if (
             actual != ctrl["observation"].state
             or event != ctrl["observation"].event_sha256
@@ -7700,7 +7771,6 @@ def _install_source_kernel_v6():
         "_consume_controlled_history_use_v6",
         "_replay_controlled_coverage_context_v6",
         "_replay_controlled_current_mirror_context_v6",
-        "_replay_owned_partition_repository_v6",
         "_take_owned_account_issuer_v1",
         "_replay_owned_account_issuer_v1",
         "_finish_owned_account_issuer_v1",
@@ -7789,6 +7859,7 @@ def _install_source_kernel_v6():
             issuer55.issuer_transaction.writer56.inherited,
             repository56,
             control56,
+            counter56,
             frame56,
             frame56.roles56,
             frame56.roles55,
