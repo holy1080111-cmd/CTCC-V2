@@ -85,6 +85,10 @@ CONTROL_LIFECYCLE_CASE = (
     DB0056_CONTROL_MONITOR_TEST_PATH.removesuffix(".py").replace("/", "."),
     "test_actual0056_restricted_control_repository_reads_back_lifecycle",
 )
+COVERAGE_CHECKPOINT_CASE = (
+    DB0056_CONTROL_MONITOR_TEST_PATH.removesuffix(".py").replace("/", "."),
+    "test_actual0056_coverage_replays_held_checkpoint_without_authority",
+)
 LEGACY_CONTROL_GENESIS_CASE = (
     DB0056_CONTROL_MONITOR_TEST_PATH.removesuffix(".py").replace("/", "."),
     "test_actual0056_owner_initializes_legacy_singleton_only_as_stopped",
@@ -102,6 +106,7 @@ CURRENT56_PG1_REQUIRED_CASES = (
     *CURRENT56_NATIVE_ROLE_CASES,
     CONTROL_MONITOR_CASE,
     CONTROL_LIFECYCLE_CASE,
+    COVERAGE_CHECKPOINT_CASE,
     LEGACY_CONTROL_GENESIS_CASE,
     REPORT_RESUME_CASE,
     INITIAL_TRANSPORT_CASE,

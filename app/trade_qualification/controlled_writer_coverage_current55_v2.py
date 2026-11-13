@@ -9,6 +9,7 @@ retained exactly; DATA returned here never creates financial eligibility.
 import asyncio
 import math
 import re
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from types import CoroutineType, FunctionType
@@ -16,12 +17,20 @@ from types import CoroutineType, FunctionType
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.native_role_preflight_0056_full_diagnostic_v1 import (
+    RestrictedNativeRoles0056ObservationV1,
+)
+from app.core.native_role_witness_0056_v1 import RestrictedNativeRoles0056WitnessV1
 from app.database.repositories import (
     collector_current_0055_multirole_catalog_v1 as catalog55,
 )
 from app.database.repositories import demo_control_current55_v2 as controls55
 from app.database.repositories import public_runtime_bundle_custody as custody
 from app.database.repositories import qualification_ledger as ledger
+from app.database.repositories import qualification_native_checkpoint_v2 as checkpoint56
+from app.demo_automation.native_server_selectors_v2 import (
+    ConfiguredNativeDemoFactoriesV2,
+)
 from app.domain import native_clock
 from app.domain.source_primitives import canonical, sha, utc_from_ns, validate_stamps
 from app.exchange.okx.private_rest import DemoPinnedReadSession
@@ -146,6 +155,7 @@ class _LockedSnapshotV2:
 
 def _context_signature(value):
     _need(type(value) is ControlledCoverageSourceV6)
+    _database_profile(value)
     _need(
         type(value.scope) is LedgerScope
         and value.scope.environment == "demo"
@@ -261,6 +271,8 @@ def _check(state):
         and value.current_custody_repository is original.current_custody_repository
         and value.source_generation is original.source_generation
         and value.read_session is original.read_session
+        and value.db0056_factories is original.db0056_factories
+        and value.db0056_roles is original.db0056_roles
         and signature == state["signature"],
         "controlled55_coverage_original_source_changed",
     )
@@ -342,6 +354,136 @@ async def _metadata(state, session):
     return row
 
 
+def _database_profile(source):
+    factories, roles = source.db0056_factories, source.db0056_roles
+    if factories is roles is None:
+        return None
+    _need(
+        type(factories) is ConfiguredNativeDemoFactoriesV2
+        and type(roles) is RestrictedNativeRoles0056WitnessV1
+        and factories.writer_factory is source.session_factory
+        and type(roles.observation) is RestrictedNativeRoles0056ObservationV1
+        and roles.observation.database_head == "0056"
+        and roles.startup_admission is roles.execution_authority is False,
+        "controlled55_coverage_original_0056_roles_required",
+    )
+    return factories, roles
+
+
+@asynccontextmanager
+async def _held_db0056_coverage_control(
+    factories, roles, session, scope, expected_control, expected_event
+):
+    async with checkpoint56.held_qualification_checkpoint_0056_v1(
+        factories, session, scope, roles=roles
+    ) as held:
+        original = held.control.control
+        _need(
+            (original.state, original.event_sha256)
+            == (expected_control, expected_event),
+            "controlled55_coverage_actual_control_changed",
+        )
+        yield held
+        _need(
+            await held.recheck_control() == (original.state, original.event_sha256),
+            "controlled55_coverage_actual_control_changed",
+        )
+
+
+@asynccontextmanager
+async def _held_coverage_control(state, session):
+    source = state["source"]
+    scope = control.ControlScope("demo", source.scope.account_id)
+    profile = _database_profile(source)
+    if profile is None:
+        await _checked_await(state, catalog55.verify_actual_issuer_catalog_v2(session))
+        await _checked_await(
+            state,
+            session.execute(
+                select(
+                    func.pg_advisory_xact_lock(
+                        ledger._account_uid_lock_key(source.scope)
+                    )
+                )
+            ),
+        )
+        actual, event = await _checked_await(
+            state,
+            controls55.DemoControlRepositoryV2.read_in_transaction(session, scope),
+        )
+        yield actual, event, None
+        return
+    factories, roles = profile
+    async with _held_db0056_coverage_control(
+        factories,
+        roles,
+        session,
+        scope,
+        source.control_state,
+        source.control_event_sha256,
+    ) as held:
+        _check(state)
+        original = held.control.control
+        yield original.state, original.event_sha256, held
+        _check(state)
+    _check(state)
+
+
+async def _read_locked_coverage(
+    state, session, repository, current_state, current_event, held
+):
+    source = state["source"]
+    _need(
+        canonical(control.document(current_state))
+        == canonical(control.document(source.control_state))
+        and current_event == source.control_event_sha256,
+        "controlled55_coverage_actual_control_changed",
+    )
+    selected = await _checked_await(state, repository._locked(session, source.scope))
+    before = await _metadata(state, session)
+    held_args = {} if held is None else {"_held0056": held}
+    checkpoint = await _checked_await(
+        state,
+        repository._bootstrap_checkpoint(session, source.scope, selected, **held_args),
+    )
+    local = await _checked_await(
+        state,
+        repository._read_portfolio_checkpoint_locked(
+            session, source.scope, selected, **held_args
+        ),
+    )
+    _need(
+        type(checkpoint) is ledger.LedgerBootstrapCheckpoint
+        and type(local) is ledger.PortfolioLocalCheckpoint
+        and type(local.document_json) is bytes
+        and 0 < len(local.document_json) <= 262144,
+        "controlled55_coverage_full_local_observation_required",
+    )
+    await _checked_await(
+        state,
+        catalog55.verify_actual_issuer_catalog_v2(session)
+        if held is None
+        else held.recheck_catalog(),
+    )
+    after = await _metadata(state, session)
+    _need(
+        before[:4] == after[:4]
+        and before[5:] == after[5:]
+        and before[4] <= checkpoint.observed_at <= checkpoint.received_at <= after[4]
+        and before[4] <= local.observed_at <= local.received_at <= after[4],
+        "controlled55_coverage_locked_transaction_changed",
+    )
+    return _LockedSnapshotV2(
+        session,
+        current_state,
+        current_event,
+        checkpoint.state,
+        ledger.canonical(checkpoint.state),
+        local,
+        CoverageDatabaseObservationV2(before, after, before[4], after[4]),
+    )
+
+
 async def _locked_snapshot(state):
     source = state["source"]
     _check(state)
@@ -376,70 +518,14 @@ async def _locked_snapshot(state):
                 {"value": str(budget_ms)},
             ),
         )
-        await _checked_await(state, catalog55.verify_actual_issuer_catalog_v2(session))
-        await _checked_await(
-            state,
-            session.execute(
-                select(
-                    func.pg_advisory_xact_lock(
-                        ledger._account_uid_lock_key(source.scope)
-                    )
-                )
-            ),
-        )
-        current_state, current_event = await _checked_await(
-            state,
-            controls55.DemoControlRepositoryV2.read_in_transaction(
-                session, control.ControlScope("demo", source.scope.account_id)
-            ),
-        )
-        _need(
-            canonical(control.document(current_state))
-            == canonical(control.document(source.control_state))
-            and current_event == source.control_event_sha256,
-            "controlled55_coverage_actual_control_changed",
-        )
-        selected = await _checked_await(
-            state, repository._locked(session, source.scope)
-        )
-        before = await _metadata(state, session)
-        checkpoint = await _checked_await(
-            state, repository._bootstrap_checkpoint(session, source.scope, selected)
-        )
-        local = await _checked_await(
-            state,
-            repository._read_portfolio_checkpoint_locked(
-                session, source.scope, selected
-            ),
-        )
-        _need(
-            type(checkpoint) is ledger.LedgerBootstrapCheckpoint
-            and type(local) is ledger.PortfolioLocalCheckpoint
-            and type(local.document_json) is bytes
-            and 0 < len(local.document_json) <= 262144,
-            "controlled55_coverage_full_local_observation_required",
-        )
-        await _checked_await(state, catalog55.verify_actual_issuer_catalog_v2(session))
-        after = await _metadata(state, session)
-        _need(
-            before[:4] == after[:4]
-            and before[5:] == after[5:]
-            and before[4]
-            <= checkpoint.observed_at
-            <= checkpoint.received_at
-            <= after[4]
-            and before[4] <= local.observed_at <= local.received_at <= after[4],
-            "controlled55_coverage_locked_transaction_changed",
-        )
-        result = _LockedSnapshotV2(
-            session,
+        async with _held_coverage_control(state, session) as (
             current_state,
             current_event,
-            checkpoint.state,
-            ledger.canonical(checkpoint.state),
-            local,
-            CoverageDatabaseObservationV2(before, after, before[4], after[4]),
-        )
+            held,
+        ):
+            result = await _read_locked_coverage(
+                state, session, repository, current_state, current_event, held
+            )
     _check(state)
     return result
 

@@ -29,6 +29,98 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 _ARCHIVE = Path("/ctcc-admitted-test-source.tar")
 
 
+async def test_actual0056_coverage_replays_held_checkpoint_without_authority(
+    _actual_0056_role_observation_lab,  # noqa: F811
+):
+    from app.core.native_role_witness_0056_v1 import (
+        observe_restricted_native_roles_0056_witness_v1,
+    )
+    from app.database.repositories.demo_control import DemoControlRepository
+    from app.database.repositories.qualification_ledger import (
+        QualificationLedgerRepository,
+    )
+    from app.trade_qualification import (
+        controlled_writer_coverage_current55_v2 as coverage,
+    )
+    from app.trade_qualification.demo_control import ControlScope, account_lock_key
+    from app.trade_qualification.reservations import LedgerScope
+
+    _, owner, selected, _ = _actual_0056_role_observation_lab
+    factory = selected.writer_factory
+    roles = await observe_restricted_native_roles_0056_witness_v1(
+        selected, source=control.deployment._SOURCE
+    )
+    scope = LedgerScope(account_id="730066", settlement_currency="USDT")
+    control_scope = ControlScope(scope.environment, scope.account_id)
+
+    def clock():
+        return datetime.now(UTC)
+
+    await QualificationLedgerRepository(owner, clock=clock).initialize_capture_scope(
+        scope
+    )
+    stopped = await DemoControlRepository(owner, clock=clock).latch_stop(
+        control_scope, command_id=sha(b"ctcc isolated coverage stop")
+    )
+    repo = QualificationLedgerRepository(factory, clock=clock)
+    snapshots = []
+    for _ in range(2):
+        async with factory() as writer, writer.begin():
+            await writer.execute(
+                text("SET TRANSACTION ISOLATION LEVEL READ COMMITTED, READ WRITE")
+            )
+            await writer.execute(text("SET LOCAL synchronous_commit='on'"))
+            async with coverage._held_db0056_coverage_control(
+                selected,
+                roles,
+                writer,
+                control_scope,
+                stopped.state,
+                stopped.event_sha256,
+            ) as held:
+                async with owner.begin() as concurrent:
+                    assert not await concurrent.scalar(
+                        text("SELECT pg_catalog.pg_try_advisory_xact_lock(:key)"),
+                        {"key": account_lock_key(control_scope)},
+                    )
+                row = await repo._locked(writer, scope)
+                point = await repo._bootstrap_checkpoint(
+                    writer, scope, row, _held0056=held
+                )
+                local = await repo._read_portfolio_checkpoint_locked(
+                    writer, scope, row, _held0056=held
+                )
+                snapshots.append(
+                    (
+                        writer,
+                        await writer.scalar(
+                            text("SELECT pg_catalog.pg_current_xact_id()::text")
+                        ),
+                        point.state,
+                        local.document_json,
+                    )
+                )
+                assert held.control.execution_authority is False
+                assert held.control.control.state.emergency_stop is True
+    assert snapshots[0][0] is not snapshots[1][0]
+    assert snapshots[0][1] != snapshots[1][1] and snapshots[0][2:] == snapshots[1][2:]
+    assert b'"execution_authority":false' in snapshots[1][3]
+
+    with pytest.raises(
+        coverage.ControlledCoverageSourceErrorV2,
+        match="controlled55_coverage_actual_control_changed",
+    ):
+        async with factory() as writer, writer.begin():
+            await writer.execute(
+                text("SET TRANSACTION ISOLATION LEVEL READ COMMITTED, READ WRITE")
+            )
+            await writer.execute(text("SET LOCAL synchronous_commit='on'"))
+            async with coverage._held_db0056_coverage_control(
+                selected, roles, writer, control_scope, stopped.state, "0" * 64
+            ):
+                pytest.fail("foreign Control event entered coverage")
+
+
 async def test_actual0056_owner_initializes_legacy_singleton_only_as_stopped(
     _actual_0056_role_observation_lab,  # noqa: F811
 ):

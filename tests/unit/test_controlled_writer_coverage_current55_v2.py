@@ -4,6 +4,7 @@ import asyncio
 import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 
@@ -14,6 +15,21 @@ from app.trade_qualification.reservations import LedgerScope, LedgerScopeState
 
 AT = datetime(2026, 1, 1, tzinfo=UTC)
 SCOPE = LedgerScope(environment="demo", account_id="123456", settlement_currency="USDT")
+
+
+@pytest.mark.parametrize("partial", ["roles", "factories", "both"])
+def test_unowned_or_incomplete_db0056_profile_cannot_fall_back_to_db0055(partial):
+    legacy = SimpleNamespace(db0056_roles=None, db0056_factories=None)
+    assert subject._database_profile(legacy) is None
+    if partial in {"factories", "both"}:
+        legacy.db0056_factories = object()
+    if partial in {"roles", "both"}:
+        legacy.db0056_roles = object()
+    with pytest.raises(
+        subject.ControlledCoverageSourceErrorV2,
+        match="controlled55_coverage_original_0056_roles_required",
+    ):
+        subject._database_profile(legacy)
 
 
 def _control():
