@@ -2036,6 +2036,73 @@ async def test_actual0056_draft_locked_owner_grant_and_separate_role_readback(
         await owner_grant_draft.grant_reviewed_owner_0056_v1(pins)
 
 
+async def test_actual0056_reviewed_owner_target_plan_has_no_grant(
+    _actual_0056_ungranted_lab,
+    tmp_path,
+):
+    """A separate exact-source owner CLI observes physical ACLs without grants."""
+    from scripts import native_owner_target_plan_0056_v1 as target_plan
+
+    owner, _, selected, _ = _actual_0056_ungranted_lab
+    names = tuple(
+        factory.kw["bind"].url.username
+        for factory in (
+            selected.writer_factory,
+            selected.custody_factory,
+            selected.frame_reader_factory,
+        )
+    )
+    identity, files, files_raw = fitted_measurement._read_hermetic_inputs()
+    source = fitted_measurement.source_identity(identity, files, files_raw)
+    archive, archive_pin = _reconstruct_owned_lab_archive(tmp_path, identity, files)
+    async with owner.connect() as connection:
+        profile = tuple(
+            (await connection.execute(owner_grant_draft._PROFILE_SQL)).one()
+        )
+    route = owner_route.OwnerRoutePinsV1(
+        source_manifest_sha256=source["manifest_sha256"],
+        ca_sha256=os.environ["CTCC_DEVVAL_CUSTODY_TEST_TLS_CA_SHA256"],
+        cluster_system_identifier_sha256=sha(profile[11].encode("ascii")),
+        host=owner.url.host,
+        port=owner.url.port,
+        database=owner.url.database,
+        owner=owner.url.username,
+        database_oid=profile[5],
+        owner_oid=profile[4],
+        database_head="0056",
+    )
+    private = tmp_path / "owner-private"
+    private.mkdir(mode=0o700)
+    dsn = private / "owner-dsn"
+    # The disposable TLS fixture uses trust auth. It does not claim owner
+    # password authentication, but the public CLI still requires a private DSN.
+    fixture_url = owner.url.set(password="isolated-lab-owner-route-input")
+    dsn.write_bytes(fixture_url.render_as_string(hide_password=False).encode())
+    dsn.chmod(0o600)
+    inputs = target_plan.OwnerTargetPlanInputsV1(
+        owner_upgrade.OwnerUpgradePinsV1(
+            identity["commit"], identity["tree"], archive_pin, route
+        ),
+        *names,
+    )
+    files = {
+        "owner_dsn_file": dsn,
+        "ca_file": Path(os.environ["CTCC_DEVVAL_CUSTODY_TEST_TLS_CA_FILE"]),
+        "source_archive_file": archive,
+    }
+    first = await target_plan.observe_reviewed_owner_target_plan_0056_v1(
+        inputs, **files
+    )
+    second = await target_plan.observe_reviewed_owner_target_plan_0056_v1(
+        inputs, **files
+    )
+    assert first == second
+    assert first["status"] == "OBSERVED_DENY" and first["grant_statements"] == 42
+    assert first["portable_reference_matched"] is True
+    assert first["grants_present"] is first["execution_authority"] is False
+    assert all(name not in json.dumps(first) for name in names)
+
+
 async def test_actual0056_full_native_role_observation_tls(
     _actual_0056_role_observation_lab,
 ):
