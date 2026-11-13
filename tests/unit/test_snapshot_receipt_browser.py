@@ -15,6 +15,7 @@ const assert = require("node:assert/strict");
 const {createHash, webcrypto} = require("node:crypto");
 const vm = require("node:vm");
 const script = __SCRIPT__;
+const resultContainer = __RESULT_CONTAINER__;
 const bytes = '{"instrument_id":"BTC-USDT-SWAP","received_at":"2026-11-13T16:05:15.678893Z"}';
 const sha = createHash("sha256").update(bytes).digest("hex");
 const values = {
@@ -33,7 +34,8 @@ const values = {
 const file = (name, value) => new File([value], name, {type:"application/json"});
 const snapshot = file("MarketSnapshot.json", bytes);
 const receipt = file("snapshot-receipt.json", JSON.stringify(values));
-function board(files, {crypto = webcrypto, resultSha = sha} = {}) {
+const intervals = ["4H", "1H", "15m", "5m"];
+function board(files, {crypto = webcrypto, resultSha = sha, incompleteAnalysis = false} = {}) {
   const calls = [];
   const elements = new Map();
   const element = () => ({
@@ -58,7 +60,20 @@ function board(files, {crypto = webcrypto, resultSha = sha} = {}) {
         input_sha256: resultSha,
         schema_version: "ctcc.offline_snapshot_analysis.v1",
         source_authenticity_verified: false, execution_authority: false,
-        analysis: {trade_ready: false, blockers: ["imported_snapshot_unverified"]}
+        analysis: {
+          trade_ready: false, blockers: ["imported_snapshot_unverified"],
+          ...(!incompleteAnalysis ? {
+            instrument_id: "BTC-USDT-SWAP",
+            price: "102000.00",
+            regime: "bear_trend",
+            generated_at: "2026-11-13T16:05:15.678893Z",
+            overall_bias: "short",
+            timeframe_analyses: Object.fromEntries(intervals.map(timeframe => [
+              timeframe, {timeframe, directional_bias: "short", volatility: "high",
+                          data_quality_ok: true}
+            ]))
+          } : {})
+        }
       })};
     }
   };
@@ -78,7 +93,7 @@ async function run(files, config) {
 async function refused(files, config) {
   const {calls, get} = await run(files, config);
   assert.equal(calls.length, 0, get("status").textContent);
-  assert.equal(get("result").hidden, true);
+  assert.equal(get(resultContainer).hidden, true);
   assert.doesNotMatch(get("status").textContent, /test-only-token/);
 }
 (async () => {
@@ -89,7 +104,7 @@ async function refused(files, config) {
     assert.equal(calls[0][1].credentials, "omit");
     assert.equal(calls[0][1].headers["X-CTCC-Token"], "test-only-token");
     assert.equal(Buffer.from(calls[0][1].body).toString(), bytes);
-    assert.equal(get("result").hidden, false);
+    assert.equal(get(resultContainer).hidden, false);
     assert.match(get("status").textContent, /核對單與快照相符.*匯入來源仍未驗證/);
   }
   const bare = await run([snapshot], {crypto: {}});
@@ -97,7 +112,14 @@ async function refused(files, config) {
   assert.match(bare.get("status").textContent, /未提供核對單.*匯入來源仍未驗證/);
   const changedResponse = await run([receipt, snapshot], {resultSha: "e".repeat(64)});
   assert.equal(changedResponse.calls.length, 1);
-  assert.equal(changedResponse.get("result").hidden, true);
+  assert.equal(changedResponse.get(resultContainer).hidden, true);
+  if (resultContainer === "analysisSection") {
+    assert.equal(bare.get("analysisSection").hidden, false);
+    assert.equal(bare.get("contract").textContent, "BTC-USDT-SWAP");
+    const incomplete = await run([receipt, snapshot], {incompleteAnalysis: true});
+    assert.equal(incomplete.calls.length, 1);
+    assert.equal(incomplete.get(resultContainer).hidden, true);
+  }
   await refused([receipt, file("changed.json", bytes + " ")]);
   await refused([receipt, snapshot], {crypto: {}});
   await refused([receipt, snapshot, file("other.json", bytes)]);
@@ -115,9 +137,13 @@ async function refused(files, config) {
 
 
 @pytest.mark.parametrize(
-    "page", (LOCAL_ANALYSIS_HTML, OFFLINE_SNAPSHOT_ONLY_HTML), ids=("paper", "offline")
+    ("page", "result_container"),
+    ((LOCAL_ANALYSIS_HTML, "result"), (OFFLINE_SNAPSHOT_ONLY_HTML, "analysisSection")),
+    ids=("paper", "offline"),
 )
-def test_optional_receipt_checks_before_analysis(page: str) -> None:
+def test_optional_receipt_checks_before_analysis(
+    page: str, result_container: str
+) -> None:
     assert 'id="snapshot" type="file"' in page
     assert 'multiple aria-describedby="snapshotHint"' in page
     assert "/api/analysis/snapshot" in page
@@ -128,7 +154,9 @@ def test_optional_receipt_checks_before_analysis(page: str) -> None:
     assert match is not None
     result = subprocess.run(
         [node, "-"],
-        input=_PROBE.replace("__SCRIPT__", json.dumps(match[1])),
+        input=_PROBE.replace("__SCRIPT__", json.dumps(match[1])).replace(
+            "__RESULT_CONTAINER__", json.dumps(result_container)
+        ),
         text=True,
         encoding="utf-8",
         timeout=10,
