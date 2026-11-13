@@ -5163,6 +5163,7 @@ _V4_PIN_FUNCTIONS = tuple(
         (
             _v4_wire.journal,
             (
+                "_checked_wire_event",
                 "_original_wire_event",
                 "_original_wire_readback",
                 "_checked_readback_clocks",
