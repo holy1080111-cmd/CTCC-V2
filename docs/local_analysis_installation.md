@@ -36,6 +36,37 @@ Manual Paper activity uses the same API token and persists through PostgreSQL ac
 
 The browser retains one unresolved-operation marker at this local origin across reloads and tabs. Use a browser with Web Locks and local storage enabled. The marker records only the operation type and opaque identifiers for the operation, target, runtime, and installation. The token, price, order payload, and ledger stay out of browser storage. If a write result is unknown, keep the marker. Restart the same local installation, read the persisted ledger with the local token, and explicitly confirm reconciliation before any further simulator write. A pending or missing record does not prove the previous action failed. A different installation, a same-process read, or unavailable browser storage keeps writes blocked. The browser never retries an unresolved write automatically.
 
+## Export an OKX public snapshot for local analysis
+
+Run the exporter separately from the offline viewer or Paper service using the
+CTCC checkout and its installed dependencies. Use two fresh owner-private
+directories outside the checkout, one for the raw journal and one for the
+export. On Windows, the existing `scripts.local_analysis_private_dir.create_private_work()`
+helper creates these directories with the same owner-only permissions as a
+local installation. On Linux, create them with mode `0700`.
+
+```powershell
+python -B -m scripts.export_public_analysis_snapshot --instrument BTC-USDT-SWAP --journal "<private journal directory>" --output "<private output directory>" capture
+```
+
+The command also supports `ETH-USDT-SWAP`. It makes one anonymous attempt at the
+fixed Global OKX public REST and WebSocket origins, keeps the original journal,
+and verifies it again before exporting. It reads no account credentials and
+does not start a trading service. Select the resulting `MarketSnapshot.json`
+in the viewer. Keep `snapshot-receipt.json` with the journal so that the source
+time, instrument, and hashes can be checked later. Incomplete capture leaves
+the rejected journal for diagnosis and produces no usable snapshot. A failed
+output readback may leave files in the output directory. Use files only after
+the command succeeds and the receipt hash matches the snapshot.
+
+To reproduce an existing accepted snapshot without network access, replace
+`capture` with `replay --plan-sha256 <digest> --journal-sha256 <digest>` and use
+another empty output directory. Replay retains the original observation time.
+The exporter requires ticker/mark and quote receipts within five seconds of
+capture completion and allows a funding data-return age of at most sixty
+seconds for local analysis. Observations dated after receipt still fail.
+These exports carry no trading eligibility or historical availability claim.
+
 ## Stop, preserve, recover
 
 ```powershell
