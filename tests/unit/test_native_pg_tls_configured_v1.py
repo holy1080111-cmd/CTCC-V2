@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import ssl
+import warnings
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -25,6 +26,28 @@ from app.demo_automation import native_server_selectors_v2 as selectors
 _WRITER = "postgresql+asyncpg://writer:private@postgres:5432/ctcc"
 _CUSTODY = "postgresql+asyncpg://custody:private@postgres:5432/ctcc"
 _FRAME = "postgresql+asyncpg://frame:private@postgres:5432/ctcc"
+
+
+def _bind_test_settings(monkeypatch, *, path, digest, enabled, custody=_CUSTODY):
+    settings = SimpleNamespace(
+        database_url=_WRITER,
+        ctcc_native_pg_tls_ca_file=str(path) if enabled else "",
+        ctcc_native_pg_tls_ca_sha256=digest if enabled else "",
+        okx_demo_native_custody_database_url=SecretStr(custody),
+        okx_demo_native_frame_reader_database_url=SecretStr(_FRAME),
+    )
+    monkeypatch.setattr(db_session, "settings", settings)
+    monkeypatch.setattr(
+        db_session,
+        "native_pg_tls_settings_pin",
+        (
+            settings.database_url,
+            settings.ctcc_native_pg_tls_ca_file,
+            settings.ctcc_native_pg_tls_ca_sha256,
+        ),
+    )
+    monkeypatch.setattr(selectors, "get_settings", lambda: settings)
+    return settings
 
 
 @pytest.fixture
@@ -117,14 +140,7 @@ async def test_writer_and_restricted_factories_share_exact_context_when_enabled(
     monkeypatch.setattr(db_session, "engine", writer)
     monkeypatch.setattr(db_session, "AsyncSessionFactory", factory)
     monkeypatch.setattr(db_session, "native_pg_tls_context", context)
-    monkeypatch.setattr(
-        selectors,
-        "get_settings",
-        lambda: SimpleNamespace(
-            okx_demo_native_custody_database_url=SecretStr(_CUSTODY),
-            okx_demo_native_frame_reader_database_url=SecretStr(_FRAME),
-        ),
-    )
+    _bind_test_settings(monkeypatch, path=path, digest=digest, enabled=tls_enabled)
     selected = None
     try:
         selected = selectors.select_configured_native_demo_factories_v2()
@@ -164,14 +180,7 @@ async def test_restricted_selector_refuses_different_writer_context(
         async_sessionmaker(writer, autoflush=False, expire_on_commit=False),
     )
     monkeypatch.setattr(db_session, "native_pg_tls_context", different_context)
-    monkeypatch.setattr(
-        selectors,
-        "get_settings",
-        lambda: SimpleNamespace(
-            okx_demo_native_custody_database_url=SecretStr(_CUSTODY),
-            okx_demo_native_frame_reader_database_url=SecretStr(_FRAME),
-        ),
-    )
+    _bind_test_settings(monkeypatch, path=path, digest=digest, enabled=True)
     try:
         with pytest.raises(
             selectors.NativeDemoCallerReadinessErrorV2,
@@ -200,13 +209,12 @@ async def test_restricted_tls_route_rejects_query_before_engine_creation(
         async_sessionmaker(writer, autoflush=False, expire_on_commit=False),
     )
     monkeypatch.setattr(db_session, "native_pg_tls_context", context)
-    monkeypatch.setattr(
-        selectors,
-        "get_settings",
-        lambda: SimpleNamespace(
-            okx_demo_native_custody_database_url=SecretStr(_CUSTODY + "?ssl=disable"),
-            okx_demo_native_frame_reader_database_url=SecretStr(_FRAME),
-        ),
+    _bind_test_settings(
+        monkeypatch,
+        path=path,
+        digest=digest,
+        enabled=True,
+        custody=_CUSTODY + "?ssl=disable",
     )
     monkeypatch.setattr(
         selectors,
@@ -217,6 +225,82 @@ async def test_restricted_tls_route_rejects_query_before_engine_creation(
         with pytest.raises(
             selectors.NativeDemoCallerReadinessErrorV2,
             match="^native_demo_restricted_factory_selection_failed$",
+        ):
+            selectors.select_configured_native_demo_factories_v2()
+    finally:
+        await writer.dispose()
+
+
+@pytest.mark.asyncio
+async def test_settings_cannot_enable_tls_after_writer_engine_was_created(
+    reviewed_ca, monkeypatch
+):
+    path, digest = reviewed_ca
+    writer = create_async_engine(_WRITER, poolclass=NullPool)
+    monkeypatch.setattr(db_session, "engine", writer)
+    monkeypatch.setattr(
+        db_session,
+        "AsyncSessionFactory",
+        async_sessionmaker(writer, autoflush=False, expire_on_commit=False),
+    )
+    monkeypatch.setattr(db_session, "native_pg_tls_context", None)
+    settings = _bind_test_settings(monkeypatch, path=path, digest=digest, enabled=False)
+    original_server_pin = selectors._server_settings_pin(settings)
+    settings.ctcc_native_pg_tls_ca_file = str(path)
+    settings.ctcc_native_pg_tls_ca_sha256 = digest
+    assert selectors._server_settings_pin(settings) != original_server_pin
+    monkeypatch.setattr(
+        selectors,
+        "create_async_engine",
+        lambda *_args, **_kwargs: pytest.fail("stale TLS settings created an engine"),
+    )
+    try:
+        with pytest.raises(
+            selectors.NativeDemoCallerReadinessErrorV2,
+            match="^native_demo_restricted_tls_settings_changed$",
+        ):
+            selectors.select_configured_native_demo_factories_v2()
+    finally:
+        await writer.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mutation", ("hostname", "minimum", "callback"))
+async def test_mutated_tls_context_refused_before_restricted_engine(
+    reviewed_ca, monkeypatch, mutation
+):
+    path, digest = reviewed_ca
+    context = configured_native_pg_tls_context_v1(
+        ca_file=str(path), ca_sha256=digest, database_url=_WRITER
+    )
+    writer = create_async_engine(
+        _WRITER, poolclass=NullPool, connect_args={"ssl": context}
+    )
+    monkeypatch.setattr(db_session, "engine", writer)
+    monkeypatch.setattr(
+        db_session,
+        "AsyncSessionFactory",
+        async_sessionmaker(writer, autoflush=False, expire_on_commit=False),
+    )
+    monkeypatch.setattr(db_session, "native_pg_tls_context", context)
+    _bind_test_settings(monkeypatch, path=path, digest=digest, enabled=True)
+    if mutation == "hostname":
+        context.check_hostname = False
+    elif mutation == "minimum":
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            context.minimum_version = ssl.TLSVersion.TLSv1_1
+    else:
+        context._msg_callback = lambda *_args: None
+    monkeypatch.setattr(
+        selectors,
+        "create_async_engine",
+        lambda *_args, **_kwargs: pytest.fail("mutated TLS context created an engine"),
+    )
+    try:
+        with pytest.raises(
+            selectors.NativeDemoCallerReadinessErrorV2,
+            match="^native_demo_restricted_tls_context_invalid$",
         ):
             selectors.select_configured_native_demo_factories_v2()
     finally:

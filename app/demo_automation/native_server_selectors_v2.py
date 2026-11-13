@@ -243,15 +243,23 @@ def _record(selection):
 def _server_settings_pin(settings):
     custody_url = settings.okx_demo_native_custody_database_url.get_secret_value()
     reader_url = settings.okx_demo_native_frame_reader_database_url.get_secret_value()
+    ca_file = settings.ctcc_native_pg_tls_ca_file
+    ca_sha256 = settings.ctcc_native_pg_tls_ca_sha256
     _need(
         all(
             type(value) is str and 0 < len(value) <= 8192
             for value in (settings.database_url, custody_url, reader_url)
-        ),
+        )
+        and type(ca_file) is str
+        and len(ca_file) <= 4096
+        and type(ca_sha256) is str
+        and (not ca_sha256 or re.fullmatch(r"[0-9a-f]{64}", ca_sha256) is not None),
         "native_demo_restricted_database_settings_missing",
     )
     # Private in-memory pin only; never returned through evidence or reports.
-    return sha(canonical([settings.database_url, custody_url, reader_url]))
+    return sha(
+        canonical([settings.database_url, custody_url, reader_url, ca_file, ca_sha256])
+    )
 
 
 def _parse_selector_rows_v2(rows):
@@ -549,9 +557,26 @@ def _database_route(url):
 def select_configured_native_demo_factories_v2():
     """Actual server-private DSNs only; native consumers verify real role/ACL."""
     try:
-        from app.database.session import AsyncSessionFactory, native_pg_tls_context
+        from app.database.session import (
+            AsyncSessionFactory,
+            native_pg_tls_context,
+            native_pg_tls_settings_pin,
+        )
+        from app.database.session import (
+            settings as configured_session_settings,
+        )
 
         settings = get_settings()
+        _need(
+            settings is configured_session_settings
+            and (
+                settings.database_url,
+                settings.ctcc_native_pg_tls_ca_file,
+                settings.ctcc_native_pg_tls_ca_sha256,
+            )
+            == native_pg_tls_settings_pin,
+            "native_demo_restricted_tls_settings_changed",
+        )
         _need(
             runtime._configured_factory(AsyncSessionFactory),
             "native_demo_configured_writer_factory_required",
@@ -576,6 +601,10 @@ def select_configured_native_demo_factories_v2():
                 type(native_pg_tls_context) is ssl.SSLContext
                 and native_pg_tls_context.check_hostname is True
                 and native_pg_tls_context.verify_mode == ssl.CERT_REQUIRED
+                and native_pg_tls_context.minimum_version >= ssl.TLSVersion.TLSv1_2
+                and native_pg_tls_context.keylog_filename is None
+                and native_pg_tls_context._msg_callback is None
+                and native_pg_tls_context.sni_callback is None
                 and custody._closure(writer_engine.sync_engine.pool._creator)
                 .get("cparams", {})
                 .get("ssl")

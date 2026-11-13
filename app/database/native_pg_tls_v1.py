@@ -115,7 +115,9 @@ def verified_native_pg_tls_context_v1(
             type(context) is not ssl.SSLContext
             or context.verify_mode != ssl.CERT_REQUIRED
             or context.check_hostname is not True
+            or context.minimum_version < ssl.TLSVersion.TLSv1_2
             or context.cert_store_stats()["x509_ca"] < 1
+            or context.keylog_filename is not None
             or context._msg_callback is not None
             or context.sni_callback is not None
         ):

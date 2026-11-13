@@ -12,6 +12,11 @@ from app.config.settings import get_settings
 from app.database.native_pg_tls_v1 import configured_native_pg_tls_context_v1
 
 settings = get_settings()
+native_pg_tls_settings_pin = (
+    settings.database_url,
+    settings.ctcc_native_pg_tls_ca_file,
+    settings.ctcc_native_pg_tls_ca_sha256,
+)
 native_pg_tls_context = configured_native_pg_tls_context_v1(
     ca_file=settings.ctcc_native_pg_tls_ca_file,
     ca_sha256=settings.ctcc_native_pg_tls_ca_sha256,
