@@ -623,6 +623,16 @@ def observe_writer_0056(value):
     return _observe_readonly(value, owner_mode=False)
 
 
+def observe_readwrite_writer_0056(value):
+    """Validate the inherited DB0056 graph for a restricted writer in READ WRITE."""
+    try:
+        return _observe_inherited_graph(value, owner_mode=False, read_only="off")
+    except inherited.Current0055CatalogError:
+        raise
+    except (KeyError, TypeError, ValueError, AttributeError):
+        inherited._deny()
+
+
 def observe_owner_installation_0056(value):
     """Validate the actual read-only pre-grant owner graph, without admission."""
     return _observe_readonly(value, owner_mode=True)

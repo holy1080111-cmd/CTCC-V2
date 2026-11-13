@@ -432,6 +432,78 @@ async def test_full_observation_binds_sessions_and_never_admits(scenario):
 
 
 @pytest.mark.asyncio
+async def test_restricted_observation_uses_only_three_roles_and_never_admits(scenario):
+    state, selected, _owner = scenario
+    result = await subject.observe_restricted_native_roles_0056_v1(
+        selected, source=Path("synthetic")
+    )
+    assert result.schema == "ctcc.native_only.restricted0056_role_observation.v1"
+    assert result.database_head == "0056" and result.admission == "DENY"
+    assert result.native_reference_sealed is result.native_baseline_admission is False
+    assert result.startup_admission is result.execution_authority is False
+    assert result.account_complete is False
+    assert result.inherited_native_definitions_sha256 == "1" * 64
+    assert result.raw_custody_catalog_sha256 == "2" * 64
+    events = state["events"]
+    assert all(name != "owner" and name != "owner-final" for name, _ in events)
+    assert ("writer+frame", "pair") in events
+    assert events.index(("writer", "acl")) < events.index(
+        ("writer", str(subject._FITTED_DEMO_ACCESS))
+    )
+    assert events.index(("custody", str(subject._HEAD))) < events.index(
+        ("custody", "raw-custody")
+    )
+    assert events.index(("custody", "raw-custody")) < events.index(
+        ("writer-final", str(subject._HEAD))
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "writer-head",
+        "frame-head",
+        "custody-head",
+        "custody-tls",
+        "custody-database",
+        "effective-execute",
+        "missing-routine",
+        "unexpected-routine",
+        "pair-native-admission",
+        "route-mismatch",
+        "duplicate-role",
+    ],
+)
+async def test_restricted_observation_denies_changed_identity_or_authority(
+    scenario, fault
+):
+    state, selected, _owner = scenario
+    if fault.endswith("-head"):
+        state["heads"][fault.removesuffix("-head")] = ["0055"]
+    elif fault == "custody-tls":
+        state["tls"]["custody"] = False
+    elif fault == "custody-database":
+        state["db"]["custody"] = 94
+    elif fault in {"effective-execute", "missing-routine", "unexpected-routine"}:
+        state["fitted_access_fault"] = fault
+    elif fault == "pair-native-admission":
+        state["pair_override"]["native_baseline_admission"] = True
+    elif fault == "route-mismatch":
+        selected.writer_factory.kw["bind"] = _Engine("different-url")
+    else:
+        selected.frame_reader_factory.role = "writer"
+    with pytest.raises(
+        subject.NativeRoles0056ObservationError,
+        match="^native_roles_0056_observation_unavailable$",
+    ):
+        await subject.observe_restricted_native_roles_0056_v1(
+            selected, source=Path("synthetic")
+        )
+    assert all(name != "owner" and name != "owner-final" for name, _ in state["events"])
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "fault",
     [

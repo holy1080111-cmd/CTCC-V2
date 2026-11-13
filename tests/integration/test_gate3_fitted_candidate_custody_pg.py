@@ -27,6 +27,7 @@ from sqlalchemy.pool import NullPool
 
 import app.database.models  # noqa: F401 - register the full migration metadata.
 from app.core import native_role_preflight_0056_full_diagnostic_v1 as observation
+from app.core import native_writer_observation_0056_v1 as writer_observation
 from app.database.base import Base
 from app.database.repositories import public_runtime_bundle_custody as raw_custody
 from app.demo_automation.native_server_selectors_v2 import (
@@ -1152,6 +1153,26 @@ async def test_actual0056_full_native_role_observation_tls(
     assert first.native_reference_sealed is first.native_baseline_admission is False
     assert first.startup_admission is first.execution_authority is False
     assert first.account_complete is False
+    restricted = await observation.observe_restricted_native_roles_0056_v1(
+        selected, source=_SOURCE_ROOT
+    )
+    assert (
+        restricted.inherited_native_definitions_sha256,
+        restricted.frame_writer_observation_sha256,
+        restricted.raw_custody_catalog_sha256,
+    ) == (
+        first.inherited_native_definitions_sha256,
+        first.frame_writer_observation_sha256,
+        first.raw_custody_catalog_sha256,
+    )
+    assert restricted.startup_admission is restricted.execution_authority is False
+    async with selected.writer_factory() as session, session.begin():
+        await observation.current55._session_settings(session, frame=True)
+        writer = await writer_observation.observe_restricted_readwrite_writer_0056_v1(
+            session
+        )
+    assert writer.native_definitions_sha256 == first.inherited_native_definitions_sha256
+    assert writer.startup_admission is writer.execution_authority is False
 
 
 async def test_actual0056_full_native_role_rejects_swapped_roles_and_extra_grant(

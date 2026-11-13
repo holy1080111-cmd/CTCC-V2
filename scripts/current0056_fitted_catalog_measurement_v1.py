@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -329,7 +330,7 @@ def retain_hermetic_measurement(
     database_oid: int,
 ) -> None:
     """Write one no-clobber redacted file in the existing isolated test mount."""
-    from app.trade_evidence.storage import _posix_root, _root_path
+    from app.trade_evidence.storage import _posix_root, _root_path, _write_fd
 
     _need(sys.platform == "linux", "fitted_measurement_not_linux")
     _need(
@@ -358,5 +359,17 @@ def retain_hermetic_measurement(
     )
     verify_measurement(raw, identity=identity, source_files=source_files)
     with _posix_root(_root_path(Path("/validation-results"))) as results:
-        results.publish(FILE, raw)
+        # The host verifier runs under another UID. Publish only the already
+        # redacted document, at read-only mode, with exclusive file creation.
+        fd = os.open(
+            FILE,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o444,
+            dir_fd=results.fd,
+        )
+        try:
+            _write_fd(fd, raw)
+        finally:
+            os.close(fd)
+        os.fsync(results.fd)
         _need(results.read(FILE, 1_200_000) == raw, "fitted_measurement_readback")

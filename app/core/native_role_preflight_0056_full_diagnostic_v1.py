@@ -79,6 +79,25 @@ class NativeRoles0056ObservationV1:
     admission: Literal["DENY"] = field(default="DENY", init=False)
 
 
+@dataclass(frozen=True, slots=True)
+class RestrictedNativeRoles0056ObservationV1:
+    """Owner-free role observation; deliberately cannot authorize startup."""
+
+    inherited_native_definitions_sha256: str
+    frame_writer_observation_sha256: str
+    raw_custody_catalog_sha256: str
+    schema: Literal["ctcc.native_only.restricted0056_role_observation.v1"] = field(
+        default="ctcc.native_only.restricted0056_role_observation.v1", init=False
+    )
+    database_head: Literal["0056"] = field(default="0056", init=False)
+    native_reference_sealed: Literal[False] = field(default=False, init=False)
+    native_baseline_admission: Literal[False] = field(default=False, init=False)
+    startup_admission: Literal[False] = field(default=False, init=False)
+    account_complete: Literal[False] = field(default=False, init=False)
+    execution_authority: Literal[False] = field(default=False, init=False)
+    admission: Literal["DENY"] = field(default="DENY", init=False)
+
+
 def _need(condition: bool) -> None:
     if condition is not True:
         raise NativeRoles0056ObservationError(
@@ -201,6 +220,83 @@ async def _restricted_frame_writer(writer, frame, names):
             )
         )
     return writer_identity, frame_identity, owner_oid, pair, pair_sha
+
+
+async def observe_restricted_native_roles_0056_v1(
+    selected, *, source: Path
+) -> RestrictedNativeRoles0056ObservationV1:
+    """Observe the exact three restricted roles without an owner connection.
+
+    This checks a pre-provisioned DB0056 graph. Its result is intentionally
+    inert until an independently sealed reference and a separate startup
+    contract exist. It never installs grants or opens an owner session.
+    """
+    try:
+        _need(type(selected) is selectors.ConfiguredNativeDemoFactoriesV2)
+        _need(isinstance(source, Path))
+        writer = selected.writer_factory
+        carrier = selected.custody_factory
+        frame = selected.frame_reader_factory
+        factories = (writer, carrier, frame)
+        routes = tuple(
+            native_factories._factory_route(factory) for factory in factories
+        )
+        names = tuple(route[3] for route in routes)
+        url_routes = tuple(
+            selectors._database_route(factory.kw["bind"].url) for factory in factories
+        )
+        _need(
+            len(set(names)) == 3
+            and len(set(url_routes)) == 1
+            and all(route[2] == routes[0][2] for route in routes[1:])
+            and carrier.kw["bind"] is selected.custody_engine
+            and frame.kw["bind"] is selected.frame_reader_engine
+        )
+        fitted.pinned_migration(source)
+        raw_custody = custody.RuntimeBundleCustodyRepository(carrier)
+        async with asyncio.timeout(55):
+            (
+                writer_identity,
+                frame_identity,
+                owner_oid,
+                pair,
+                pair_sha,
+            ) = await _restricted_frame_writer(writer, frame, names)
+            async with carrier() as session, session.begin():
+                await session.execute(
+                    text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+                )
+                await session.execute(text("SET TRANSACTION READ ONLY"))
+                for statement in current55._SETTINGS:
+                    await session.execute(text(statement))
+                await session.execute(text("SET LOCAL synchronous_commit = 'on'"))
+                custody_identity = await _identity_at_0056(session, names[1])
+                custody_sha = await raw_custody._catalog(session)
+                _need(_is_digest(custody_sha))
+            async with writer() as session, session.begin():
+                writer_after = await _restricted_identity(
+                    session, names[0], frame=False
+                )
+            current55._same_server(
+                writer_identity, custody_identity, frame_identity, writer_after
+            )
+            _need(
+                owner_oid
+                not in (writer_identity[3], custody_identity[3], frame_identity[3])
+                and tuple(
+                    native_factories._factory_route(factory) for factory in factories
+                )
+                == routes
+            )
+        return RestrictedNativeRoles0056ObservationV1(
+            pair["native_definitions_sha256"], pair_sha, custody_sha
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 - never reveal DSN, SQL, role or catalog
+        raise NativeRoles0056ObservationError(
+            "native_roles_0056_observation_unavailable"
+        ) from None
 
 
 async def observe_native_roles_0056_v1(
