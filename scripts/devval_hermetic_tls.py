@@ -1,8 +1,9 @@
 """Ephemeral TLS inputs for the isolated D/V PostgreSQL integration test.
 
-This only exercises the native TLS repository path in a trust-auth test lab.
-It does not establish independent custody, SCRAM identity, Gate 3, or OOS.
-The caller owns Docker execution and must use its exact internal network,
+This supplies an ephemeral TLS certificate; the caller selects database
+authentication. The original fitted lab uses trust; the separate owner lab
+can test SCRAM. TLS alone does not establish independent custody, Gate 3,
+or OOS. The caller owns Docker execution and must use its exact internal network,
 pinned postgres image, and ordinary no-credential test container controls.
 """
 
