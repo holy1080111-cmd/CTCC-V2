@@ -585,3 +585,29 @@ settlement separately from the following forecast.
 The receipt binds the reconstructed market snapshot to its source pins.
 Independent custody and clock evidence, a preregistered legacy scorer, and a
 Development-only calibration remain required for a predictive baseline.
+
+### Isolated Validation prediction custody diagnostic
+
+`scripts/sql/gate3_devval_validation_prediction_diagnostic_v1.sql` is an opt-in
+diagnostic for the isolated PostgreSQL 17 TLS evidence database. The database
+must have the existing DevVal campaign custody and dispatch SQL and the exact
+DB0046 raw-custody leaf. Installation refuses an application Alembic catalog.
+The diagnostic introduces no foreign keys into DB0046 or DevVal campaign
+custody. The existing application schema head and grants retain their scope.
+
+The publisher anchors one canonical schedule to an acknowledged Global
+research campaign before Development starts according to the database clock.
+The anchor checks every close and cutoff against the pinned blueprint geometry.
+Publication checks one exact DB0046 row and its domain-separated prediction
+proof, then inserts a unique campaign and Validation slot pair. The independent
+observer login acknowledges an exact committed publication in a different
+transaction and can recover it by exact pins through a read-only transaction.
+Role checks require direct TLS logins and disjoint function grants. The
+diagnostic never accepts labels or releases outcome data.
+
+These are local database observations. The anchor timestamp does not establish
+commit readback before the window, and an acknowledgement does not establish
+independently timed publication before outcome access. Source replay and the
+controlled first-evaluator-access boundary are separate prerequisites. The
+native acceptance case uses synthetic inputs in a disposable evidence database,
+including seeded historical prerequisites for exercising the post-decision path.
