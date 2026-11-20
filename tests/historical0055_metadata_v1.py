@@ -15,6 +15,8 @@ FUTURE_TABLES = frozenset(
         "native_live_financial_samples_v1",
         "native_live_lifecycle_keys_v1",
         "native_live_lifecycle_proofs_v1",
+        "native_live_controlled_close_intents_v1",
+        "native_live_controlled_close_claims_v1",
     }
 )
 FUTURE_INDEXES = frozenset(

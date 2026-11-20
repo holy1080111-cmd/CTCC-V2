@@ -75,6 +75,10 @@ from app.database.models.native_leverage_configuration import (
     NativeLeverageConfigurationIntentV1,
     NativeLeverageConfigurationResultV1,
 )
+from app.database.models.native_live_controlled_close_v1 import (
+    NativeLiveControlledCloseClaimV1,
+    NativeLiveControlledCloseIntentV1,
+)
 from app.database.models.native_live_financial_epoch_v1 import (
     NativeLiveFinancialEpochV1,
     NativeLiveFinancialSampleV1,
@@ -212,6 +216,8 @@ __all__ = [
     "NativeLeverageConfigurationIntentV1",
     "NativeLeverageConfigurationResultV1",
     "NativeLiveControlV1",
+    "NativeLiveControlledCloseClaimV1",
+    "NativeLiveControlledCloseIntentV1",
     "NativeLiveFinancialEpochV1",
     "NativeLiveFinancialSampleV1",
     "NativeLiveIntentV1",

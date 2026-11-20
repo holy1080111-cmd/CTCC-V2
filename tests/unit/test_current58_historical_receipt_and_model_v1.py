@@ -91,6 +91,16 @@ def test_old_expected_model_removes_only_declared_later_objects_and_does_not_mut
     original = Index("original55_index", old.c.id)
     future = Index("qualification_native_protected_hold_once_v58", old.c.id)
     Table("native_live_controls_v1", source, Column("id", Integer, primary_key=True))
+    Table(
+        "native_live_controlled_close_intents_v1",
+        source,
+        Column("id", Integer, primary_key=True),
+    )
+    Table(
+        "native_live_controlled_close_claims_v1",
+        source,
+        Column("id", Integer, primary_key=True),
+    )
     Table("unreviewed_extra_table", source, Column("id", Integer, primary_key=True))
     target = physical55_expected_metadata(source)
     assert set(target.tables) == {

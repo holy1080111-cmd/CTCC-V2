@@ -230,7 +230,9 @@ def _revision_readback(revision: str) -> dict:
 
 
 def test_every_windows_classified_postgres_module_runs_in_strict_linux_postgres_suite():
-    assert {Path(path).name for path in POSTGRES_TEST_PATHS} == set(
+    from scripts.current0058_collection_v1 import SUCCESSOR_PATHS
+
+    assert {Path(path).name for path in POSTGRES_TEST_PATHS | SUCCESSOR_PATHS} == set(
         POSTGRES_INTEGRATION
     )
 

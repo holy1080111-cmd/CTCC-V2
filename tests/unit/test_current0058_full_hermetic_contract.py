@@ -187,6 +187,9 @@ def test_source58_selection_executes_every_old_and_new_required_case_exactly_onc
     assert len(full.ORIGINAL_OCO_REPORT_CASES) == 3
     assert len(full.LIVE_OPERATOR_CASES) == 10
     assert len(full.LIVE_LIFECYCLE_CASES) == 11
+    assert len(full.LIVE_CONTROLLED_CLOSE_CASES) == 34
+    assert set(full.LIVE_CONTROLLED_CLOSE_CASES) <= set(full.REQUIRED_CASES)
+    assert set(full.LIVE_CONTROLLED_CLOSE_CASES) <= set(full.SUCCESSOR_CASES)
     assert len(full.STOPPED_SETUP_CASES) == 2
     assert set(full.STOPPED_SETUP_CASES) <= set(full.REQUIRED_CASES)
     assert set(full.LIVE_LIFECYCLE_CASES) <= set(full.REQUIRED_CASES)

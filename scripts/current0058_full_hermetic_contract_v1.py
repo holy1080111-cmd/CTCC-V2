@@ -138,6 +138,67 @@ STOPPED_SETUP_CASES = tuple(
         "test_actual0058_wrong_owner_incarnation_refuses_without_legacy_write",
     )
 )
+LIVE_CONTROLLED_CLOSE_CASES = tuple(
+    ("tests.integration.test_native_live_controlled_close_v1_pg", name)
+    for name in (
+        "test_actual58_close_closed_profile_and_immutable_two_action_schema",
+        *(
+            "test_actual58_close_rejects_unbound_or_changed_original_geometry["
+            + mutation
+            + "]"
+            for mutation in (
+                "wrong_domain",
+                "wrong_uid",
+                "wrong_revision",
+                "null_deadline",
+                "string_consent_clock",
+                "missing_consent_clock",
+                "fraction_revision",
+                "expired",
+                "wrong_algo",
+                "wrong_size",
+                "changed_stop",
+                "market",
+                "hedged",
+                "not_reduce_only",
+                "wrong_original_process",
+            )
+        ),
+        "test_actual58_close_two_workers_one_parent_have_at_most_one_intent",
+        "test_actual58_close_claim_burns_once_without_releasing_risk_hold",
+        *(
+            "test_actual58_close_original_protection_cancel_is_narrow_and_revocable["
+            + mutation
+            + "]"
+            for mutation in (
+                "before_close_claim",
+                "not_filled",
+                "partial_fill",
+                "position",
+                "ordinary_pending",
+                "no_algo",
+                "other_algo",
+                "missing_fills",
+                "changed_revision",
+                "new_stop",
+            )
+        ),
+        "test_actual58_close_cancel_has_separate_one_shot_request_and_terminal_proof",
+        *(
+            "test_actual58_close_prepared_consent_cannot_adopt_later_control["
+            + change
+            + "]"
+            for change in ("revision", "stop")
+        ),
+        *(
+            "test_actual58_close_catalog_and_effective_grants_drift_fail_closed["
+            + drift
+            + "]"
+            for drift in ("column", "write_acl")
+        ),
+        "test_actual58_close_unresolved_legacy_intent_is_a_global_negative_blocker",
+    )
+)
 SUCCESSOR_CASES = (
     *base.SUCCESSOR_CASES,
     *live_cases.REQUIRED_CASES,
@@ -151,6 +212,7 @@ SUCCESSOR_CASES = (
     *LIVE_OPERATOR_CASES,
     *LIVE_LIFECYCLE_CASES,
     *STOPPED_SETUP_CASES,
+    *LIVE_CONTROLLED_CLOSE_CASES,
     (
         "tests.integration.test_native_protective_hold_schema_v58_pg",
         "test_actual0058_original_oco_predicate_compiles_and_missing_targets_never_resolve",
@@ -169,6 +231,7 @@ REQUIRED_CASES = (
     *LIVE_OPERATOR_CASES,
     *LIVE_LIFECYCLE_CASES,
     *STOPPED_SETUP_CASES,
+    *LIVE_CONTROLLED_CLOSE_CASES,
     SUCCESSOR_CASES[-1],
 )
 HISTORICAL_REPORTS = base.HISTORICAL_REPORTS

@@ -20,6 +20,7 @@ SUCCESSOR_PATHS = frozenset(
         "tests/integration/test_native_live_physical_v1_pg.py",
         "tests/integration/test_native_live_operator_control_v1_pg.py",
         "tests/integration/test_native_live_lifecycle_v1_pg.py",
+        "tests/integration/test_native_live_controlled_close_v1_pg.py",
         "tests/integration/test_native_stopped_setup_0058_pg.py",
         "tests/integration/test_native_demo_profile_0058_pg.py",
         "tests/integration/test_native_submission_binding_0058_pg.py",

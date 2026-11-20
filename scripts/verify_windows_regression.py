@@ -89,6 +89,7 @@ POSTGRES_INTEGRATION = (
     "test_native_live_financial_epoch_v1_pg.py",
     "test_native_live_operator_control_v1_pg.py",
     "test_native_live_lifecycle_v1_pg.py",
+    "test_native_live_controlled_close_v1_pg.py",
     "test_native_original_oco_reporting_0058_pg.py",
     "test_native_stopped_setup_0058_pg.py",
     "test_native_live_physical_v1_pg.py",
