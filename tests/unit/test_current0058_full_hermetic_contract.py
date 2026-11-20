@@ -186,6 +186,8 @@ def test_source58_selection_executes_every_old_and_new_required_case_exactly_onc
     assert len(full.BINDING_CASES) == 13
     assert len(full.ORIGINAL_OCO_REPORT_CASES) == 3
     assert len(full.LIVE_OPERATOR_CASES) == 10
+    assert len(full.LIVE_LIFECYCLE_CASES) == 11
+    assert set(full.LIVE_LIFECYCLE_CASES) <= set(full.REQUIRED_CASES)
     assert set(full.LIVE_OPERATOR_CASES) <= set(full.REQUIRED_CASES)
     assert set(full.ORIGINAL_OCO_REPORT_CASES) <= set(full.REQUIRED_CASES)
     assert all(

@@ -24,6 +24,20 @@ def test_all_four_physical_hooks_are_actual_plain_source_functions():
     assert actual[0] is subject and actual[3] is subject.LiveQualifiedExecutionFactsV1
 
 
+@pytest.mark.parametrize(
+    "name", ("live_function_metadata_v58", "live_function_statements_v58")
+)
+def test_changed_schema_source_function_cannot_be_adopted_at_final_boundary(
+    monkeypatch, name
+):
+    helper = subject.ledger.function_specs
+    with monkeypatch.context() as changed:
+        changed.setattr(helper, name, lambda *_args: {"passed": True})
+        with pytest.raises(NativeSourceClosureError):
+            subject._NATIVE_GUARD()
+    subject._NATIVE_GUARD()
+
+
 @pytest.mark.asyncio
 async def test_public_source_request_saved_dto_or_constructor_cannot_create_invocation():
     with pytest.raises(subject.OwnedLiveQualificationError):

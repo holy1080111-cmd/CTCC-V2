@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 from sqlalchemy.pool import NullPool
 
 from app.database.repositories import native_live_catalog_v1 as structural_catalog
+from app.domain import native_live_function_specs_v58 as function_specs
 from app.domain import native_live_ledger_schema_v1 as schema
 from app.domain.native_live_inherited_acl_v1 import (
     require_inherited_live_data_helpers_v1,
@@ -199,18 +200,24 @@ async def _catalog(session, *, owner_oid, actor_oid):
         is True
     )
     expected_functions = {}
-    for statement in schema.UPGRADE_SQL:
-        if statement.startswith("CREATE FUNCTION public."):
-            name = statement.split("public.", 1)[1].split("(", 1)[0]
-            expected_functions[name] = (
-                sha(statement.split("$body$")[1].encode("utf8")),
-                name in schema.EXECUTABLE_FUNCTIONS,
-            )
+    for name, statement in function_specs.live_function_statements_v58().items():
+        expected_functions[name] = (
+            sha(statement.split("$body$")[1].encode("utf8")),
+            name in schema.EXECUTABLE_FUNCTIONS,
+        )
+    return_type = await session.scalar(
+        text("SELECT 'public.native_live_controls_v1'::regtype::oid::bigint")
+    )
+    metadata = function_specs.live_function_metadata_v58(return_type)
     functions = (
         await session.execute(
             text("""SELECT p.proname::text,p.proowner::bigint,
-      encode(sha256(convert_to(p.prosrc,'UTF8')),'hex'),p.prosecdef,p.proconfig,p.prokind::text,p.proleakproof
+      encode(sha256(convert_to(p.prosrc,'UTF8')),'hex'),p.prosecdef,p.proconfig,p.prokind::text,p.proleakproof,
+      p.proisstrict,p.provolatile::text,p.proparallel::text,p.prosupport::bigint,l.lanname::text,
+      p.pronargs,p.proargtypes::text,p.proretset,p.prorettype::bigint,p.pronargdefaults,
+      p.provariadic::bigint,p.proargmodes,p.proallargtypes
       FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+      JOIN pg_catalog.pg_language l ON l.oid=p.prolang
       WHERE n.nspname='public' AND p.proname=ANY(CAST(:names AS text[]))"""),
             {"names": list(expected_functions)},
         )
@@ -223,11 +230,32 @@ async def _catalog(session, *, owner_oid, actor_oid):
             ["search_path=pg_catalog, pg_temp"],
             "f",
             False,
+            *metadata[item[0]],
         )
         for actual, required, field in zip(
             item[1:],
             expected,
-            ("owner", "source", "security_mode", "search_path", "kind", "leakproof"),
+            (
+                "owner",
+                "source",
+                "security_mode",
+                "search_path",
+                "kind",
+                "leakproof",
+                "strict",
+                "volatility",
+                "parallel",
+                "support",
+                "language",
+                "argument_count",
+                "argument_types",
+                "returns_set",
+                "return_type",
+                "defaults",
+                "variadic",
+                "argument_modes",
+                "all_argument_types",
+            ),
             strict=True,
         ):
             if actual != required:

@@ -12,6 +12,7 @@ from alembic import op
 from app.domain import native_filled_flat_closure_schema_v55 as previous
 from app.domain import native_live_financial_epoch_schema_v1 as financial
 from app.domain import native_live_ledger_schema_v1 as live
+from app.domain import native_live_lifecycle_schema_v1 as lifecycle
 from app.domain import native_protective_hold_schema_v58 as hold
 from app.domain import native_protective_report_schema_v58 as report
 from app.domain import native_submission_binding_schema_v58 as submission
@@ -125,6 +126,60 @@ def _require_report_guard(sql):
  """)
 
 
+def _require_lifecycle_guards():
+    from hashlib import sha256
+
+    sources = {
+        sql.split("public.", 1)[1].split("(", 1)[0]: sql
+        for sql in lifecycle.UPGRADE_SQL
+        if sql.startswith("CREATE FUNCTION public.")
+    }
+    sources.update(lifecycle.live_lifecycle_function_overrides_v1())
+    signatures = {
+        lifecycle.FUNCTIONS[0]: (1, "25", "'pg_catalog.jsonb'::regtype", True, False),
+        lifecycle.FUNCTIONS[1]: (
+            1,
+            "25",
+            "'public.native_live_controls_v1'::regtype",
+            True,
+            True,
+        ),
+        lifecycle.FUNCTIONS[2]: (1, "25", "'pg_catalog.int8'::regtype", True, False),
+        lifecycle.FUNCTIONS[3]: (2, "25 25", "'pg_catalog.text'::regtype", True, False),
+        lifecycle.FUNCTIONS[4]: (0, "", "'pg_catalog.trigger'::regtype", False, False),
+        lifecycle.FUNCTIONS[5]: (0, "", "'pg_catalog.jsonb'::regtype", True, False),
+        "native_live_reservation_guard_v1": (
+            0,
+            "",
+            "'pg_catalog.trigger'::regtype",
+            False,
+            False,
+        ),
+    }
+    if set(sources) != set(signatures):
+        raise RuntimeError("protected58_lifecycle_source_changed")
+    for name, sql in sources.items():
+        pin = sha256(sql.split("$body$")[1].encode()).hexdigest()
+        nargs, args, returns, security, returns_set = signatures[name]
+        op.execute(f"""
+ DO $check$ BEGIN
+ IF NOT EXISTS (
+  SELECT 1 FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_language l ON l.oid=p.prolang
+  JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+  WHERE n.nspname='public' AND p.proname='{name}'
+   AND p.proowner=(SELECT relowner FROM pg_catalog.pg_class WHERE oid='public.native_live_lifecycle_keys_v1'::regclass)
+   AND l.lanname='plpgsql' AND p.pronargs={nargs} AND p.proargtypes::text='{args}'
+   AND p.prorettype={returns} AND p.prosecdef={str(security).lower()}
+   AND p.proretset={str(returns_set).lower()} AND NOT p.proisstrict AND NOT p.proleakproof
+   AND p.prokind='f' AND p.provolatile='v' AND p.proparallel='u' AND p.prosupport=0
+   AND p.pronargdefaults=0 AND p.provariadic=0 AND p.proargmodes IS NULL AND p.proallargtypes IS NULL
+   AND p.proconfig=ARRAY['search_path=pg_catalog, pg_temp']::text[]
+   AND pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(p.prosrc,'UTF8')),'hex')='{pin}'
+ ) THEN RAISE EXCEPTION 'protected58_lifecycle_guard_changed'; END IF;
+ END $check$;
+ """)
+
+
 def upgrade():
     op.execute(_LOCK)
     _require_guard(previous.CURRENT_BODY_SHA256)
@@ -145,19 +200,26 @@ def upgrade():
     for statement in financial.UPGRADE_SQL:
         op.execute(statement)
     _require_financial_guard()
+    for statement in lifecycle.UPGRADE_SQL:
+        op.execute(statement)
+    _require_lifecycle_guards()
 
 
 def downgrade():
     op.execute(_LOCK)
     op.execute(
         "LOCK TABLE "
-        + ", ".join("public." + table for table in (*live.TABLES, *financial.TABLES))
+        + ", ".join(
+            "public." + table
+            for table in (*live.TABLES, *financial.TABLES, *lifecycle.TABLES)
+        )
         + " IN ACCESS EXCLUSIVE MODE NOWAIT"
     )
     _require_guard(hold.CURRENT_BODY_SHA256)
     _require_submission_guard(submission.CURRENT_BODY_SHA256)
     _require_report_guard(report.ELIGIBLE_SQL)
     _require_financial_guard()
+    _require_lifecycle_guards()
     op.execute("""
  DO $check$ BEGIN
  IF EXISTS(SELECT 1 FROM public.qualification_submission_outcomes
@@ -173,6 +235,8 @@ def downgrade():
  OR EXISTS(SELECT 1 FROM public.native_live_transitions_v1)
  OR EXISTS(SELECT 1 FROM public.native_live_financial_epochs_v1)
  OR EXISTS(SELECT 1 FROM public.native_live_financial_samples_v1)
+ OR EXISTS(SELECT 1 FROM public.native_live_lifecycle_keys_v1)
+ OR EXISTS(SELECT 1 FROM public.native_live_lifecycle_proofs_v1)
  OR EXISTS(
   SELECT 1 FROM pg_catalog.pg_class c
   CROSS JOIN LATERAL pg_catalog.aclexplode(c.relacl) a
@@ -181,8 +245,21 @@ def downgrade():
                  'public.native_live_intents_v1'::regclass,
                  'public.native_live_transitions_v1'::regclass,
                  'public.native_live_financial_epochs_v1'::regclass,
-                 'public.native_live_financial_samples_v1'::regclass)
+                 'public.native_live_financial_samples_v1'::regclass,
+                 'public.native_live_lifecycle_keys_v1'::regclass,
+                 'public.native_live_lifecycle_proofs_v1'::regclass)
    AND a.grantee<>c.relowner
+ ) OR EXISTS(
+  SELECT 1 FROM pg_catalog.pg_attribute a
+  JOIN pg_catalog.pg_class c ON c.oid=a.attrelid
+  JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace,
+  LATERAL pg_catalog.aclexplode(a.attacl) x
+  WHERE n.nspname='public' AND c.relname IN (
+    'native_live_controls_v1','native_live_reservations_v1',
+    'native_live_intents_v1','native_live_transitions_v1',
+    'native_live_financial_epochs_v1','native_live_financial_samples_v1',
+    'native_live_lifecycle_keys_v1','native_live_lifecycle_proofs_v1')
+    AND x.grantee<>c.relowner
  ) OR EXISTS(
   SELECT 1 FROM pg_catalog.pg_proc p
   CROSS JOIN LATERAL pg_catalog.aclexplode(
@@ -190,7 +267,10 @@ def downgrade():
   WHERE p.pronamespace='public'::regnamespace
     AND p.proname IN ('native_live_control_fence_v1','native_live_inhibit_v1',
       'native_live_disarm_v1','native_live_reservation_guard_v1',
-      'native_live_data_guard_v1','native_live_financial_guard_v1')
+      'native_live_data_guard_v1','native_live_financial_guard_v1',
+      'native_live_lifecycle_key_identity_v1','native_live_lifecycle_control_fence_v1',
+      'native_live_lifecycle_inhibit_v1','native_live_lifecycle_append_v1',
+      'native_live_lifecycle_immutable_v1','native_live_lifecycle_catalog_v1')
     AND a.grantee<>p.proowner
  ) THEN RAISE EXCEPTION 'protected58_preserve_history_and_revoke_grants'; END IF;
  END $check$;
@@ -207,6 +287,8 @@ def downgrade():
         op.execute(statement)
     # Dependency order is explicit; a remaining function/reference blocks
     # rollback. CASCADE and removal of retained rows are never used.
+    for statement in lifecycle.DOWNGRADE_SQL:
+        op.execute(statement)
     for statement in financial.DOWNGRADE_SQL:
         op.execute(statement)
     for statement in live.DOWNGRADE_SQL:

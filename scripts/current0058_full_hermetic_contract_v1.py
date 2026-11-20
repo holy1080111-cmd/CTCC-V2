@@ -107,6 +107,29 @@ LIVE_OPERATOR_CASES = tuple(
         ),
     )
 )
+LIVE_LIFECYCLE_CASES = tuple(
+    ("tests.integration.test_native_live_lifecycle_v1_pg", name)
+    for name in (
+        "test_actual58_lifecycle_closed_reconciler_profile_hides_key_and_forbids_entry_writes",
+        *(
+            "test_actual58_lifecycle_bad_signature_scope_or_chronology_never_resolves["
+            + mutation
+            + "]"
+            for mutation in (
+                "signature",
+                "uid",
+                "intent",
+                "sequence",
+                "previous",
+                "future",
+                "stale",
+                "authority",
+            )
+        ),
+        "test_actual58_lifecycle_uncertain_proof_is_durable_and_keeps_stop_and_hold",
+        "test_actual58_lifecycle_terminal_zero_fill_releases_only_authenticated_original_hold",
+    )
+)
 SUCCESSOR_CASES = (
     *base.SUCCESSOR_CASES,
     *live_cases.REQUIRED_CASES,
@@ -118,6 +141,7 @@ SUCCESSOR_CASES = (
     *OWNER_UPGRADE_CASES,
     *ORIGINAL_OCO_REPORT_CASES,
     *LIVE_OPERATOR_CASES,
+    *LIVE_LIFECYCLE_CASES,
     (
         "tests.integration.test_native_protective_hold_schema_v58_pg",
         "test_actual0058_original_oco_predicate_compiles_and_missing_targets_never_resolve",
@@ -134,6 +158,7 @@ REQUIRED_CASES = (
     *OWNER_UPGRADE_CASES,
     *ORIGINAL_OCO_REPORT_CASES,
     *LIVE_OPERATOR_CASES,
+    *LIVE_LIFECYCLE_CASES,
     SUCCESSOR_CASES[-1],
 )
 HISTORICAL_REPORTS = base.HISTORICAL_REPORTS

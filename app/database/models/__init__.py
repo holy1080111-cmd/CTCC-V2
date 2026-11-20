@@ -85,6 +85,10 @@ from app.database.models.native_live_ledger_v1 import (
     NativeLiveReservationV1,
     NativeLiveTransitionV1,
 )
+from app.database.models.native_live_lifecycle_v1 import (
+    NativeLiveLifecycleKeyV1,
+    NativeLiveLifecycleProofV1,
+)
 from app.database.models.observability import DemoObservabilityEvent, DemoSoakSession
 from app.database.models.okx_demo import (
     OkxDemoAlgoOrderState,
@@ -211,6 +215,8 @@ __all__ = [
     "NativeLiveFinancialEpochV1",
     "NativeLiveFinancialSampleV1",
     "NativeLiveIntentV1",
+    "NativeLiveLifecycleKeyV1",
+    "NativeLiveLifecycleProofV1",
     "NativeLiveReservationV1",
     "NativeLiveTransitionV1",
     "OkxDemoAlgoOrderState",
