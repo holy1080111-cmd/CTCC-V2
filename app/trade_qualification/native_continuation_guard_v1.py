@@ -300,9 +300,53 @@ def _namespace_pins(module, excluded, files):
                     for accessor in (item.fget, item.fset, item.fdel):
                         if accessor is not None:
                             functions.append(_function_pin(accessor, files))
-            fields = vars(value).get("model_fields")
+            field_attribute = "__pydantic_fields__"
+            fields = vars(value).get(field_attribute)
+            if type(fields) is not dict:
+                field_attribute = "model_fields"
+                fields = vars(value).get(field_attribute)
+            if type(fields) is not dict:
+                field_attribute = "__dataclass_fields__"
+                fields = vars(value).get(field_attribute)
             if type(fields) is dict:
-                class_shapes.append((value, fields, tuple(fields.items())))
+                if any(type(name) is not str for name in fields):
+                    raise NativeSourceClosureError("native_continuation_source_changed")
+                # A new data descriptor can shadow a declared field without
+                # changing its stored input dictionary or model_fields. Pin
+                # only field lookup names, including their original absence,
+                # on the exact MRO; unrelated lazy library state stays free.
+                mro = type.__getattribute__(value, "__mro__")
+                names = (
+                    *fields,
+                    "__dict__",
+                    "__getattribute__",
+                    "__getattr__",
+                    "model_fields",
+                    "__pydantic_fields__",
+                    "__dataclass_fields__",
+                )
+                field_bindings = []
+                for parent in mro:
+                    namespace = type.__getattribute__(parent, "__dict__")
+                    field_bindings.append(
+                        (
+                            parent,
+                            tuple(
+                                (name, name in namespace, namespace.get(name))
+                                for name in names
+                            ),
+                        )
+                    )
+                class_shapes.append(
+                    (
+                        value,
+                        field_attribute,
+                        fields,
+                        tuple(fields.items()),
+                        mro,
+                        tuple(field_bindings),
+                    )
+                )
     return records, functions, class_shapes
 
 
@@ -704,12 +748,32 @@ def install_native_guards_v1(module, exports, *, dependencies=(), bindings=()):
                 raise NativeSourceClosureError("native_continuation_source_changed")
         for pin in functions:
             checker(pin)
-        for cls, fields, contents in shapes:
+        for cls, field_attribute, fields, contents, mro, field_bindings in shapes:
             if (
-                vars(cls).get("model_fields") is not fields
-                or tuple(fields.items()) != contents
+                type.__getattribute__(cls, "__dict__").get(field_attribute)
+                is not fields
+                or len(fields) != len(contents)
+                or type.__getattribute__(cls, "__mro__") is not mro
             ):
                 raise NativeSourceClosureError("native_continuation_source_changed")
+            for (name, value), (original_name, original_value) in zip(
+                fields.items(), contents, strict=True
+            ):
+                if (
+                    type(name) is not str
+                    or name != original_name
+                    or value is not original_value
+                ):
+                    raise NativeSourceClosureError("native_continuation_source_changed")
+            for parent, attributes in field_bindings:
+                namespace = type.__getattribute__(parent, "__dict__")
+                for name, present, value in attributes:
+                    if (name in namespace) is not present or namespace.get(
+                        name
+                    ) is not value:
+                        raise NativeSourceClosureError(
+                            "native_continuation_source_changed"
+                        )
         for path, digest in file_pins:
             try:
                 raw = reader(path)

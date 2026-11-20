@@ -27,6 +27,8 @@ from app.config.settings import get_settings
 from app.database.repositories import native_live_financial_epoch_v1 as financial
 from app.database.repositories import native_live_ledger_v1 as ledger
 from app.database.repositories import native_live_operator_control_v1 as controls
+from app.domain import native_live_intent_v1 as intent_source
+from app.domain import source_primitives
 from app.domain.native_clock import native_stamp
 from app.domain.native_live_intent_v1 import (
     LiveIntentDataV1,
@@ -1719,6 +1721,8 @@ _install(
     ("run_owned_live_operator_once_v1",),
     dependencies=(
         runtime,
+        source_primitives,
+        intent_source,
         adapter,
         final_recheck,
         math,
