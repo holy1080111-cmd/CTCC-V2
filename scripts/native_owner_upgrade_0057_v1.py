@@ -27,6 +27,7 @@ from app.domain import native_database_profile_v1 as profiles
 from app.domain.source_primitives import canonical, sha
 from app.trade_qualification import demo_control as control
 from scripts import current0057_native_g12_acl_v1 as grants
+from scripts import native_owner_retained_rows_v2 as retained_rows
 from scripts import native_owner_route_preflight_0056_v1 as route
 from scripts import native_owner_target_plan_0056_v1 as private_inputs
 from scripts import native_owner_upgrade_0056_v1 as old
@@ -485,40 +486,21 @@ async def _relations(connection, *, lock):
 
 
 async def _snapshot(connection, relations, pins):
-    result = []
-    for name, _oid, _kind in relations:
-        if name == "alembic_version":
-            continue
-        table = 'public."' + name + '"'
-        count, size = (
-            await connection.execute(
-                text(
-                    "SELECT count(*),COALESCE(sum(pg_catalog.octet_length(to_jsonb(r)::text)),0) FROM "
-                    + table
-                    + " r"
-                )
-            )
-        ).one()
-        _need(
-            type(count) is int
-            and 0 <= count <= _MAX_ROWS
-            and 0 <= size <= _MAX_ROW_BYTES
-        )
-        digest = await connection.scalar(
-            text(
-                "SELECT pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(COALESCE(string_agg(row_sha,'' ORDER BY row_sha),''),'UTF8')),'hex') FROM (SELECT pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(to_jsonb(r)::text,'UTF8')),'hex') AS row_sha FROM "
-                + table
-                + " r) q"
-            )
-        )
-        _need(old._pin(digest, old._HEX))
-        result.append([name, count, digest])
+    snapshot = await retained_rows.snapshot_rows_v2(
+        connection,
+        relations,
+        owner_oid=pins.route.owner_oid,
+        marker_scope=retained_rows.MarkerScopeV2.EXCLUDE_UPGRADE_MARKER,
+        max_rows=_MAX_ROWS,
+        max_table_bytes=_MAX_ROW_BYTES,
+        max_total_bytes=_MAX_ROW_BYTES * _MAX_RELATIONS,
+    )
     catalog = await connection.scalar(_SCHEMA)
     role_state = await connection.scalar(
         _ROLE_STATE, {"oids": [pins.route.owner_oid, *pins.role_oids]}
     )
     _need(old._pin(catalog, old._HEX) and old._pin(role_state, old._HEX))
-    return {"rows": result, "schema_sha256": catalog, "role_state_sha256": role_state}
+    return snapshot | {"schema_sha256": catalog, "role_state_sha256": role_state}
 
 
 async def _readonly_inventory(owner, pins):
@@ -683,7 +665,8 @@ async def install_reviewed_owner_profile_0057_v1(
             _same_source(fresh, prepared)
             if confirmation is None:
                 return {
-                    "schema": "ctcc.owner_profile0057.dry_run.v1",
+                    "schema": "ctcc.owner_profile0057.dry_run.v2",
+                    "row_encoding": retained_rows.ROW_ENCODING,
                     "status": "DRY_RUN_PASS",
                     "database_head": pins.route.database_head,
                     "role_profile_sha256": identity.stable_identity_sha256,
@@ -718,7 +701,8 @@ async def install_reviewed_owner_profile_0057_v1(
             )
             _same_source(final_prepared, after_prepared)
         return {
-            "schema": "ctcc.owner_profile0057.commit_readback.v1",
+            "schema": "ctcc.owner_profile0057.commit_readback.v2",
+            "row_encoding": retained_rows.ROW_ENCODING,
             "status": "PASS",
             "database_head_before": "0056",
             "database_head_after": "0057",

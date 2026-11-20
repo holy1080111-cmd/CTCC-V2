@@ -8,6 +8,7 @@ import os
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from uuid import uuid4
 
 import pytest
 from alembic.config import Config
@@ -215,3 +216,59 @@ async def test_actual0057_owner58_unreviewed_live_access_rolls_back_without_gran
     assert await subject._inventory(owner, pins) == before
     restored, _ = await subject._role_observation(selected, owner, pins, "0057")
     assert restored.role_oids == pins.role_oids
+
+
+@pytest.mark.parametrize("failure_pass", [1, 2])
+async def test_actual0057_owner58_null_bitmap_refuses_rehearsal_or_final_null_flip_and_restores_all_state(
+    _actual57_owner_profile_lab, monkeypatch, failure_pass
+):
+    owner, selected, pins, script = _actual57_owner_profile_lab
+    audit_id = uuid4()
+    async with owner.begin() as connection:
+        await connection.execute(
+            text(
+                "INSERT INTO public.audit_logs(id,actor,action,resource_type,resource_id,\"before\") VALUES(:id,'declared_lab','retained_null','synthetic','owner-row',NULL)"
+            ),
+            {"id": audit_id},
+        )
+    before = await subject._inventory(owner, pins)
+    identity, _ = await subject._role_observation(selected, owner, pins, "0057")
+    original = subject._migrate
+    calls = []
+    differential = []
+
+    def flip_on_selected_pass(connection, current_script):
+        original(connection, current_script)
+        calls.append(True)
+        if len(calls) == failure_pass:
+            prior = connection.execute(
+                text("SELECT to_jsonb(r)::text FROM public.audit_logs r WHERE id=:id"),
+                {"id": audit_id},
+            ).scalar_one()
+            connection.execute(
+                text(
+                    "UPDATE public.audit_logs SET \"before\"='null'::jsonb WHERE id=:id"
+                ),
+                {"id": audit_id},
+            )
+            current = connection.execute(
+                text("SELECT to_jsonb(r)::text FROM public.audit_logs r WHERE id=:id"),
+                {"id": audit_id},
+            ).scalar_one()
+            differential.append(prior == current)
+
+    monkeypatch.setattr(subject, "_migrate", flip_on_selected_pass)
+    with pytest.raises(subject.OwnerProfileUpgrade0058Refused):
+        await subject._commit_once(script, pins, owner, before)
+    assert len(calls) == failure_pass and differential == [True]
+    assert await subject._inventory(owner, pins) == before
+    restored, _ = await subject._role_observation(selected, owner, pins, "0057")
+    assert restored == identity
+    async with owner.connect() as connection:
+        assert (
+            await connection.scalar(
+                text('SELECT "before" IS NULL FROM public.audit_logs WHERE id=:id'),
+                {"id": audit_id},
+            )
+            is True
+        )

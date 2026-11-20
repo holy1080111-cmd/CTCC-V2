@@ -29,6 +29,7 @@ from app.database.native_pg_tls_v1 import (
     verified_native_pg_tls_context_v1,
 )
 from app.domain import native_database_profile_v1 as profiles
+from scripts import native_owner_retained_rows_v2 as retained_rows
 from scripts import native_owner_route_preflight_0056_v1 as route
 from scripts import native_owner_upgrade_0056_v1 as archive
 from scripts.evidence_json import read_evidence_json
@@ -445,16 +446,10 @@ def _checked_table_result(row):
 
 
 def _row_expression(columns):
-    _need(
-        type(columns) is list
-        and 0 < len(columns) <= 1600
-        and all(type(c) is str and _NAME.fullmatch(c) is not None for c in columns)
-        and len(columns) == len(set(columns))
-    )
-    # PostgreSQL to_jsonb(row) alone collapses SQLNULL and JSONB `null`.
-    # Native boolean nullness in original column order preserves that distinction.
-    nulls = ",".join('(r."' + c + '" IS NULL)' for c in columns)
-    return "jsonb_build_array(to_jsonb(r),to_jsonb(ARRAY[" + nulls + "]))::text"
+    try:
+        return retained_rows.row_expression_v2(columns)
+    except retained_rows.RetainedRowsV2Refused:
+        _need(False)
 
 
 async def _snapshot(connection, pins, plan):
@@ -513,19 +508,8 @@ async def _snapshot(connection, pins, plan):
             _need(len(value) == 2 and type(value[0]) is int and type(value[1]) is bool)
             sequences.append([name, row[1], value[0], value[1]])
             continue
-        count, size = tuple(
-            (
-                await connection.execute(
-                    text(
-                        "SELECT count(*),COALESCE(sum(pg_catalog.octet_length("
-                        + _row_expression(row[8])
-                        + ")),0)::bigint FROM "
-                        + qualified
-                        + " r"
-                    )
-                )
-            ).one()
-        )
+        size_sql, hash_sql = retained_rows.row_multiset_sql_v2(name, row[8])
+        count, size = tuple((await connection.execute(size_sql)).one())
         _need(
             type(count) is int
             and 0 <= count <= MAX_ROWS
@@ -534,15 +518,7 @@ async def _snapshot(connection, pins, plan):
         )
         total += size
         _need(total <= MAX_TOTAL_BYTES)
-        digest = await connection.scalar(
-            text(
-                "SELECT pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(COALESCE(string_agg(row_sha,'' ORDER BY row_sha COLLATE \"C\"),''),'UTF8')),'hex') FROM (SELECT pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to("
-                + _row_expression(row[8])
-                + ",'UTF8')),'hex') row_sha FROM "
-                + qualified
-                + " r) q"
-            )
-        )
+        digest = await connection.scalar(hash_sql)
         _checked_table_result((count, size, digest))
         tables.append([name, row[1], list(row[8]), count, size, digest])
     _need(tuple((await connection.execute(route._PROFILE_SQL)).one()) == actor)
@@ -566,7 +542,7 @@ async def _snapshot(connection, pins, plan):
         )
     return {
         "schema": "ctcc.retained0017.physical_snapshot.v1",
-        "row_encoding": "ctcc.owner.retained_row_sql_null_bitmap.v2",
+        "row_encoding": retained_rows.ROW_ENCODING,
         "database_head": "0017",
         "catalog_sha256": catalog_digest,
         "source17_minimum_shape_matched": True,

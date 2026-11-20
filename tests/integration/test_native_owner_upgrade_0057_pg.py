@@ -11,6 +11,7 @@ import os
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from uuid import uuid4
 
 import pytest
 from alembic.config import Config
@@ -185,3 +186,56 @@ async def test_actual0056_owner_upgrade_refuses_uncertain_local_state_before_ddl
             )
             == "injected_uncertain"
         )
+
+
+@pytest.mark.parametrize("original_json_null", [False, True])
+async def test_actual0056_owner_upgrade_null_bitmap_refuses_changed_audit_value_and_rolls_back(
+    _actual56_owner_profile_lab, monkeypatch, original_json_null
+):
+    owner, selected, pins, script = _actual56_owner_profile_lab
+    audit_id = uuid4()
+    initial = "'null'::jsonb" if original_json_null else "NULL"
+    final = "NULL" if original_json_null else "'null'::jsonb"
+    async with owner.begin() as connection:
+        await connection.execute(
+            text(
+                "INSERT INTO public.audit_logs(id,actor,action,resource_type,resource_id,\"before\") VALUES(:id,'declared_lab','retained_null','synthetic','owner-row',"
+                + initial
+                + ")"
+            ),
+            {"id": audit_id},
+        )
+    before = await subject._readonly_inventory(owner, pins)
+    old_profile, _ = await subject._role_observation(selected, owner, pins, "0056")
+    original = subject._migrate
+    differential = []
+
+    def change_only_nullness(connection, current_script):
+        original(connection, current_script)
+        # Genuine PostgreSQL proves the old JSON-only encoding has no delta.
+        prior = connection.execute(
+            text("SELECT to_jsonb(r)::text FROM public.audit_logs r WHERE id=:id"),
+            {"id": audit_id},
+        ).scalar_one()
+        connection.execute(
+            text('UPDATE public.audit_logs SET "before"=' + final + " WHERE id=:id"),
+            {"id": audit_id},
+        )
+        current = connection.execute(
+            text("SELECT to_jsonb(r)::text FROM public.audit_logs r WHERE id=:id"),
+            {"id": audit_id},
+        ).scalar_one()
+        differential.append(prior == current)
+
+    monkeypatch.setattr(subject, "_migrate", change_only_nullness)
+    with pytest.raises(subject.OwnerProfileUpgrade0057Refused):
+        await subject._commit_once(script, pins, owner, *before)
+    assert differential == [True]
+    assert await subject._readonly_inventory(owner, pins) == before
+    restored, _ = await subject._role_observation(selected, owner, pins, "0056")
+    assert restored == old_profile
+    async with owner.connect() as connection:
+        assert await connection.scalar(
+            text('SELECT "before" IS NULL FROM public.audit_logs WHERE id=:id'),
+            {"id": audit_id},
+        ) is (not original_json_null)

@@ -40,7 +40,23 @@ def _inventory(phase):
     return {
         "relations": tuple(relations),
         "snapshot": {
+            "row_encoding": subject.retained_rows.ROW_ENCODING,
             "rows": rows,
+            "row_layouts": [
+                [name, oid, kind, [["id", 23, -1, True, 0, "", ""]]]
+                for name, oid, kind in relations
+            ],
+            "sequence_state": [
+                [
+                    "retained_id_seq",
+                    301,
+                    16384,
+                    [23, 1, 1, 2147483647, 1, 1, False],
+                    [[101, 1, "a"]],
+                    4,
+                    True,
+                ]
+            ],
             "schema_sha256": ("c" if phase else "b") * 64,
             "role_state_sha256": "d" * 64,
         },
@@ -238,6 +254,40 @@ def test_any_retained_history_actor_relation_or_new_live_row_change_refuses(muta
         after["snapshot"]["rows"].pop()
     else:
         after["snapshot"]["rows"][-1][1] = 1
+    with pytest.raises(subject.OwnerProfileUpgrade0058Refused):
+        subject._preserved(before, after)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "old_encoding",
+        "missing_layout",
+        "changed_column",
+        "changed_sequence",
+        "added_sequence",
+        "duplicate_rows",
+        "duplicate_layout",
+    ],
+)
+def test_versioned_retained_row_layout_sequence_and_multiplicity_are_mandatory(
+    mutation,
+):
+    before, after = _inventory(False), _inventory(True)
+    if mutation == "old_encoding":
+        after["snapshot"]["row_encoding"] = "legacy-json-only"
+    elif mutation == "missing_layout":
+        after["snapshot"]["row_layouts"].pop(0)
+    elif mutation == "changed_column":
+        after["snapshot"]["row_layouts"][1][3][0][2] = 99
+    elif mutation == "changed_sequence":
+        after["snapshot"]["sequence_state"][0][-1] = False
+    elif mutation == "added_sequence":
+        after["snapshot"]["sequence_state"].append(["new_unreviewed_seq", 302])
+    elif mutation == "duplicate_rows":
+        after["snapshot"]["rows"].append(after["snapshot"]["rows"][0])
+    else:
+        after["snapshot"]["row_layouts"].append(after["snapshot"]["row_layouts"][0])
     with pytest.raises(subject.OwnerProfileUpgrade0058Refused):
         subject._preserved(before, after)
 

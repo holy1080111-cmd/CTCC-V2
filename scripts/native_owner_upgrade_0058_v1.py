@@ -29,6 +29,7 @@ from app.domain import native_live_ledger_schema_v1 as live
 from app.domain import native_live_lifecycle_schema_v1 as lifecycle
 from app.domain.source_primitives import canonical, sha
 from scripts import native_owner_catalog_snapshot_0058_v1 as catalog
+from scripts import native_owner_retained_rows_v2 as retained_rows
 from scripts import native_owner_route_preflight_0056_v1 as route
 from scripts import native_owner_target_plan_0056_v1 as private_inputs
 from scripts import native_owner_upgrade_0057_v1 as parent
@@ -262,8 +263,17 @@ async def _inventory(owner, pins):
 
 
 def _preserved(before, after):
+    _need(
+        before["snapshot"].get("row_encoding")
+        == after["snapshot"].get("row_encoding")
+        == retained_rows.ROW_ENCODING
+    )
     old_rows = {item[0]: tuple(item) for item in before["snapshot"]["rows"]}
     new_rows = {item[0]: tuple(item) for item in after["snapshot"]["rows"]}
+    _need(
+        len(old_rows) == len(before["snapshot"]["rows"])
+        and len(new_rows) == len(after["snapshot"]["rows"])
+    )
     added = set(new_rows) - set(old_rows)
     _need(added == set(ADDED_TABLES))
     _need(all(new_rows[name] == value for name, value in old_rows.items()))
@@ -273,6 +283,17 @@ def _preserved(before, after):
     new_rel = {row[0]: tuple(row) for row in after["relations"]}
     _need(set(new_rel) - set(old_rel) == set(ADDED_TABLES))
     _need(all(new_rel[name] == value for name, value in old_rel.items()))
+    old_layout = {row[0]: row for row in before["snapshot"]["row_layouts"]}
+    new_layout = {row[0]: row for row in after["snapshot"]["row_layouts"]}
+    _need(
+        len(old_layout) == len(before["snapshot"]["row_layouts"])
+        and len(new_layout) == len(after["snapshot"]["row_layouts"])
+    )
+    _need(set(new_layout) - set(old_layout) == set(ADDED_TABLES))
+    _need(all(new_layout.get(name) == value for name, value in old_layout.items()))
+    # Current exact0058 DDL creates no sequences. An added/replaced/advanced
+    # old sequence therefore has no source-defined exception to preservation.
+    _need(before["snapshot"]["sequence_state"] == after["snapshot"]["sequence_state"])
     _need(
         before["snapshot"]["role_state_sha256"]
         == after["snapshot"]["role_state_sha256"]
@@ -428,7 +449,8 @@ async def install_reviewed_owner_profile_0058_v1(
                 )
             if confirmation is None:
                 return {
-                    "schema": "ctcc.owner_profile0058.dry_run.v1",
+                    "schema": "ctcc.owner_profile0058.dry_run.v2",
+                    "row_encoding": retained_rows.ROW_ENCODING,
                     "status": "DRY_RUN_PASS",
                     "source_head": "0058",
                     "database_head": "0057",
@@ -485,7 +507,8 @@ async def install_reviewed_owner_profile_0058_v1(
 
 def _receipt(pins, prepared, before_identity, after_identity, before, after, *, status):
     return {
-        "schema": "ctcc.owner_profile0058.commit_readback.v1",
+        "schema": "ctcc.owner_profile0058.commit_readback.v2",
+        "row_encoding": retained_rows.ROW_ENCODING,
         "status": status,
         "database_head_before": pins.route.database_head,
         "database_head_after": "0058",
@@ -497,7 +520,19 @@ def _receipt(pins, prepared, before_identity, after_identity, before, after, *, 
         "migration_sha256": prepared.migration_sha256,
         "before_role_profile_sha256": before_identity.stable_identity_sha256,
         "after_role_profile_sha256": after_identity.stable_identity_sha256,
-        "preserved_rows_sha256": sha(canonical(before["snapshot"]["rows"])),
+        "preserved_rows_sha256": sha(
+            canonical(
+                {
+                    name: before["snapshot"][name]
+                    for name in (
+                        "row_encoding",
+                        "rows",
+                        "row_layouts",
+                        "sequence_state",
+                    )
+                }
+            )
+        ),
         "installed_catalog_sha256": _installed_pin(prepared, after["logical"]),
         "live_spec_sha256": live.SPEC_SHA256,
         "financial_spec_sha256": financial.live_financial_epoch_spec_sha256_v1(),
