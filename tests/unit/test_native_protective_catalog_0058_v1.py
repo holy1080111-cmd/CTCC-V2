@@ -165,8 +165,9 @@ def test_protective_postflat_binding_is_actual58_and_does_not_replace55_contract
     assert catalog.observe_submission58([row], owner=owner) != legacy
     with pytest.raises(ValueError):
         catalog.inherited._submission55([row], owner=owner)
-    original = catalog.submission.ANCESTOR_SQL
+    original = catalog.submission._public_ddl(catalog.submission.ANCESTOR_SQL)
     current = catalog.submission.CURRENT_SQL
+    current = current.replace(catalog.submission._REPORT_GUARD, "", 1)
     start, end = (
         original.index(catalog.submission._START),
         original.index(catalog.submission._END),

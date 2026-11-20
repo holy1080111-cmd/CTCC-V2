@@ -45,10 +45,15 @@ def test_report_sql_addition_strips_to_exact55_and_preserves_false_authority():
 
 
 def test_new_ack_versions_have_positive58_guard_without_changing_old55_tail():
-    current, original = binding.CURRENT_SQL, binding.ANCESTOR_SQL
+    current, original = binding.CURRENT_SQL, binding._public_ddl(binding.ANCESTOR_SQL)
+    without_report = current.replace(binding._REPORT_GUARD, "", 1)
     start, end = original.index(binding._START), original.index(binding._END)
     assert current[:start] == original[:start]
-    assert current[current.index(binding._END) :] == original[end:]
+    assert without_report[without_report.index(binding._END) :] == original[end:]
+    assert binding._REPORT_GUARD.lstrip().startswith("IF NEW.capture_json")
+    assert current.index(binding._REPORT_GUARD) > current.index(
+        "RAISE EXCEPTION 'submission_outcome_binding_denied'"
+    )
     for version in (report.CLEANUP_VERSION, report.READY_VERSION):
         assert version in binding._REPORT_GUARD
     for pin in (
@@ -61,6 +66,23 @@ def test_new_ack_versions_have_positive58_guard_without_changing_old55_tail():
     ):
         assert pin in binding._REPORT_GUARD
     assert binding.statements() == (current,)
+
+
+def test_owner_only_diagnostic_sql_cannot_replace_the_native_predicate():
+    from tests.integration.test_native_original_oco_reporting_0058_pg import (
+        _diagnostic_report_sql,
+    )
+
+    before = report.ELIGIBLE_SQL
+    copied = _diagnostic_report_sql()
+    assert copied.startswith(
+        "CREATE FUNCTION public.ctcc_original_oco_report_probe_v58("
+    )
+    assert "CREATE OR REPLACE FUNCTION" not in copied
+    assert "native_original_oco_report_rule_001" in copied
+    assert "EXCEPTION WHEN OTHERS THEN RAISE;" in copied
+    assert "RETURN false;" not in copied
+    assert report.ELIGIBLE_SQL == before
 
 
 def test_owned_report_writer_guards_compile_and_forged_caps_are_denied():

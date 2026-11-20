@@ -9,6 +9,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import sys
 import time
 from datetime import UTC, datetime, timedelta
@@ -204,6 +205,20 @@ async def test_actual0058_original_oco_report_spool_replays_without_own_close_in
         **values,
     )
     async with selected.writer_factory() as session, session.begin():
+        allowed = await session.scalar(
+            text(
+                "SELECT public.qualification_native_report_eligible_v55(:oid,:rid,:report,:policy)"
+            ),
+            {
+                "oid": values["outcome_id"],
+                "rid": values["reservation_id"],
+                "report": values["report_sha256"],
+                "policy": values["policy_sha256"],
+            },
+        )
+        if allowed is not True:
+            await _diagnose_original_report_predicate(owner, values)
+            raise AssertionError("native_original_oco_report_role_dependent_refusal")
         session.add(spool)
         await session.flush()
         write_xid = await session.scalar(text("SELECT pg_current_xact_id()::text"))
@@ -338,6 +353,99 @@ async def _configured_reporting_child(selected, spool, tmp_path):
     assert result["notion_source_distinct_committed_readbacks"] == 2
     assert result["notion_writes"] == result["order_writes"] == 0
     assert result["execution_authority"] is False
+
+
+async def _diagnose_original_report_predicate(owner, values):
+    """Owner-only rollback probe; never changes the native function or proof.
+
+    A distinct ungranted function makes false exits report a fixed rule index.
+    Its result supplies diagnostics only. No row, guard, native body, profile
+    or accepted evidence is modified, and the entire DDL transaction rolls back.
+    """
+    sql = _diagnostic_report_sql()
+    async with owner.connect() as connection:
+        transaction = await connection.begin()
+        try:
+            installed = await connection.scalar(
+                text(
+                    "SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_catalog.pg_proc WHERE oid='public.qualification_native_report_eligible_v55(text,text,text,text)'::regprocedure"
+                )
+            )
+            assert installed == schema.ELIGIBLE_BODY_SHA256
+            await connection.exec_driver_sql(sql)
+            await connection.exec_driver_sql(
+                "REVOKE ALL ON FUNCTION public.ctcc_original_oco_report_probe_v58(text,text,text,text) FROM PUBLIC"
+            )
+            try:
+                await connection.execute(
+                    text(
+                        "SELECT public.ctcc_original_oco_report_probe_v58(:oid,:rid,:report,:policy)"
+                    ),
+                    {
+                        "oid": values["outcome_id"],
+                        "rid": values["reservation_id"],
+                        "report": values["report_sha256"],
+                        "policy": values["policy_sha256"],
+                    },
+                )
+            except DBAPIError as error:
+                message = str(error.orig)
+                marker = re.search(r"native_original_oco_report_rule_[0-9]{3}", message)
+                code = getattr(error.orig, "sqlstate", None) or getattr(
+                    error.orig, "pgcode", None
+                )
+                code = (
+                    code
+                    if type(code) is str and re.fullmatch(r"[A-Z0-9]{5}", code)
+                    else "UNKNOWN"
+                )
+                context = str(
+                    getattr(getattr(error.orig, "__cause__", None), "context", "")
+                )
+                line = re.search(
+                    r"ctcc_original_oco_report_probe_v58[^\n]*?line ([0-9]+)", context
+                )
+                fixed = (
+                    marker.group(0)
+                    if marker
+                    else "native_original_oco_report_sqlstate_"
+                    + code
+                    + ("_line_" + line.group(1) if line else "")
+                )
+                raise AssertionError(fixed) from None
+        finally:
+            await transaction.rollback()
+
+
+def _diagnostic_report_sql():
+    """Static copied-body diagnostics; the installed predicate stays untouched."""
+    original = (
+        "CREATE OR REPLACE FUNCTION public.qualification_native_report_eligible_v55("
+    )
+    assert schema.ELIGIBLE_SQL.count(original) == 1
+    sql = schema.ELIGIBLE_SQL.replace(
+        original, "CREATE FUNCTION public.ctcc_original_oco_report_probe_v58(", 1
+    )
+    sql, count = re.subn(
+        r"EXCEPTION\s+WHEN\s+OTHERS\s+THEN\s+RETURN false;",
+        "EXCEPTION WHEN OTHERS THEN RAISE;",
+        sql,
+    )
+    assert count == 1
+    index = 0
+
+    def refusal(_match):
+        nonlocal index
+        index += 1
+        return (
+            "RAISE EXCEPTION 'native_original_oco_report_rule_"
+            + str(index).zfill(3)
+            + "';"
+        )
+
+    sql = re.sub(r"RETURN false;", refusal, sql)
+    assert 1 <= index <= 256
+    return sql
 
 
 async def test_actual0058_original_oco_reporting_guard_refuses_foreign_forensics(

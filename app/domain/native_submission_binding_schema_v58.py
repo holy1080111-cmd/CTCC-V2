@@ -56,9 +56,9 @@ _ADDITIONAL = """
 # permissive historical case. This guard cannot resolve or alter a reservation.
 _REPORT_GUARD = (
     """
-             OR (NEW.capture_json::jsonb->>'version' IN (
-                   'ctcc.native_original_oco_cleanup.v1','ctcc.native_original_oco_report_ready.v1')
-               AND NOT COALESCE((
+          IF NEW.capture_json::jsonb->>'version' IN (
+              'ctcc.native_original_oco_cleanup.v1','ctcc.native_original_oco_report_ready.v1') THEN
+            IF NOT COALESCE((
                  (SELECT version_num FROM public.alembic_version)='0058'
                  AND r.environment='demo' AND r.state='reconciled_flat' AND r.state_revision=4
                  AND r.request_json::jsonb->>'contract_version'='ctcc-reservation-request-native-v4'
@@ -121,7 +121,10 @@ _REPORT_GUARD = (
                             AND cleanup.capture_json::jsonb->>'forensics_sha256'=witness.capture_json::jsonb->>'forensics_sha256'))
                      )
                  )
-               ),false))
+               ),false) THEN
+              RAISE EXCEPTION 'submission_outcome_binding_denied';
+            END IF;
+          END IF;
 """.replace("__TRIGGER58__", hold.CURRENT_BODY_SHA256)
     .replace("__POLICY_VERSION__", report.REPORT_POLICY_VERSION)
     .replace("__POLICY_SHA__", report.REPORT_POLICY_SHA256)
@@ -139,9 +142,13 @@ def _extended():
         raise ValueError("native_submission58_original_guard_changed") from None
     old_allow = original[len(_START) : -len(_CLOSE)]
     added = _START + "(" + old_allow + ") OR (" + _ADDITIONAL + ")" + _CLOSE
-    return _public_ddl(
-        ANCESTOR_SQL[:start] + added + _REPORT_GUARD + ANCESTOR_SQL[end:]
-    )
+    base = ANCESTOR_SQL[:start] + added + ANCESTOR_SQL[end:]
+    anchor = "          RETURN NEW;"
+    if base.count(anchor) != 1:
+        raise ValueError("native_submission58_original_return_changed") from None
+    # A separate PL/pgSQL version IF prevents planning the58-only record
+    # fields for a legacy journal version. SQL AND/OR is not that boundary.
+    return _public_ddl(base.replace(anchor, _REPORT_GUARD + anchor, 1))
 
 
 def _public_ddl(sql):
