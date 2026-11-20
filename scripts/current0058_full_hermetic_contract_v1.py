@@ -28,6 +28,7 @@ PHYSICAL_LIVE_CASES = tuple(
     for name in (
         "test_actual58_physical_negative_stop_commits_and_independently_reads_back",
         "test_actual58_physical_disarm_preserves_stop_without_any_new_authority",
+        "test_actual58_physical_disarm_proves_exact_one_step_committed_successor_only",
     )
 )
 BINDING_CASES = tuple(
@@ -130,6 +131,17 @@ LIVE_LIFECYCLE_CASES = tuple(
         "test_actual58_lifecycle_uncertain_proof_is_durable_and_keeps_stop_and_hold",
         "test_actual58_lifecycle_terminal_zero_fill_releases_only_authenticated_original_hold",
         "test_actual58_live_recovery_journal_preserves_db_intent_recorded_time",
+        *(
+            "test_actual58_original_oco_terminal_source_drives_signed_resolution_or_hold["
+            + source_case
+            + "]"
+            for source_case in (
+                "complete",
+                "changed_after",
+                "partial_exit",
+                "missing_terminal",
+            )
+        ),
     )
 )
 STOPPED_SETUP_CASES = tuple(

@@ -19,9 +19,11 @@ MODULE = "tests.integration.test_native_live_controlled_close_v1_pg"
 PG_PATH = MODULE.replace(".", "/") + ".py"
 
 
-def _actual_source_cases():
+def _actual_source_cases(module=MODULE):
     """Read literal pytest identities without importing a PostgreSQL fixture."""
-    tree = ast.parse((ROOT / PG_PATH).read_text(encoding="utf8"))
+    tree = ast.parse(
+        (ROOT / (module.replace(".", "/") + ".py")).read_text(encoding="utf8")
+    )
     cases = []
     for node in tree.body:
         if not isinstance(node, ast.AsyncFunctionDef) or not node.name.startswith(
@@ -37,15 +39,48 @@ def _actual_source_cases():
         ]
         assert len(decorators) <= 1
         if not decorators:
-            cases.append((MODULE, node.name))
+            cases.append((module, node.name))
             continue
         decorator = decorators[0]
         assert len(decorator.args) == 2 and not decorator.keywords
         assert type(ast.literal_eval(decorator.args[0])) is str
         labels = ast.literal_eval(decorator.args[1])
-        assert type(labels) is tuple and all(type(label) is str for label in labels)
-        cases.extend((MODULE, node.name + "[" + label + "]") for label in labels)
+        assert type(labels) in (tuple, list) and all(
+            type(label) is str for label in labels
+        )
+        cases.extend((module, node.name + "[" + label + "]") for label in labels)
     return tuple(cases)
+
+
+@pytest.mark.parametrize(
+    "module,roster,count",
+    (
+        (
+            "tests.integration.test_native_live_physical_v1_pg",
+            full.PHYSICAL_LIVE_CASES,
+            3,
+        ),
+        (
+            "tests.integration.test_native_live_lifecycle_v1_pg",
+            full.LIVE_LIFECYCLE_CASES,
+            16,
+        ),
+    ),
+)
+def test_all_physical_and_restart_source_cases_are_mandatory_once(
+    module, roster, count
+):
+    actual = _actual_source_cases(module)
+    assert len(actual) == len(set(actual)) == count
+    assert actual == roster
+    for case in actual:
+        assert full.REQUIRED_CASES.count(case) == full.SUCCESSOR_CASES.count(case) == 1
+        node = case[0].replace(".", "/") + ".py::" + case[1]
+        assert [
+            index
+            for index in range(5)
+            if full.collection.selected_for("postgres", index, node)
+        ] == [2]
 
 
 def test_all34_real_source_case_identities_are_mandatory_in_both_closed_rosters():
