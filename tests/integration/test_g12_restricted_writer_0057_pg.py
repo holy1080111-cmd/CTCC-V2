@@ -128,7 +128,10 @@ async def _isolated_0057_g12_lab(request):
         measured = ConfiguredNativeDemoFactoriesV2(
             *measured_factories, writers[1], writers[2]
         )
-        await record_profile_if_requested(owner, measured, case=request.node.name)
+        # This fixture is also used by unrelated actual57 operational cases.
+        # Their test names must not impersonate one of the four G12 receipts.
+        if request.node.path.resolve() == Path(__file__).resolve():
+            await record_profile_if_requested(owner, measured, case=request.node.name)
         yield owner, writers, names
     finally:
         for writer in writers:
