@@ -968,7 +968,8 @@ def test_actual_junit_join_keeps_parameter_and_class_identity_after_valid_baseli
     [
         ("postgres", None, None),
         ("postgres", -1, None),
-        ("postgres", 3, None),
+        ("postgres", 5, None),
+        ("postgres", 6, None),
         ("full", 0, None),
         ("shard", 1, 0),
     ],
