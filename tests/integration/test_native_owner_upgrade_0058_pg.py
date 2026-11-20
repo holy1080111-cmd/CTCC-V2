@@ -18,8 +18,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.database.models.demo_automation import DemoAutomationState
-from app.database.models.demo_control import DemoAccountControl
 from app.database.repositories import native_legacy_control_genesis_0056_v1 as genesis
+from app.database.repositories.demo_control import DemoControlRepository
 from scripts import native_owner_upgrade_0058_v1 as subject
 from tests.integration import test_native_demo_profile_0058_pg as lab
 
@@ -48,23 +48,10 @@ async def _actual57_owner_profile_lab(_owner58_lab):
     async with owner.begin() as connection:
         await connection.run_sync(_parent, script)
     seed_at = datetime.now(UTC) - timedelta(seconds=2)
-    state = subject.parent.control.stopped_genesis(
-        subject.parent.control.ControlScope("demo", "730058"), seed_at
+    factory = async_sessionmaker(owner, autoflush=False, expire_on_commit=False)
+    await DemoControlRepository(factory, clock=lambda: seed_at).latch_stop(
+        subject.parent.control.ControlScope("demo", "730058"), command_id="a" * 64
     )
-    raw = subject.parent.control.canonical(subject.parent.control.document(state))
-    values = {
-        name: getattr(state, name)
-        for name in (
-            "owner_sha256",
-            "owner_epoch",
-            "lease_until",
-            "emergency_stop",
-            "arm_request_id",
-            "arm_expires_at",
-            "created_at",
-            "updated_at",
-        )
-    }
     shared = genesis._stopped_values(seed_at, "f" * 64)
     shared.update(
         control_revision=7,
@@ -74,18 +61,7 @@ async def _actual57_owner_profile_lab(_owner58_lab):
         peak_equity=Decimal(1234),
         realized_pnl_events=[{"net_pnl": "-12.5", "closed_at": seed_at.isoformat()}],
     )
-    factory = async_sessionmaker(owner, autoflush=False, expire_on_commit=False)
     async with factory.begin() as session:
-        session.add(
-            DemoAccountControl(
-                environment="demo",
-                account_id="730058",
-                control_revision=state.revision,
-                state_json=raw,
-                state_sha256=subject.parent.control.digest(raw),
-                **values,
-            )
-        )
         session.add(DemoAutomationState(**shared))
     async with owner.connect() as connection, connection.begin():
         for sql in subject.parent.old._READBACK_SETTINGS:
@@ -163,7 +139,7 @@ async def test_actual0057_owner58_rehearsal_and_commit_preserve_every_row_actor_
             await connection.scalar(
                 subject.catalog.NEW_LIVE_ACCESS,
                 {
-                    "tables": list(subject.live.TABLES),
+                    "tables": list(subject.ADDED_TABLES),
                     "functions": list(subject._live_functions()),
                 },
             )

@@ -19,8 +19,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.database.models.demo_automation import DemoAutomationState
-from app.database.models.demo_control import DemoAccountControl
 from app.database.repositories import native_legacy_control_genesis_0056_v1 as genesis
+from app.database.repositories.demo_control import DemoControlRepository
 from app.demo_automation.native_server_selectors_v2 import (
     ConfiguredNativeDemoFactoriesV2,
 )
@@ -42,23 +42,11 @@ async def _actual56_owner_profile_lab(_actual57_lab):
             )
         await connection.run_sync(lambda sync: lab._migrate(sync, "0056"))
     seed_at = datetime.now(UTC) - timedelta(seconds=2)
-    state = subject.control.stopped_genesis(
-        subject.control.ControlScope("demo", "730057"), seed_at
+    # Exercise the real stopped transition and its immutable paired journal;
+    # a naked Control INSERT is correctly refused by the deferred DB guard.
+    await DemoControlRepository(owner_factory, clock=lambda: seed_at).latch_stop(
+        subject.control.ControlScope("demo", "730057"), command_id="a" * 64
     )
-    raw = subject.control.canonical(subject.control.document(state))
-    values = {
-        name: getattr(state, name)
-        for name in (
-            "owner_sha256",
-            "owner_epoch",
-            "lease_until",
-            "emergency_stop",
-            "arm_request_id",
-            "arm_expires_at",
-            "created_at",
-            "updated_at",
-        )
-    }
     shared = genesis._stopped_values(seed_at, "f" * 64)
     shared.update(
         control_revision=7,
@@ -69,16 +57,6 @@ async def _actual56_owner_profile_lab(_actual57_lab):
         realized_pnl_events=[{"net_pnl": "-12.5", "closed_at": seed_at.isoformat()}],
     )
     async with owner_factory.begin() as session:
-        session.add(
-            DemoAccountControl(
-                environment=state.scope.environment,
-                account_id=state.scope.account_id,
-                control_revision=state.revision,
-                state_json=raw,
-                state_sha256=subject.control.digest(raw),
-                **values,
-            )
-        )
         session.add(DemoAutomationState(**shared))
     selected = ConfiguredNativeDemoFactoriesV2(
         *(

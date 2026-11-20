@@ -385,21 +385,26 @@ async def _profile_from_selected_head(selected):
 
 
 async def _require_matching_roles(selected, expected):
-    profile = _profile_from_expected_identity(expected)
-    actual = await witness56.observe_restricted_native_roles_0056_witness_v1(
-        selected, source=_SOURCE, **profiles.arguments(profile)
-    )
-    _need(
-        type(expected) is NativeRoleIdentity0056V2
-        and _profile_for_original_roles_v1(actual) is profile
-        and actual.server_incarnation_sha256 == expected.server_incarnation_sha256
-        and actual.role_route_sha256 == expected.role_route_sha256
-        and actual.observation.inherited_native_definitions_sha256
-        == expected.inherited_native_definitions_sha256
-        and actual.observation.granted_inherited_acl_shape_sha256
-        == expected.granted_inherited_acl_shape_sha256
-    )
-    return actual
+    try:
+        profile = _profile_from_expected_identity(expected)
+        actual = await witness56.observe_restricted_native_roles_0056_witness_v1(
+            selected, source=_SOURCE, **profiles.arguments(profile)
+        )
+        _need(
+            type(expected) is NativeRoleIdentity0056V2
+            and _profile_for_original_roles_v1(actual) is profile
+            and actual.server_incarnation_sha256 == expected.server_incarnation_sha256
+            and actual.role_route_sha256 == expected.role_route_sha256
+            and actual.observation.inherited_native_definitions_sha256
+            == expected.inherited_native_definitions_sha256
+            and actual.observation.granted_inherited_acl_shape_sha256
+            == expected.granted_inherited_acl_shape_sha256
+        )
+        return actual
+    except (asyncio.CancelledError, NativeTerminalReport0056Error):
+        raise
+    except Exception:  # noqa: BLE001 -- catalog denial retains the report API's fixed private refusal.
+        _need(False)
 
 
 async def _project_terminal_report_0056_v1(

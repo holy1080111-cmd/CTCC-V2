@@ -9,7 +9,7 @@ source0058 archive cannot enter the strict source0057 smoke/full contracts.
 The existing required workflow already uses a source-bound dynamic PostgreSQL
 matrix. The new exact source0058 topology selects three PostgreSQL components
 and eight Linux shards; Windows retains its independently source-bound eight
-non-DB shards. All reviewed DB modules, including the six new0058 modules,
+non-DB shards. All reviewed DB modules, including the eight new0058 modules,
 are classified explicitly for both platforms. No skipped DB case counts as
 Linux acceptance.
 
@@ -28,7 +28,7 @@ The components have distinct responsibilities:
 | --- | --- |
 | PostgreSQL0 | Existing stateful anchors, actual main0058 migrations/restart and its owned legacy DB cases |
 | PostgreSQL1 | Existing owned DB cases and physical0056 fitted/inherited/ACL catalog receipts bound to actual source0058 |
-| PostgreSQL2 | All retained0057 cases and four physical0057 G12 receipts, the actual0058 three-role/44-grant full graph/protective catalog receipt, a distinct actual0058 six-session custody receipt, all seventeen Live DATA ledger and two physical negative cleanup cases, the original-OCO predicate case, thirteen TEMP submission binding component cases and seven public-table original-OCO cases with declared synthetic ingress |
+| PostgreSQL2 | All retained0057 cases and four physical0057 G12 receipts, the actual0058 three-role/44-grant full graph/protective catalog receipt, a distinct actual0058 six-session custody receipt, seventeen Live DATA ledger and eleven financial epoch cases, two physical negative cleanup cases, the original-OCO predicate case, thirteen TEMP submission binding cases, seven public-table original-OCO cases and three real owner57→58 upgrade/rollback/privilege-drift cases; private source ingress remains explicitly synthetic |
 | Linux shards0–7 | Every remaining whole test module, deterministically selected |
 
 Historical observations explicitly retain `source_head=0058` and the actual

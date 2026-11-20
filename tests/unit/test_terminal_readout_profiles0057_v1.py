@@ -1,5 +1,6 @@
 """Synthetic report/cold-ledger dispatch; no real database or order authority."""
 
+import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import asdict, replace
 from datetime import UTC, datetime, timedelta
@@ -39,7 +40,9 @@ def identity(profile):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("head", ["0056", "0057", None, "0058", "duplicate"])
+@pytest.mark.parametrize(
+    "head", ["0056", "0057", None, "0058", "0059", True, "duplicate"]
+)
 async def test_readout_probe_uses_actual_bounded_row_and_always_rolls_back(
     scenario,  # noqa: F811
     monkeypatch,
@@ -57,7 +60,7 @@ async def test_readout_probe_uses_actual_bounded_row_and_always_rolls_back(
         )
 
     monkeypatch.setattr(AsyncSession, "execute", execute)
-    if head in ("0056", "0057"):
+    if head in ("0056", "0057", "0058"):
         profile = await report._profile_from_selected_head(scenario.selected)
         assert profiles.head(profile) == head
     else:
@@ -97,6 +100,47 @@ async def test_expected_successor_requires_real_successor_role_replay(monkeypatc
             object(), replace(identity(profiles.DB0057), schema="0057")
         )
     probe.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("profile", (profiles.DB0056, profiles.DB0057, profiles.DB0058))
+@pytest.mark.parametrize(
+    "error", (report.roles56.NativeRoles0056ObservationError, ValueError)
+)
+async def test_fresh_role_catalog_refusal_stays_a_fixed_report_denial(
+    monkeypatch, profile, error
+):
+    probe = AsyncMock(
+        side_effect=error("private account route and catalog must not escape")
+    )
+    monkeypatch.setattr(
+        report.witness56, "observe_restricted_native_roles_0056_witness_v1", probe
+    )
+    with pytest.raises(
+        report.NativeTerminalReport0056Error,
+        match="^native_terminal_report_0056_unavailable$",
+    ):
+        await report._require_matching_roles(object(), identity(profile))
+    assert probe.await_count == 1
+    assert probe.await_args.kwargs == {
+        "source": report._SOURCE,
+        **profiles.arguments(profile),
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("profile", (profiles.DB0056, profiles.DB0057, profiles.DB0058))
+async def test_role_catalog_cancellation_propagates_without_any_retry(
+    monkeypatch, profile
+):
+    cancellation = asyncio.CancelledError()
+    probe = AsyncMock(side_effect=cancellation)
+    monkeypatch.setattr(
+        report.witness56, "observe_restricted_native_roles_0056_witness_v1", probe
+    )
+    with pytest.raises(asyncio.CancelledError) as observed:
+        await report._require_matching_roles(object(), identity(profile))
+    assert observed.value is cancellation and probe.await_count == 1
 
 
 def test_default_report_wire_remains_exact_previous_head():

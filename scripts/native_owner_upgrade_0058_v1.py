@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.database.native_pg_tls_v1 import _read_bounded_regular_file_v1
 from app.domain import native_database_profile_v1 as profiles
+from app.domain import native_live_financial_epoch_schema_v1 as financial
 from app.domain import native_live_ledger_schema_v1 as live
 from app.domain.source_primitives import canonical, sha
 from scripts import native_owner_catalog_snapshot_0058_v1 as catalog
@@ -33,6 +34,7 @@ from scripts.evidence_json import read_evidence_json
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIRMATION = "UPGRADE CTCC OWNER DB0057 TO DB0058"
+ADDED_TABLES = (*live.TABLES, *financial.TABLES)
 
 
 class OwnerProfileUpgrade0058Refused(ValueError):
@@ -202,7 +204,7 @@ async def _role_observation(selected, owner, pins, head):
 def _live_functions():
     return tuple(
         statement.split("public.", 1)[1].split("(", 1)[0]
-        for statement in live.UPGRADE_SQL
+        for statement in (*live.UPGRADE_SQL, *financial.UPGRADE_SQL)
         if statement.startswith("CREATE FUNCTION public.")
     )
 
@@ -256,13 +258,13 @@ def _preserved(before, after):
     old_rows = {item[0]: tuple(item) for item in before["snapshot"]["rows"]}
     new_rows = {item[0]: tuple(item) for item in after["snapshot"]["rows"]}
     added = set(new_rows) - set(old_rows)
-    _need(added == set(live.TABLES))
+    _need(added == set(ADDED_TABLES))
     _need(all(new_rows[name] == value for name, value in old_rows.items()))
     empty = sha(b"")
     _need(all(new_rows[name] == (name, 0, empty) for name in added))
     old_rel = {row[0]: tuple(row) for row in before["relations"]}
     new_rel = {row[0]: tuple(row) for row in after["relations"]}
-    _need(set(new_rel) - set(old_rel) == set(live.TABLES))
+    _need(set(new_rel) - set(old_rel) == set(ADDED_TABLES))
     _need(all(new_rel[name] == value for name, value in old_rel.items()))
     _need(
         before["snapshot"]["role_state_sha256"]
@@ -284,7 +286,7 @@ async def _held_inventory(connection, pins, head):
         _need(
             await connection.scalar(
                 catalog.NEW_LIVE_ACCESS,
-                {"tables": list(live.TABLES), "functions": list(_live_functions())},
+                {"tables": list(ADDED_TABLES), "functions": list(_live_functions())},
             )
             is True
         )
@@ -476,6 +478,7 @@ def _receipt(pins, prepared, before_identity, after_identity, before, after, *, 
         "preserved_rows_sha256": sha(canonical(before["snapshot"]["rows"])),
         "installed_catalog_sha256": _installed_pin(prepared, after["logical"]),
         "live_spec_sha256": live.SPEC_SHA256,
+        "financial_spec_sha256": financial.live_financial_epoch_spec_sha256_v1(),
         "restricted_grant_statements_after": 44,
         "grants_executed": 0,
         "live_grants_executed": 0,
@@ -496,6 +499,7 @@ def _installed_pin(prepared, logical):
                 "schema": "ctcc.owner_profile0058.installed_catalog_pin.v1",
                 "migration_sha256": prepared.migration_sha256,
                 "live_spec_sha256": live.SPEC_SHA256,
+                "financial_spec_sha256": financial.live_financial_epoch_spec_sha256_v1(),
                 "catalog": logical,
             }
         )

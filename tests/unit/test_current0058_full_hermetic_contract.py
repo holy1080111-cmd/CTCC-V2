@@ -180,7 +180,9 @@ def test_source58_selection_executes_every_old_and_new_required_case_exactly_onc
     assert len(owned) == len(nodes) == len(set(nodes)) and set(owned) == set(nodes)
     assert set(previous.CASES) <= set(full.REQUIRED_CASES)
     assert set(full.base.REQUIRED_CASES) < set(full.REQUIRED_CASES)
-    assert len(full.live_cases.REQUIRED_CASES) == 17
+    assert len(full.live_cases.REQUIRED_CASES) == 28
+    assert len(full.live_cases.REQUIRED_FINANCIAL_CASES) == 11
+    assert set(full.live_cases.REQUIRED_FINANCIAL_CASES) <= set(full.REQUIRED_CASES)
     assert len(full.BINDING_CASES) == 13
     assert all(
         full.collection.selected_for(

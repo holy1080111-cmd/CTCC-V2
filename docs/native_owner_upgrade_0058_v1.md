@@ -15,13 +15,14 @@ remain mandatory before startup and any later Arm.
 
 Only `--execute --confirmation "UPGRADE CTCC OWNER DB0057 TO DB0058"` enables
 DDL. This installs the exact reviewed migration and executes zero grants. No
-Live key, dedicated Live writer, new Control or Arm is created. The four new
-Live DATA tables and their functions must remain accessible only to the owner.
+Live key, dedicated Live writer/financial collector, new Control or Arm is
+created. The six new Live DATA tables (four intent-ledger tables and two
+financial epoch tables) and their functions must remain owner-only.
 
 Under one owner transaction, advisory lock, revision lock and locks on every
 retained public table, the command re-reads all retained rows, role state and
 catalog. It runs the real migration in a savepoint, observes actualhead58, and
-verifies all old rows and relation OIDs unchanged, all four new tables empty,
+verifies all old rows and relation OIDs unchanged, all six new tables empty,
 and no nonowner Live grants. It then rolls the savepoint back and verifies the
 entire original physical57 state restored. It runs that migration again and
 requires the same logical definitions and complete ACL as the rehearsal.
@@ -39,7 +40,8 @@ exchange state.
 
 For an already installed58 database, supply its reviewed
 `installed_catalog_sha256` from the postcommit receipt in the private pins.
-This binds the logical catalog/ACL, exact migration bytes and Live specification.
+This binds the logical catalog/ACL, exact migration bytes and both Live ledger
+and financial epoch specifications.
 The command independently rechecks the source, physical actor, restricted
 profile, stopped inventory and installed digest, then returns
 `ALREADY_INSTALLED_READBACK_PASS` without DDL, grants or restoring Arm. Changed

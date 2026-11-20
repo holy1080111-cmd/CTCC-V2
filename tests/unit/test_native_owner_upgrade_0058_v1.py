@@ -32,9 +32,10 @@ def _inventory(phase):
     rows = [["retained_history", 5, "a" * 64]]
     relations = [("alembic_version", 100, "r"), ("retained_history", 101, "r")]
     if phase:
-        rows += [[name, 0, subject.sha(b"")] for name in subject.live.TABLES]
+        rows += [[name, 0, subject.sha(b"")] for name in subject.ADDED_TABLES]
         relations += [
-            (name, 200 + offset, "r") for offset, name in enumerate(subject.live.TABLES)
+            (name, 200 + offset, "r")
+            for offset, name in enumerate(subject.ADDED_TABLES)
         ]
     return {
         "relations": tuple(relations),
@@ -249,6 +250,11 @@ def test_catalog_reinstall_pin_binds_migration_and_live_source_spec(monkeypatch)
     )
     monkeypatch.setattr(subject.live, "SPEC_SHA256", "c" * 64)
     assert original != subject._installed_pin(prepared, _inventory(True)["logical"])
+    changed_live = subject._installed_pin(prepared, _inventory(True)["logical"])
+    monkeypatch.setattr(
+        subject.financial, "live_financial_epoch_spec_sha256_v1", lambda: "d" * 64
+    )
+    assert changed_live != subject._installed_pin(prepared, _inventory(True)["logical"])
 
 
 @pytest.mark.parametrize("head", ("0055", "0056", "0059", "58", None))
