@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.api.routers import demo_automation as demo
 from app.api.routers.system import liveness
+from app.dashboard.native_manual_demo_0056_v1 import manual_demo_dashboard_0056_v1
 
 
 async def _require_ready(request: Request):
@@ -18,6 +19,15 @@ async def _require_ready(request: Request):
 
 router = APIRouter(dependencies=[Depends(_require_ready)])
 router.add_api_route("/liveness", liveness, methods=["GET"])
+router.add_api_route(
+    "/", manual_demo_dashboard_0056_v1, methods=["GET"], include_in_schema=False
+)
+router.add_api_route(
+    "/dashboard",
+    manual_demo_dashboard_0056_v1,
+    methods=["GET"],
+    include_in_schema=False,
+)
 
 
 @router.get("/readiness")
