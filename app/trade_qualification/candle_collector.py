@@ -85,23 +85,63 @@ def _plain(value):
 def _guard(value, depth=0, budget=None):
     if budget is None:
         budget = [120000]
-    budget[0] -= 1
-    if depth > 18 or budget[0] < 0:
-        raise CandleCollectionError("capture_traversal_limit")
-    if isinstance(value, BaseModel):
-        if type(value) not in {
+    # Fresh depth-first traversal of every occurrence, including shared model
+    # references. Nothing about a prior receipt/model validation is retained.
+    pending = [(value, depth)]
+    while pending:
+        value, depth = pending.pop()
+        budget[0] -= 1
+        if depth > 18 or budget[0] < 0:
+            raise CandleCollectionError("capture_traversal_limit")
+        kind = type(value)
+        # The overwhelmingly common candle leaves never need a Pydantic
+        # metaclass instance check or a freshly allocated model schema table.
+        if value is None or kind is bool:
+            continue
+        if kind is Decimal:
+            if not value.is_finite():
+                raise CandleCollectionError("capture_decimal_invalid")
+            parts = value.as_tuple()
+            if len(parts.digits) > 40 or abs(parts.exponent) > 20:
+                raise CandleCollectionError("capture_decimal_invalid")
+            continue
+        if kind is datetime:
+            _utc(value)
+            continue
+        if kind in (str, bytes):
+            if len(value) > MAX_RESPONSE_BYTES:
+                raise CandleCollectionError("capture_string_invalid")
+            continue
+        if kind is int:
+            if abs(value) > 10**15:
+                raise CandleCollectionError("capture_value_invalid")
+            continue
+        if kind is dict:
+            if len(value) > 64 or any(
+                type(key) is not str or len(key) > 64 for key in value
+            ):
+                raise CandleCollectionError("capture_mapping_invalid")
+            for item in reversed(tuple(value.values())):
+                pending.append((item, depth + 1))
+            continue
+        if kind is tuple:
+            if len(value) > 1024:
+                raise CandleCollectionError("capture_sequence_invalid")
+            for item in reversed(value):
+                pending.append((item, depth + 1))
+            continue
+        if kind not in (
             FrameRequest,
             CandleCollectionPolicy,
             CapturedCandle,
             CandlePage,
             FrameCapture,
             CollectedCandles,
-        }:
-            raise CandleCollectionError("capture_model_type_invalid")
-        if (
-            set(value.__dict__) != set(type(value).model_fields)
-            or value.__pydantic_extra__
         ):
+            if isinstance(value, BaseModel):
+                raise CandleCollectionError("capture_model_type_invalid")
+            raise CandleCollectionError("capture_value_invalid")
+        if set(value.__dict__) != set(kind.model_fields) or value.__pydantic_extra__:
             raise CandleCollectionError("capture_model_fields_invalid")
         for name, part in value.__dict__.items():
             pattern = None
@@ -115,57 +155,29 @@ def _guard(value, depth=0, budget=None):
                 type(part) is not str or re.fullmatch(pattern, part) is None
             ):
                 raise CandleCollectionError("capture_raw_pin_invalid")
-        bounds = {
-            CandleCollectionPolicy: (("requests", 4, 4),),
-            FrameCapture: (("pages", 1, 12), ("confirmed", 200, 1024)),
-            CollectedCandles: (("frames", 4, 4), ("volume_units", 3, 3)),
-            CandlePage: (("parameters", 3, 4),),
-        }
-        for name, minimum, maximum in bounds.get(type(value), ()):
+        if kind is CandleCollectionPolicy:
+            bounds = (("requests", 4, 4),)
+        elif kind is FrameCapture:
+            bounds = (("pages", 1, 12), ("confirmed", 200, 1024))
+        elif kind is CollectedCandles:
+            bounds = (("frames", 4, 4), ("volume_units", 3, 3))
+        elif kind is CandlePage:
+            bounds = (("parameters", 3, 4),)
+        else:
+            bounds = ()
+        for name, minimum, maximum in bounds:
             sequence = value.__dict__[name]
             if type(sequence) is not tuple or not minimum <= len(sequence) <= maximum:
                 raise CandleCollectionError("capture_sequence_invalid")
-        if type(value) is CandlePage and any(
+        if kind is CandlePage and any(
             type(pair) is not tuple
             or len(pair) != 2
             or any(type(part) is not str or len(part) > 64 for part in pair)
             for pair in value.parameters
         ):
             raise CandleCollectionError("capture_parameters_invalid")
-        for item in value.__dict__.values():
-            _guard(item, depth + 1, budget)
-    elif type(value) is dict:
-        if len(value) > 64 or any(
-            type(key) is not str or len(key) > 64 for key in value
-        ):
-            raise CandleCollectionError("capture_mapping_invalid")
-        for item in value.values():
-            _guard(item, depth + 1, budget)
-    elif type(value) is tuple:
-        if len(value) > 1024:
-            raise CandleCollectionError("capture_sequence_invalid")
-        for item in value:
-            _guard(item, depth + 1, budget)
-    elif type(value) in (str, bytes):
-        if len(value) > MAX_RESPONSE_BYTES:
-            raise CandleCollectionError("capture_string_invalid")
-    elif type(value) is Decimal:
-        if (
-            not value.is_finite()
-            or len(value.as_tuple().digits) > 40
-            or abs(value.as_tuple().exponent) > 20
-        ):
-            raise CandleCollectionError("capture_decimal_invalid")
-    elif type(value) is datetime:
-        _utc(value)
-    elif (
-        value is None
-        or type(value) is bool
-        or (type(value) is int and abs(value) <= 10**15)
-    ):
-        pass
-    else:
-        raise CandleCollectionError("capture_value_invalid")
+        for item in reversed(tuple(value.__dict__.values())):
+            pending.append((item, depth + 1))
 
 
 def _copy(value, expected):
