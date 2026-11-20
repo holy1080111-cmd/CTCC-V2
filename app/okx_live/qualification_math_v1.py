@@ -13,6 +13,7 @@ from hashlib import sha256
 from app.domain.analysis import MultiTimeframeAnalysis
 from app.domain.market import MarketSnapshot
 from app.domain.source_primitives import canonical, decode, sha, utc_from_ns
+from app.okx_live import finite_portfolio_v1 as finite_risk
 from app.public_market_source import public_runtime_journal as journal
 from app.trade_qualification import current_conditions as conditions
 from app.trade_qualification import current_economics_v2 as costs
@@ -55,7 +56,9 @@ class LiveQualificationMathV1:
     intent: QualificationIntent
     policy: engine.PreEvidencePolicy
     consumed_event_keys: frozenset[str] | None
-    risk_inputs: engine.LivePortfolioInputs | None
+    risk_inputs: (
+        engine.LivePortfolioInputs | finite_risk.LiveFinitePortfolioInputsV1 | None
+    )
     result: EntryQualificationResult
     detection: TriggerDetection | None
     original_zone: EntryZone | None
@@ -244,6 +247,55 @@ def _selection(detection, market, analysis, policy, entry, now):
     )
 
 
+def _copy_risk_inputs(value, policy):
+    if type(value) is finite_risk.LiveFinitePortfolioInputsV1:
+        finite_risk._exact_tree(value)
+        checked = finite_risk.LiveFinitePortfolioInputsV1.model_validate_json(
+            value.model_dump_json(round_trip=True), strict=True
+        )
+        _need(checked.claims.risk_policy == policy.portfolio)
+        return checked
+    return engine._copy(value, engine.LivePortfolioInputs)
+
+
+def _risk_inputs_digest(value):
+    if type(value) is finite_risk.LiveFinitePortfolioInputsV1:
+        finite_risk._exact_tree(value)
+        return sha(canonical(value.model_dump(mode="json", round_trip=True)))
+    return engine._hash(value)
+
+
+def _sample_risk(inputs, *, intent, policy, entry, stop, cost, now):
+    if type(inputs) is finite_risk.LiveFinitePortfolioInputsV1:
+        _need(inputs.claims.risk_policy == policy.portfolio)
+        return finite_risk.evaluate_live_finite_portfolio_v1(
+            inputs,
+            report_id=intent.report_id,
+            instrument_id=intent.instrument_id,
+            direction=intent.direction,
+            candidate_entry=entry,
+            stop_loss=stop,
+            round_trip_cost_per_base=cost,
+            current_time=now,
+        )
+    _need(type(inputs) is engine.LivePortfolioInputs)
+    return evaluate_live_portfolio(
+        report_id=intent.report_id,
+        instrument_id=intent.instrument_id,
+        direction=intent.direction,
+        candidate_entry=entry,
+        stop_loss=stop,
+        round_trip_cost_per_base=cost,
+        requested_contracts=inputs.requested_contracts,
+        requested_leverage=inputs.requested_leverage,
+        instrument=inputs.instrument,
+        account=inputs.account,
+        authority=inputs.authority,
+        policy=policy.portfolio,
+        current_time=now,
+    )
+
+
 def evaluate_live_qualification_math_v1(
     source, *, intent, policy, consumed_event_keys, risk_inputs=None
 ):
@@ -376,7 +428,7 @@ def _evaluate(source, *, intent, policy, consumed_event_keys, risk_inputs, origi
             )
         )
     if risk_inputs is not None:
-        risk_inputs = engine._copy(risk_inputs, engine.LivePortfolioInputs)
+        risk_inputs = _copy_risk_inputs(risk_inputs, policy)
     _need(type(source) is public.LivePublicEvaluationV1)
     _need(
         (source.report_id, source.instrument_id)
@@ -440,7 +492,7 @@ def _evaluate(source, *, intent, policy, consumed_event_keys, risk_inputs, origi
                 else sorted(consumed_event_keys),
                 "risk_inputs_sha256": None
                 if risk_inputs is None
-                else engine._hash(risk_inputs),
+                else _risk_inputs_digest(risk_inputs),
                 "result": result.model_dump(mode="json"),
                 "source_sha256": evidence.get("source_sha256"),
                 "detection": None
@@ -909,20 +961,14 @@ def _evaluate(source, *, intent, policy, consumed_event_keys, risk_inputs, origi
         )
         return finish()
     sampled_risk = tuple(
-        evaluate_live_portfolio(
-            report_id=intent.report_id,
-            instrument_id=intent.instrument_id,
-            direction=intent.direction,
-            candidate_entry=entry,
-            stop_loss=values["stop_loss"],
-            round_trip_cost_per_base=worst_cost,
-            requested_contracts=risk_inputs.requested_contracts,
-            requested_leverage=risk_inputs.requested_leverage,
-            instrument=risk_inputs.instrument,
-            account=risk_inputs.account,
-            authority=risk_inputs.authority,
-            policy=policy.portfolio,
-            current_time=now,
+        _sample_risk(
+            risk_inputs,
+            intent=intent,
+            policy=policy,
+            entry=entry,
+            stop=values["stop_loss"],
+            cost=worst_cost,
+            now=now,
         )
         for entry in (intent.candidate_entry, executable)
     )
