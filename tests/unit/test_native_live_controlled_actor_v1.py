@@ -492,6 +492,25 @@ def test_changed_owner_callback_cannot_bypass_its_own_inner_guard(
     actor._NATIVE_GUARD()
 
 
+def test_foreign_owner_callback_already_present_at_bootstrap_is_not_adopted(
+    monkeypatch,
+):
+    def replacement(owner):
+        return {"passed": True}
+
+    monkeypatch.setattr(lifecycle, "_record", replacement)
+    with pytest.raises(actor.LiveControlledCloseError):
+        actor._require_original_owner_callbacks_v1()
+
+
+def test_qualification_guard_cannot_be_replaced_with_a_noop_after_close_bootstrap(
+    monkeypatch,
+):
+    monkeypatch.setattr(actor._qualification, "_NATIVE_GUARD", lambda: None)
+    with pytest.raises(ValueError):
+        actor._NATIVE_GUARD()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("boundary", ["dns_return", "tls_return", "ssl_retry"])
 async def test_cancellation_at_last_await_boundary_refuses_before_any_native_write(

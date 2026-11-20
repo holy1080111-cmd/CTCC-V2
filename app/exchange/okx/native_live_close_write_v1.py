@@ -301,6 +301,20 @@ async def _held_readback(record):
         )
         and row[7] in ("reserved", "uncertain")
     )
+    if state["action"] == "close":
+        latest = (
+            await session.execute(
+                text("""SELECT proof_sha256,outcome,observed_at
+ FROM public.native_live_lifecycle_proofs_v1 WHERE reservation_id=:id ORDER BY sequence DESC LIMIT 1"""),
+                {"id": state["consent"].reservation_id},
+            )
+        ).one()
+        now = await session.scalar(text("SELECT clock_timestamp()"))
+        _need(
+            latest[0] == sha(state["protected_journal"].proofs[-1])
+            and latest[1] == "PROTECTED_HOLD"
+        )
+        _need(0 <= (now - latest[2]).total_seconds() <= 5)
     record["control"], record["legacy_fence_held"] = control, True
 
 

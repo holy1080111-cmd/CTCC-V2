@@ -13,6 +13,8 @@ import secrets
 import sys
 import threading
 from datetime import UTC, datetime
+from pathlib import Path
+from types import FunctionType
 from weakref import WeakKeyDictionary
 
 from app.domain.source_primitives import (
@@ -157,6 +159,7 @@ def _source_checks(state):
         and capture is not None
         and state["phase"] not in ("terminal_ready", "terminal_spent", "complete")
     ):
+        _verify_current_protected_v1(state)
         validate_stamps((capture.validated_at.model_dump(), now.model_dump()))
         _need(now.monotonic_ns - capture.validated_at.monotonic_ns <= 5_000_000_000)
         now = _verify_original_close_public_v1(state, now)
@@ -173,6 +176,24 @@ def _source_checks(state):
 
         verify_owned_cancel_result_v1(state)
     return now
+
+
+def _verify_current_protected_v1(state):
+    """Replay the same actual private account/protection bank on every guard."""
+    from app.okx_live import controlled_close_capture_v1 as custody
+    from app.okx_live import owned_lifecycle_v1 as lifecycle
+    from app.okx_live.reconciliation_facts_v1 import assess_live_postsubmit_facts_v1
+
+    capture = state["protected_capture"]
+    custody.verify_owned_capture_pages_v1(state["protected_owner"], capture)
+    child = lifecycle._record(state["protected_owner"])
+    assessed = assess_live_postsubmit_facts_v1(
+        state["intent"], **lifecycle._capture_arguments(child, capture)
+    )
+    _need(
+        assessed == state["protected_facts"]
+        and assessed.outcome == "FULL_FILL_PROTECTED"
+    )
 
 
 def _verify_original_close_public_v1(state, now):
@@ -678,7 +699,7 @@ async def run_owned_live_controlled_close_v1(lifecycle_owner):
             original["handoff"].physical_handle,
             key=lifecycle._CLOSE_PERMISSION_KEY_V1,
         )
-        state.update(public_owner=public_owner, public_evaluation=evaluation)
+        state["public_owner"] = public_owner
         await _renew_protected_source(state)
         # Freshly replay the exact new source, preserving original geometry.
         evaluation = public._replay_owned_live_controlled_quote_v1(
@@ -904,6 +925,8 @@ from app.okx_live import controlled_close_capture_v1 as _capture
 from app.okx_live import lifecycle_key_v1 as _keys
 from app.okx_live import owned_lifecycle_v1 as _lifecycle_owner
 from app.okx_live import owned_qualification_v1 as _qualification
+from app.okx_live import postfill_economics_v1 as _postfill
+from app.okx_live import postsubmit_capture_v1 as _postsubmit
 from app.okx_live import reconciliation_facts_v1 as _facts
 from app.okx_live import trusted_source_bridge_v1 as _account_source
 from app.trade_qualification import executable_quote_live_v1 as _quote
@@ -911,6 +934,61 @@ from app.trade_qualification import native_live_public_source_v1 as _public_sour
 from app.trade_qualification.native_continuation_guard_v1 import (
     install_native_guards_v1 as _install,
 )
+
+
+def _require_original_owner_callbacks_v1():
+    """A replacement present before this module loads is never adopted."""
+    from app.trade_qualification.native_continuation_guard_v1 import _source_code
+
+    callbacks = (
+        (
+            _lifecycle_owner,
+            (
+                "_record",
+                "_new_owner",
+                "_capture_arguments",
+                "_capture_owned_live_postsubmit_v1",
+            ),
+        ),
+        (
+            _qualification,
+            (
+                "_consume_owned_live_close_permission_v1",
+                "_replay_spent_owned_live_close_permission_v1",
+                "_capture_owned_live_close_public_v1",
+            ),
+        ),
+        (_entry_physical, ("_record", "_replay_owned_live_disarm_successor_v1")),
+        (_account_source, ("_retained_source_identity_v1",)),
+        (_public_source, ("_replay_owned_live_controlled_quote_v1",)),
+    )
+    for module, names in callbacks:
+        path = Path(module.__file__).resolve()
+        raw = path.read_bytes()
+        for name in names:
+            function = vars(module).get(name)
+            _need(
+                type(function) is FunctionType
+                and function.__module__ == module.__name__
+                and Path(function.__code__.co_filename).resolve() == path
+            )
+            _source_code(function, raw, str(path))
+    # The qualification's already-installed owner guard is also replayed; a
+    # foreign module's valid guard cannot stand in for this exact owner.
+    guard = _qualification._NATIVE_GUARD
+    _need(type(guard) is FunctionType)
+    closure = dict(
+        zip(
+            guard.__code__.co_freevars,
+            (cell.cell_contents for cell in guard.__closure__ or ()),
+            strict=True,
+        )
+    )
+    _need(closure.get("module") is _qualification)
+    guard()
+
+
+_require_original_owner_callbacks_v1()
 
 _install(
     sys.modules[__name__],
@@ -926,9 +1004,12 @@ _install(
         _physical.transport,
         _lifecycle_owner,
         _qualification,
+        _postfill,
+        _postsubmit,
         _facts,
         _account_source,
         _quote,
         _public_source,
     ),
+    bindings=((_qualification, "_NATIVE_GUARD", _qualification._NATIVE_GUARD),),
 )
