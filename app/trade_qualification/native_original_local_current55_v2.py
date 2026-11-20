@@ -168,6 +168,11 @@ def _source(record):
         expected_plan_sha256=capture.plan_sha256(value.current_plan),
         expected_packet_sha256=frozen.sha256,
     )
+    selected_high_vol = local.high_vol.configured_profile_sha256_v1(
+        local.get_settings()
+    )
+    if record.get("high_vol_profile_sha256") != selected_high_vol:
+        _deny("native_original55_high_vol_config_changed")
     pin = (
         value.read_session,
         value.private_client,
@@ -309,6 +314,10 @@ def _prepare_math(record):
         expected_data_policy_sha256=local.DATA_POLICY_SHA256,
         created_at=created,
         service_deadline=deadline,
+        **local.precursor.configured_profile_arguments_v1(
+            local.get_settings(),
+            owned_family=record["strategy"] not in local._BASE_STRATEGIES,
+        ),
     )
     replay = (packet, value.current_record, context, g1, original, created, deadline)
     computed = _computed_family_v2(record, replay)
@@ -433,6 +442,10 @@ def _replay(binding):
         expected_data_policy_sha256=local.DATA_POLICY_SHA256,
         created_at=record["created_at"],
         service_deadline=record["service_deadline"],
+        **local.precursor.configured_profile_arguments_v1(
+            local.get_settings(),
+            owned_family=record["strategy"] not in local._BASE_STRATEGIES,
+        ),
     )
     replay = (
         packet,
@@ -584,6 +597,9 @@ def capture_owned_original_current55_local_v2(
         "deadline": None,
         "instrument_id": instrument_id,
         "strategy": strategy,
+        "high_vol_profile_sha256": local.high_vol.configured_profile_sha256_v1(
+            local.get_settings()
+        ),
         "market_policy": market.public._policy_copy(market_policy),
         "public_root": public_root,
         "public_account_proof_root": public_account_proof_root,
@@ -909,6 +925,7 @@ _NATIVE_GUARD = source_guard.install_native_guards_v1(
     dependencies=(
         account,
         local,
+        local.high_vol,
         market,
         custody,
         catalog55,

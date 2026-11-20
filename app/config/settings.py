@@ -239,9 +239,9 @@ class Settings(BaseSettings):
 
     # Explicitly armed OKX Demo automation. Never used for real trading.
     okx_demo_auto_execution: bool = False
-    # The September installer used this overlay flag for an older image. The
-    # canonical runtime has no qualified HighVol dispatch path; reject an
-    # attempted carry-over instead of silently ignoring the legacy flag.
+    # Opt-in versioned HighVol permission in the native Demo qualification chain.
+    # This changes the frozen policy identity and never Arms or opens a legacy
+    # overlay path. Flat rollout, current source and every common gate still apply.
     ctcc_demo_high_vol_momentum_v2: bool = False
     okx_demo_scan_symbols: str = _REVIEWED_DEMO_SYMBOLS_CSV
     okx_demo_scan_interval_seconds: int = Field(default=300, ge=60, le=86_400)
@@ -540,8 +540,6 @@ class Settings(BaseSettings):
             )
         if self.ctcc_local_analysis_only_v1:
             self._require_local_analysis_settings()
-        if self.ctcc_demo_high_vol_momentum_v2:
-            raise ValueError("CANONICAL_V2_DISPATCH_INTEGRATION_REQUIRED")
 
         _validate_symbol_scope(
             "OKX_WS_SYMBOLS",

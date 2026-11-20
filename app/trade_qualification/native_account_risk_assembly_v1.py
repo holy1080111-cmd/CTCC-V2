@@ -8045,6 +8045,7 @@ _CONTROLLED_SOURCE_PATHS_V1 = (
     "app/trade_qualification/account_original_position_path_v1.py",
     "app/trade_qualification/captured_execution_mode_v1.py",
     "app/trade_qualification/native_original_local_current55_v2.py",
+    "app/trade_qualification/high_vol_momentum_qualification_v1.py",
     "app/trade_qualification/owned_native_candidate_v1.py",
     "app/trade_qualification/native_postpublication_recheck_v2.py",
     "app/trade_qualification/native_postpublication_support_v2.py",

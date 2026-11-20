@@ -332,10 +332,11 @@ def _prefix_policy(original):
     # Exact existing V6 assumptions, checked against their captured original
     # policy digest. This cannot select a new or looser terminal profile.
     policy = local.QualificationPrefixPolicy(
-        policy_id=(
+        policy_id=local.high_vol.prefix_policy_id_v1(
             "ctcc-native-original-base-g1-g4-inspection-v6"
             if original["computed"].intent.strategy in local._BASE_STRATEGIES
-            else "ctcc-native-owned-original-family-g1-g4-v2"
+            else "ctcc-native-owned-original-family-g1-g4-v2",
+            decode(original["policy_raw"]).get("high_vol_profile_sha256"),
         ),
         data=local.fixed_native_original_g1_policy(),
         minimum_score=85,
@@ -630,6 +631,9 @@ def _evaluate(state, *, active=(), observed_at=None, retain_denial=False):
             funding_rate=context.quote.funding.forecast.rate,
             values=values,
             gate=gate,
+            **local.high_vol.profile_arguments_v1(
+                decode(original["policy_raw"]).get("high_vol_profile_sha256")
+            ),
         )
     else:
         local._owned_conditions_v2._evaluate_owned_history_g2_g4_v2(
@@ -647,6 +651,9 @@ def _evaluate(state, *, active=(), observed_at=None, retain_denial=False):
             detection=original["computed"].detection,
             original_source_sha256=original["computed"].g1.source_sha256,
             original_history_json=original["computed"].family_history_json,
+            **local.high_vol.profile_arguments_v1(
+                decode(original["policy_raw"]).get("high_vol_profile_sha256")
+            ),
         )
     if len(checks) != 3 or any(code != "passed" for _, code in checks):
         _deny("native_r7_current_g2_g4_rejected")
@@ -1109,6 +1116,7 @@ _NATIVE_GUARD = _native_guard.install_native_guards_v1(
         data_v2,
         economics,
         local,
+        local.high_vol,
         local._local_bridge_v2,
         local._local_location_v13,
         local._local_timing_v13,

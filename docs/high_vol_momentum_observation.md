@@ -19,16 +19,16 @@ not prove an original candidate existed.
 Every observation has `admission="DENY"`, `execution_authority=false`,
 `qualification_performed=false`, and `source_authenticity_verified=false`.
 Even `source_conditions_met=true` would be a computational observation only.
-The existing regime router still returns `NO_TRADE` for High Volatility; no
-G1–G12 route, scoring formula, candidate constructor, post-G12 recheck,
-reservation, intent, order boundary, installer, or Arm path consumes this
-diagnostic. Current source cannot issue a HighVol candidate under its existing
-precursor policy. This slice therefore does not make HighVol tradable.
+The existing regime router still returns `NO_TRADE` for High Volatility. No
+execution path consumes this diagnostic receipt as permission. The separate
+[canonical qualification v1](high_vol_momentum_qualification_v1.md) now rebuilds
+its own raw-source proof inside the genuine original and post-G12 Demo chain;
+it uses distinct profile/policy identities and retains every common gate.
+This observation object itself cannot make HighVol tradable.
 
-Only a separately reviewed versioned qualification contract may promote this
-source observation to G2/G3 permission. It must bind the original candidate,
+The separate versioned qualification contract binds the original candidate,
 strategy profile, event, entry, stop, target, expiry, source, and policy digest;
-recompute the same conditions on post-G12 fresh data; and retain every other
+recomputes the same conditions on post-G12 fresh data; and retains every other
 gate and common final submit boundary. A favorable new event or quote cannot
 repair an original failure. The historical installer remains disabled because
 it patches an old image and its flat check omits durable reservations,

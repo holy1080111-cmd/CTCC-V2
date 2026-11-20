@@ -42,11 +42,13 @@ older image. Its strategy/protection changes require integration with the
 canonical qualification, post-publication recheck, reservation, and intent chain.
 The accepted final deployment must start disarmed and require fresh reconciliation.
 Until that work passes, install/upgrade/rollback acceptance remains unproven.
-The canonical settings model explicitly recognizes the older overlay variable
-`CTCC_DEMO_HIGH_VOL_MOMENTUM_V2`, defaults it to false, and rejects true with
-`CANONICAL_V2_DISPATCH_INTEGRATION_REQUIRED`. This prevents a carried-over
-installer flag from being silently ignored at canonical startup. It neither
-enables HighVol trading nor accepts the reviewed installer for deployment.
+The canonical settings model recognizes `CTCC_DEMO_HIGH_VOL_MOMENTUM_V2` and
+defaults it to false. The separately versioned [canonical qualification
+profile](high_vol_momentum_qualification_v1.md) now consumes an explicit true
+value only through the frozen native Demo policy and full shared gate chain.
+It does not accept the older overlay package, restore Arm or validate an old
+image for deployment. The reviewed overlay installer retains its explicit
+`CANONICAL_V2_DISPATCH_INTEGRATION_REQUIRED` stop.
 
 The separate, default-off [HighVol failed-G2 diagnostic](high_vol_g2_sidecar.md)
 replays G1 source and an original event/timing pin without changing G2 or granting
@@ -170,5 +172,7 @@ explicitly says `deployment_authority=DENY`; no parser, hash or fake-Docker
 result grants canonical trade qualification or deployment permission. The
 package targets an older image and retains its default
 `CANONICAL_V2_DISPATCH_INTEGRATION_REQUIRED` stop before Docker mutation.
-The actual canonical HighVol entry policy still lacks a permitted historical
-G2/G3 path and the common post-G12, reservation, intent and submit chain.
+At that review the canonical HighVol entry policy lacked the required G2/G3
+and common execution integration. The later canonical profile described above
+is a source change with its own policy identities; it does not retroactively
+approve this older installer or its deployment acceptance.

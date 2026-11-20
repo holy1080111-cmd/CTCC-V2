@@ -157,3 +157,25 @@ def test_existing_generous_synthetic_policy_cannot_be_promoted():
     state = pinned(freeze_demo_risk_config(settings))
     with pytest.raises(OwnedRiskPolicyError, match="qualification_cap_conflict"):
         guard_owned_risk_policy_identity(settings, state, synthetic_policy())
+
+
+def test_high_vol_profile_changes_identity_without_changing_any_risk_caps():
+    import json
+
+    from app.trade_qualification.high_vol_momentum_qualification_v1 import (
+        PROFILE_SHA256,
+    )
+
+    legacy = freeze_demo_risk_config(configured())
+    selected = configured(ctcc_demo_high_vol_momentum_v2=True)
+    current = freeze_demo_risk_config(selected)
+    old, new = json.loads(legacy.canonical_json), json.loads(current.canonical_json)
+    assert "high_vol_profile_sha256" not in old
+    assert new.pop("high_vol_profile_sha256") == PROFILE_SHA256
+    assert new == old
+    assert current.sha256 != legacy.sha256
+    assert current.execution_authority is False
+    with pytest.raises(OwnedRiskPolicyError):
+        guard_owned_risk_policy_identity(
+            selected, pinned(legacy), conservative_policy()
+        )

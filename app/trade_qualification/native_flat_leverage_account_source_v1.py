@@ -648,6 +648,10 @@ async def _capture_public_and_math(state):
         expected_data_policy_sha256=local.DATA_POLICY_SHA256,
         created_at=at,
         service_deadline=state["expires_at"],
+        **local.precursor.configured_profile_arguments_v1(
+            local.get_settings(),
+            owned_family=state["strategy"] not in local._BASE_STRATEGIES,
+        ),
     )
     record = {"strategy": state["strategy"], "instrument_id": state["instrument_id"]}
     if state["strategy"] not in local._BASE_STRATEGIES:

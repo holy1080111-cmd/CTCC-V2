@@ -21,6 +21,7 @@ from app.strategies.base import StrategyContext
 from app.strategies.conditions import assess_conditions
 from app.strategies.mathematical_confirmation import mathematical_confirmation
 from app.strategies.regime import route_regime
+from app.trade_qualification import high_vol_momentum_qualification_v1 as high_vol
 from app.trade_qualification.continuation import _prepared_market
 from app.trade_qualification.data import _MARKET_MODELS, _canonical, _sha
 from app.trade_qualification.event_models import Digest, StrategyName, TriggerDetection
@@ -266,6 +267,7 @@ def evaluate_regime_admission(
     direction: Literal["long", "short"],
     observed_at: datetime,
     analysis_version: str,
+    high_vol_profile_sha256=None,
 ) -> RegimeAdmissionResult:
     """Rebuild source and assess bounded route history without changing G2.
 
@@ -273,6 +275,7 @@ def evaluate_regime_admission(
     authority is inferred here. An existing full qualification consumer still
     has to run each of those independent gates against its original policies.
     """
+    high_vol.profile_arguments_v1(high_vol_profile_sha256)
     now = _utc(observed_at)
     # Validate envelope before inspecting any untrusted source attribute.
     envelope = RegimeAdmissionResult(
@@ -358,7 +361,25 @@ def evaluate_regime_admission(
         return finish("sweep_htf_policy_unspecified")
     if any(code != "multi_timeframe_not_aligned" for code in analysis.blockers):
         return finish("analysis_blocked")
-    if route.regime in (
+    high_vol_allowed = False
+    if (
+        high_vol_profile_sha256 is not None
+        and route.regime == MarketRegime.HIGH_VOLATILITY
+    ):
+        if strategy != "volatility_expansion":
+            return finish("regime_safety_blocked")
+        permission = high_vol.evaluate_high_vol_momentum_permission_v1(
+            checked,
+            analysis,
+            strategy=strategy,
+            direction=direction,
+            observed_at=now,
+            source_sha256=detection.source_sha256,
+        )
+        if not permission.admitted:
+            return finish(permission.code)
+        high_vol_allowed = True
+    if not high_vol_allowed and route.regime in (
         MarketRegime.RISK_OFF,
         MarketRegime.HIGH_VOLATILITY,
         MarketRegime.COMPRESSION,
@@ -380,9 +401,13 @@ def evaluate_regime_admission(
         return finish("direction_mismatch")
     if assessment.required_failures or assessment.veto_failures:
         return finish("required_conditions_failed")
-    if strategy == "volatility_expansion" and (
-        route.regime != MarketRegime.EXPANSION
-        or "breakout_continuation" not in route.allowed_strategies
+    if (
+        strategy == "volatility_expansion"
+        and not high_vol_allowed
+        and (
+            route.regime != MarketRegime.EXPANSION
+            or "breakout_continuation" not in route.allowed_strategies
+        )
     ):
         return finish("expansion_htf_permission_missing")
     return finish("passed")

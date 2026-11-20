@@ -30,6 +30,7 @@ from app.domain.source_primitives import sha as _family_sha_v2
 from app.strategies.base import StrategyContext
 from app.strategies.conditions import assess_conditions
 from app.strategies.regime import RouteDecision, route_regime
+from app.trade_qualification import high_vol_momentum_qualification_v1 as high_vol
 from app.trade_qualification import (
     native_original_bracket_policy_v1 as _owned_family_policy_v2,
 )
@@ -587,6 +588,7 @@ def _evaluate_base_g2_g4(
     funding_rate,
     values,
     gate,
+    high_vol_profile_sha256=None,
 ):
     """Shared base-strategy current math for V1 and raw-public V2 G1 owners.
 
@@ -595,12 +597,28 @@ def _evaluate_base_g2_g4(
     """
     if intent.strategy not in _BASE_STRATEGIES:
         raise ValueError("base_current_strategy_required")
+    high_vol.profile_arguments_v1(high_vol_profile_sha256)
     with localcontext(Context(prec=100)):
         route = route_regime(analysis)
         allowed = (
             route.decision == RouteDecision.ALLOW_SCORING
             and intent.strategy in route.allowed_strategies
         )
+        profile_proof = None
+        if (
+            high_vol_profile_sha256 is not None
+            and route.regime == MarketRegime.HIGH_VOLATILITY
+            and intent.strategy in high_vol.STRATEGIES
+        ):
+            profile_proof = high_vol.evaluate_high_vol_momentum_permission_v1(
+                market,
+                analysis,
+                strategy=intent.strategy,
+                direction=intent.direction,
+                observed_at=values["evaluated_at"],
+                source_sha256=source_sha256,
+            )
+            allowed = profile_proof.admitted
         values["market_regime"] = route.regime
         if not gate(
             QualificationGate.REGIME,
@@ -613,6 +631,20 @@ def _evaluate_base_g2_g4(
                 "route_diagnostics": ",".join(route.fail_codes) or "none",
                 "analysis_sha256": route.snapshot_sha256,
                 "source_sha256": source_sha256,
+                **(
+                    {
+                        "high_vol_profile_sha256": high_vol_profile_sha256,
+                        "high_vol_permission_sha256": profile_proof.evaluation_sha256
+                        if profile_proof
+                        else None,
+                        "high_vol_permission_code": profile_proof.code
+                        if profile_proof
+                        else "legacy_route",
+                        "router_relabelled": False,
+                    }
+                    if high_vol_profile_sha256 is not None
+                    else {}
+                ),
             },
         ):
             return
@@ -1081,7 +1113,14 @@ _OWNED_HISTORY_FAMILIES_V2 = frozenset(
 
 
 def _derive_owned_original_history_v2(
-    market, analysis, *, intent, detection, source_sha256, observed_at
+    market,
+    analysis,
+    *,
+    intent,
+    detection,
+    source_sha256,
+    observed_at,
+    high_vol_profile_sha256=None,
 ):
     """Recompute the existing family predicates from the actual original raw view."""
     if intent.strategy not in _OWNED_HISTORY_FAMILIES_V2:
@@ -1099,6 +1138,8 @@ def _derive_owned_original_history_v2(
             "observed_at": observed_at,
             "analysis_version": analysis.version,
         }
+        if intent.strategy == "volatility_expansion":
+            inputs.update(high_vol.profile_arguments_v1(high_vol_profile_sha256))
         value = _owned_regime_v2.evaluate_regime_admission(market, **inputs)
         value = _owned_regime_v2.verify_regime_admission(value, market, **inputs)
         admitted, code = value.admitted, value.code
@@ -1150,21 +1191,23 @@ def _derive_owned_original_history_v2(
                 "admitted": admitted,
             }
         )
-    return _family_canonical_v2(
-        {
-            "schema_version": "ctcc.owned_original_family_history.v2",
-            "strategy": intent.strategy,
-            "family_policy_sha256": _family_sha_v2(policy),
-            "original_source_sha256": source_sha256,
-            "original_event_key": event_key,
-            "original_observed_at": observed_at.isoformat(),
-            "admitted": admitted,
-            "code": code,
-            "history_evaluation_sha256": digest,
-            "source_receipt_json": receipt.decode("utf-8"),
-            "execution_authority": False,
-        }
-    )
+    document = {
+        "schema_version": "ctcc.owned_original_family_history.v2",
+        "strategy": intent.strategy,
+        "family_policy_sha256": _family_sha_v2(policy),
+        "original_source_sha256": source_sha256,
+        "original_event_key": event_key,
+        "original_observed_at": observed_at.isoformat(),
+        "admitted": admitted,
+        "code": code,
+        "history_evaluation_sha256": digest,
+        "source_receipt_json": receipt.decode("utf-8"),
+        "execution_authority": False,
+    }
+    if high_vol_profile_sha256 is not None:
+        high_vol.profile_arguments_v1(high_vol_profile_sha256)
+        document["high_vol_profile_sha256"] = high_vol_profile_sha256
+    return _family_canonical_v2(document)
 
 
 def _evaluate_owned_history_g2_g4_v2(
@@ -1183,6 +1226,7 @@ def _evaluate_owned_history_g2_g4_v2(
     detection,
     original_source_sha256,
     original_history_json=None,
+    high_vol_profile_sha256=None,
 ):
     """Existing family G2–G4 math on privately replayed raw-V2 operands.
 
@@ -1192,6 +1236,7 @@ def _evaluate_owned_history_g2_g4_v2(
     """
     if intent.strategy not in _OWNED_HISTORY_FAMILIES_V2:
         raise ValueError("owned_history_family_required")
+    high_vol.profile_arguments_v1(high_vol_profile_sha256)
     original_phase = original_history_json is None
     if original_phase:
         original_history_json = _derive_owned_original_history_v2(
@@ -1201,6 +1246,7 @@ def _evaluate_owned_history_g2_g4_v2(
             detection=detection,
             source_sha256=source_sha256,
             observed_at=detection.observed_at,
+            **high_vol.profile_arguments_v1(high_vol_profile_sha256),
         )
     if (
         type(original_history_json) is not bytes
@@ -1219,16 +1265,35 @@ def _evaluate_owned_history_g2_g4_v2(
         or original["original_source_sha256"] != original_source_sha256
         or original["original_event_key"] != event_identity(detection)
         or original["original_observed_at"] != detection.observed_at.isoformat()
+        or original.get("high_vol_profile_sha256") != high_vol_profile_sha256
         or original["execution_authority"] is not False
     ):
         raise ValueError("owned_history_original_receipt_changed")
     with localcontext(Context(prec=100)):
         route = route_regime(analysis)
         sweep_code = None
+        profile_proof = None
+        if (
+            high_vol_profile_sha256 is not None
+            and route.regime == MarketRegime.HIGH_VOLATILITY
+            and intent.strategy in high_vol.STRATEGIES
+        ):
+            profile_proof = high_vol.evaluate_high_vol_momentum_permission_v1(
+                market,
+                analysis,
+                strategy=intent.strategy,
+                direction=intent.direction,
+                observed_at=values["evaluated_at"],
+                source_sha256=source_sha256,
+            )
         if intent.strategy == "volatility_expansion":
             allowed = (
-                route.regime == MarketRegime.EXPANSION
-                and "breakout_continuation" in route.allowed_strategies
+                profile_proof.admitted
+                if profile_proof is not None
+                else (
+                    route.regime == MarketRegime.EXPANSION
+                    and "breakout_continuation" in route.allowed_strategies
+                )
             )
         elif intent.strategy == "structure_reversal":
             allowed = reversal_safety_permission(analysis, route, intent.direction)
@@ -1245,7 +1310,9 @@ def _evaluate_owned_history_g2_g4_v2(
             allowed = sweep_code == "passed"
         allowed = original["admitted"] is True and allowed
         if original_phase:
-            allowed = original["admitted"] is True
+            allowed = original["admitted"] is True and (
+                profile_proof is None or profile_proof.admitted
+            )
         values["market_regime"] = route.regime
         if allowed and intent.strategy == "liquidity_sweep_reversal":
             values["market_regime"] = "History Verified Sweep"
@@ -1274,6 +1341,19 @@ def _evaluate_owned_history_g2_g4_v2(
                 "original_event_key": original["original_event_key"],
                 "current_sweep_check_code": sweep_code,
                 "router_relabelled": False,
+                **(
+                    {
+                        "high_vol_profile_sha256": high_vol_profile_sha256,
+                        "high_vol_permission_sha256": profile_proof.evaluation_sha256
+                        if profile_proof
+                        else None,
+                        "high_vol_permission_code": profile_proof.code
+                        if profile_proof
+                        else "legacy_route",
+                    }
+                    if high_vol_profile_sha256 is not None
+                    else {}
+                ),
             },
         ):
             return original_history_json
@@ -1284,8 +1364,10 @@ def _evaluate_owned_history_g2_g4_v2(
         values["raw_score"] = assessed.score
         direction_matches = assessed.direction == intent.direction
         if intent.strategy == "volatility_expansion":
-            htf_ok = direction_matches and expansion_htf_permission(
-                analysis, route, intent.direction
+            htf_ok = direction_matches and (
+                profile_proof.admitted
+                if profile_proof is not None
+                else expansion_htf_permission(analysis, route, intent.direction)
             )
         elif intent.strategy == "structure_reversal":
             htf_ok = direction_matches and reversal_current_permission(

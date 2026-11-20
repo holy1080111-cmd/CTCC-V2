@@ -12,6 +12,7 @@ from decimal import Decimal
 
 from app.config.settings import Settings
 from app.trade_qualification import demo_control as control
+from app.trade_qualification import high_vol_momentum_qualification_v1 as high_vol
 from app.trade_qualification.portfolio import PortfolioRiskPolicy
 
 VERSION = "ctcc-owned-demo-risk-config-subset-v1"
@@ -180,6 +181,9 @@ def freeze_demo_risk_config(settings: Settings) -> OwnedDemoRiskPolicyIdentity:
         "execution_authority": False,
         "source_authenticity_verified": False,
     }
+    profile = high_vol.configured_profile_sha256_v1(settings)
+    if profile is not None:
+        document["high_vol_profile_sha256"] = profile
     raw = json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     return OwnedDemoRiskPolicyIdentity(
         canonical_json=raw,

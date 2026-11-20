@@ -29,6 +29,7 @@ from app.trade_qualification import current_economics_v2 as _local_current_econo
 from app.trade_qualification import data, data_v2
 from app.trade_qualification import economics as _local_economics_v13
 from app.trade_qualification import executable_quote_v2 as _local_quote_v2
+from app.trade_qualification import high_vol_momentum_qualification_v1 as high_vol
 from app.trade_qualification import location as _local_location_v13
 from app.trade_qualification import market_bridge_v2 as _local_bridge_v2
 from app.trade_qualification import native_original_bracket_policy_v1 as bracket_policy
@@ -186,7 +187,10 @@ def _compute(replay):
         _deny("original_base_prefix_lineage_changed")
     # Exactly the V6 base inspection semantics, not a new calibrated policy.
     prefix_policy = QualificationPrefixPolicy(
-        policy_id="ctcc-native-original-base-g1-g4-inspection-v6",
+        policy_id=high_vol.prefix_policy_id_v1(
+            "ctcc-native-original-base-g1-g4-inspection-v6",
+            document.get("high_vol_profile_sha256"),
+        ),
         data=policy,
         minimum_score=85,
         tick_size=rules.tick_size,
@@ -237,6 +241,7 @@ def _compute(replay):
         funding_rate=quote.funding.forecast.rate,
         values=values,
         gate=gate,
+        **high_vol.profile_arguments_v1(document.get("high_vol_profile_sha256")),
     )
     if len(gates) != 4 or not all(item.passed for item in gates):
         _deny("original_prefix_" + gates[-1].gate.value.lower() + "_" + gates[-1].code)
@@ -436,18 +441,20 @@ def _freeze_local_gate_policy_v13(_timing=TIMING_POLICIES):
         maximum_funding_bps=Decimal(5),
         maximum_quote_age_seconds=fixed_native_original_g1_policy().maximum_quote_age_seconds,
     )
-    return canonical(
-        {
-            "schema_version": "ctcc.owned_original_local_gate_policy.v13",
-            "minimum_score": max(85, settings.strategy_min_score),
-            "timing": {
-                name: value.model_dump(mode="json", round_trip=True)
-                for name, value in _timing.items()
-            },
-            "protection": protection.model_dump(mode="json", round_trip=True),
-            "economics": economics.model_dump(mode="json", round_trip=True),
-        }
-    )
+    document = {
+        "schema_version": "ctcc.owned_original_local_gate_policy.v13",
+        "minimum_score": max(85, settings.strategy_min_score),
+        "timing": {
+            name: value.model_dump(mode="json", round_trip=True)
+            for name, value in _timing.items()
+        },
+        "protection": protection.model_dump(mode="json", round_trip=True),
+        "economics": economics.model_dump(mode="json", round_trip=True),
+    }
+    profile = high_vol.configured_profile_sha256_v1(settings)
+    if profile is not None:
+        document["high_vol_profile_sha256"] = profile
+    return canonical(document)
 
 
 def _replay_local_quote_v13(public_packet, original_quote, computed, *, evaluated_at):
@@ -1623,7 +1630,10 @@ def _compute_owned_family_v2(replay):
         _deny("original_base_prefix_lineage_changed")
     # Exactly the V6 base inspection semantics, not a new calibrated policy.
     prefix_policy = QualificationPrefixPolicy(
-        policy_id="ctcc-native-owned-original-family-g1-g4-v2",
+        policy_id=high_vol.prefix_policy_id_v1(
+            "ctcc-native-owned-original-family-g1-g4-v2",
+            document.get("high_vol_profile_sha256"),
+        ),
         data=policy,
         minimum_score=85,
         tick_size=rules.tick_size,
@@ -1678,6 +1688,7 @@ def _compute_owned_family_v2(replay):
             canonical(document["detection"]), strict=True
         ),
         original_source_sha256=g1.source_sha256,
+        **high_vol.profile_arguments_v1(document.get("high_vol_profile_sha256")),
     )
     if len(gates) != 4 or not all(item.passed for item in gates):
         _deny("original_prefix_" + gates[-1].gate.value.lower() + "_" + gates[-1].code)

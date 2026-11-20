@@ -25,6 +25,7 @@ from app.strategies.regime import RouteDecision, route_regime
 from app.trade_qualification import account_capture_journal as journal
 from app.trade_qualification import candle_collector as candles
 from app.trade_qualification import data, data_v2
+from app.trade_qualification import high_vol_momentum_qualification_v1 as high_vol
 from app.trade_qualification import public_market_collector_v2 as public
 from app.trade_qualification.captured_instrument_rules import (
     derive_captured_instrument_rules,
@@ -121,6 +122,15 @@ POLICY_BYTES = journal.canonical(
     }
 )
 POLICY_SHA256 = journal.digest(POLICY_BYTES)
+HIGH_VOL_POLICY_SHA256 = journal.digest(
+    journal.canonical(
+        {
+            "schema_version": "ctcc.original_candidate_precursor.high_vol_policy.v1",
+            "base_policy_sha256": POLICY_SHA256,
+            "high_vol_profile_sha256": high_vol.PROFILE_SHA256,
+        }
+    )
+)
 
 
 class OriginalCandidatePrecursorV2Error(ValueError):
@@ -385,6 +395,29 @@ OWNED_POLICY_V3_BYTES = journal.canonical(
     }
 )
 OWNED_POLICY_V3_SHA256 = journal.digest(OWNED_POLICY_V3_BYTES)
+OWNED_HIGH_VOL_POLICY_SHA256 = journal.digest(
+    journal.canonical(
+        {
+            "schema_version": "ctcc.owned_original_candidate_precursor.high_vol_policy.v1",
+            "base_policy_sha256": OWNED_POLICY_V3_SHA256,
+            "high_vol_profile_sha256": high_vol.PROFILE_SHA256,
+        }
+    )
+)
+
+
+def configured_profile_arguments_v1(settings, *, owned_family):
+    profile = high_vol.configured_profile_sha256_v1(settings)
+    if profile is None:
+        return {}
+    if type(owned_family) is not bool:
+        _deny("high_vol_original_family_purpose_invalid")
+    return {
+        "high_vol_profile_sha256": profile,
+        "expected_policy_sha256": (
+            OWNED_HIGH_VOL_POLICY_SHA256 if owned_family else HIGH_VOL_POLICY_SHA256
+        ),
+    }
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -419,7 +452,8 @@ def _preflight_owned_precursor_v3(value):
     if (
         journal.canonical(document) != raw
         or document["schema_version"] != "ctcc.owned_original_candidate_precursor.v3"
-        or document["policy_sha256"] != OWNED_POLICY_V3_SHA256
+        or document["policy_sha256"]
+        not in {OWNED_POLICY_V3_SHA256, OWNED_HIGH_VOL_POLICY_SHA256}
     ):
         _deny("owned_precursor_v3_receipt_changed")
     return raw, intent
@@ -438,6 +472,7 @@ def derive_original_candidate_precursor_v2(
     created_at,
     service_deadline,
     expected_policy_sha256=POLICY_SHA256,
+    high_vol_profile_sha256=None,
 ):
     """Recompute a fixed incomplete original intent from actual raw source."""
     try:
@@ -453,6 +488,7 @@ def derive_original_candidate_precursor_v2(
             created_at,
             service_deadline,
             expected_policy_sha256,
+            **high_vol.profile_arguments_v1(high_vol_profile_sha256),
         )
     except OriginalCandidatePrecursorV2Error:
         raise
@@ -474,10 +510,16 @@ def _derive(
     policy_pin,
     *,
     _owned_family_v3=False,
+    high_vol_profile_sha256=None,
 ):
     if type(_owned_family_v3) is not bool:
         _deny("owned_precursor_v3_purpose_invalid")
-    selected_policy = OWNED_POLICY_V3_SHA256 if _owned_family_v3 else POLICY_SHA256
+    high_vol.profile_arguments_v1(high_vol_profile_sha256)
+    selected_policy = (
+        (OWNED_HIGH_VOL_POLICY_SHA256 if _owned_family_v3 else HIGH_VOL_POLICY_SHA256)
+        if high_vol_profile_sha256 is not None
+        else (OWNED_POLICY_V3_SHA256 if _owned_family_v3 else POLICY_SHA256)
+    )
     if type(strategy) is not str or strategy not in STRATEGY_CATALOG:
         _deny("precursor_v2_strategy_invalid")
     if type(policy_pin) is not str or policy_pin != selected_policy:
@@ -630,6 +672,9 @@ def _derive(
         ],
     }
 
+    if high_vol_profile_sha256 is not None:
+        value["high_vol_profile_sha256"] = high_vol_profile_sha256
+
     def finish(action, code, intent=None):
         value.update(
             action=action,
@@ -677,9 +722,13 @@ def _derive(
             "fail_codes": list(route.fail_codes),
             "source_sha256": route.snapshot_sha256,
         }
-        if strategy in _BASE_STRATEGIES and (
-            route.decision != RouteDecision.ALLOW_SCORING
-            or strategy not in route.allowed_strategies
+        if (
+            high_vol_profile_sha256 is None
+            and strategy in _BASE_STRATEGIES
+            and (
+                route.decision != RouteDecision.ALLOW_SCORING
+                or strategy not in route.allowed_strategies
+            )
         ):
             return finish("NO_TRADE", "source_regime_strategy_not_allowed")
         assessed = assess_conditions(
@@ -700,6 +749,31 @@ def _derive(
         }
         if direction not in {"long", "short"}:
             return finish("WAIT", "source_direction_neutral")
+        high_vol_permission = None
+        if (
+            high_vol_profile_sha256 is not None
+            and route.regime.value == "High Volatility"
+        ):
+            if strategy not in high_vol.STRATEGIES:
+                return finish("NO_TRADE", "high_vol_strategy_not_allowed")
+            high_vol_permission = high_vol.evaluate_high_vol_momentum_permission_v1(
+                market,
+                analysis,
+                strategy=strategy,
+                direction=direction,
+                observed_at=created,
+                source_sha256=g1.source_sha256,
+            )
+            value["high_vol_permission_json"] = (
+                high_vol_permission.receipt_json.decode()
+            )
+            if not high_vol_permission.admitted:
+                return finish("WAIT", high_vol_permission.code)
+        elif strategy in _BASE_STRATEGIES and (
+            route.decision != RouteDecision.ALLOW_SCORING
+            or strategy not in route.allowed_strategies
+        ):
+            return finish("NO_TRADE", "source_regime_strategy_not_allowed")
         history = None
         if strategy in _HISTORY_STRATEGIES:
             inputs = {
@@ -709,6 +783,8 @@ def _derive(
                 "observed_at": created,
                 "analysis_version": effective_analysis_version,
             }
+            if strategy == "volatility_expansion":
+                inputs.update(high_vol.profile_arguments_v1(high_vol_profile_sha256))
             history = evaluate_regime_admission(market, **inputs)
             history = verify_regime_admission(history, market, **inputs)
             value["history_admission"] = history.model_dump(mode="json")
@@ -752,7 +828,11 @@ def _derive(
                 (item.required or item.veto) and not item.passed for item in htf
             )
         elif strategy == "volatility_expansion":
-            permission = expansion_htf_permission(analysis, route, direction)
+            permission = (
+                high_vol_permission.admitted
+                if high_vol_permission is not None
+                else expansion_htf_permission(analysis, route, direction)
+            )
         elif strategy == "structure_reversal":
             permission = reversal_current_permission(analysis, market, route, direction)
         elif strategy == "range_reversal":
@@ -880,6 +960,7 @@ def verify_original_candidate_precursor_v2(
     created_at,
     service_deadline,
     expected_policy_sha256=POLICY_SHA256,
+    high_vol_profile_sha256=None,
 ):
     """Bound the supplied tree first, then replay every actual original input."""
     raw, intent = _preflight_result(result)
@@ -895,6 +976,7 @@ def verify_original_candidate_precursor_v2(
         created_at=created_at,
         service_deadline=service_deadline,
         expected_policy_sha256=expected_policy_sha256,
+        **high_vol.profile_arguments_v1(high_vol_profile_sha256),
     )
     if raw != replayed.receipt_json or intent != _intent_tree(replayed.intent):
         _deny("precursor_v2_original_replay_mismatch")
@@ -914,6 +996,7 @@ def derive_owned_original_candidate_precursor_v3(
     created_at,
     service_deadline,
     expected_policy_sha256=OWNED_POLICY_V3_SHA256,
+    high_vol_profile_sha256=None,
 ):
     """Real raw V2 all-family calculation; values alone grant no native authority."""
     try:
@@ -930,6 +1013,7 @@ def derive_owned_original_candidate_precursor_v3(
             service_deadline,
             expected_policy_sha256,
             _owned_family_v3=True,
+            **high_vol.profile_arguments_v1(high_vol_profile_sha256),
         )
     except OriginalCandidatePrecursorV2Error:
         raise

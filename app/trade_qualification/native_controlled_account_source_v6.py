@@ -8289,6 +8289,7 @@ def _install_source_kernel_v6():
         positive,
         dependencies=(
             flat_configuration,
+            flat_configuration.local.high_vol,
             flat_configuration.planner,
             configuration_actor,
             configuration_actor.repository,

@@ -312,19 +312,19 @@ def test_legacy_high_vol_overlay_defaults_off(monkeypatch) -> None:
     assert Settings(_env_file=None).ctcc_demo_high_vol_momentum_v2 is False
 
 
-def test_legacy_high_vol_overlay_rejected_when_enabled() -> None:
-    with pytest.raises(
-        ValidationError, match="CANONICAL_V2_DISPATCH_INTEGRATION_REQUIRED"
-    ):
-        Settings(_env_file=None, ctcc_demo_high_vol_momentum_v2=True)
+def test_high_vol_canonical_profile_selection_does_not_enable_execution() -> None:
+    value = Settings(_env_file=None, ctcc_demo_high_vol_momentum_v2=True)
+    assert value.ctcc_demo_high_vol_momentum_v2 is True
+    assert value.okx_demo_auto_execution is False
+    assert value.okx_live_auto_execution is False
+    assert value.auto_trade is False
 
 
-def test_legacy_high_vol_overlay_environment_rejected(monkeypatch) -> None:
+def test_high_vol_canonical_profile_explicit_environment_selection(monkeypatch) -> None:
     monkeypatch.setenv("CTCC_DEMO_HIGH_VOL_MOMENTUM_V2", "true")
-    with pytest.raises(
-        ValidationError, match="CANONICAL_V2_DISPATCH_INTEGRATION_REQUIRED"
-    ):
-        Settings(_env_file=None)
+    value = Settings(_env_file=None)
+    assert value.ctcc_demo_high_vol_momentum_v2 is True
+    assert value.okx_demo_auto_execution is False
 
 
 def test_rejects_live_mode() -> None:
