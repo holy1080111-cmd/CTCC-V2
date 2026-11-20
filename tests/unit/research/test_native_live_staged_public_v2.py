@@ -443,3 +443,53 @@ async def test_staged_policy_does_not_enter_legacy_capture(staged_source):
     with pytest.raises(subject.LivePublicSourceError):
         await subject.capture_owned_live_public_v1(request, key=key)
     assert not harness.requests and not harness.connections
+
+
+@pytest.mark.asyncio
+async def test_staged_join_only_journal_never_bypasses_complete_candle_semantics(
+    staged_source,
+):
+    _clock, _parent, raw, _harness, key, issue, ready = staged_source
+    request, params = issue()
+    async with subject.begin_owned_live_post_g12_public_v2(request, key=key) as stage:
+        ready(stage, params)
+        await subject.complete_owned_live_post_g12_public_v2(stage, key=key)
+    new_prefix, packet_pin = None, None
+
+    def mutate(event, directory):
+        nonlocal new_prefix, packet_pin
+        name = f"event-{event['index']:04d}.raw"
+        if event["kind"] in {"ohlc_stage_complete", "packet"}:
+            document = decode(directory.content[name])
+            collected = (
+                document
+                if event["kind"] == "ohlc_stage_complete"
+                else document["candles"]
+            )
+            # Raw HTTP page bytes remain unchanged and fully joined. This dirty
+            # derived candle must still fail mandatory typed component replay.
+            collected["frames"][0]["confirmed"][0]["close"] = "NaN"
+            encoded = canonical(document)
+            directory.content[name] = encoded
+            event.update(raw_bytes=len(encoded), raw_sha256=sha(encoded))
+            if event["kind"] == "ohlc_stage_complete":
+                event["metadata"]["candles_sha256"] = sha(encoded)
+                new_prefix = sha(canonical(event))
+            else:
+                packet_pin = sha(encoded)
+                event["metadata"]["bundle_sha256"] = packet_pin
+        elif event["kind"] == "account_stage_ready":
+            event["metadata"]["ohlc_prefix_sha256"] = new_prefix
+
+    resign_journal(raw, mutate)
+    summary = decode(raw.content["summary.json"])
+    summary["packet_sha256"] = packet_pin
+    raw.content["summary.json"] = canonical(summary)
+    # Integrity/raw joining alone is explicitly DATA, never qualification.
+    journal.replay_runtime_attempt(
+        raw, expected_plan_sha256=sha(raw.content["plan.json"])
+    )
+    with pytest.raises(ValueError):
+        subject.transport.replay_public_runtime(
+            raw, expected_plan_sha256=sha(raw.content["plan.json"])
+        )
