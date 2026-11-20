@@ -1066,4 +1066,11 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
+    import os
+
+    filename = os.environ.get("CTCC_WINDOWS_TOOL_CONFIG_FILE")
+    if filename is not None:
+        from app.config.windows_tool_profile_0058_v1 import load_settings
+
+        return load_settings(Settings, filename)
     return Settings()
