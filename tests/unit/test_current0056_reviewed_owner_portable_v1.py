@@ -114,6 +114,33 @@ def test_measured_source_drift_refuses_before_using_receipts(monkeypatch):
     assert not any(name.endswith(".inherited.json") for name in reads)
 
 
+@pytest.mark.parametrize(
+    "changed",
+    (
+        "app/domain/collector_current_0056_inherited_catalog_v1.py",
+        "app/domain/native_protective_catalog_0058_v1.py",
+        "app/domain/native_submission_binding_schema_v58.py",
+    ),
+)
+def test_reviewed_source58_report_binding_pin_refresh_still_rejects_unreviewed_reader_bytes(
+    monkeypatch, changed
+):
+    original, reads = portable._read, []
+
+    def unreviewed_reader(root, name, budget=1_048_576):
+        reads.append(name)
+        raw = original(root, name, budget)
+        return (
+            raw + b"\n# unreviewed observer replacement\n" if name == changed else raw
+        )
+
+    monkeypatch.setattr(portable, "_read", unreviewed_reader)
+    with pytest.raises(historical.HistoricalOwnerSource0058Error):
+        _verify(_target_observation())
+    assert changed in reads
+    assert not any(name.endswith(".inherited.json") for name in reads)
+
+
 def test_default0056_portable_loader_still_refuses_to_relabel_source58():
     with pytest.raises(portable.ReviewedOwnerPortable0056Error):
         portable.load_reviewed_owner_portable_0056_v1(portable._SOURCE)
