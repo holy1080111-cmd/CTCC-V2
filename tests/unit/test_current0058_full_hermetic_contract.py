@@ -246,16 +246,24 @@ def test_five_pg_owners_preserve_every_whole_module_and_historical_producer():
     owners = [full.collection.postgres_paths(index) for index in range(5)]
     assert all(owners)
     assert set.union(*(set(paths) for paths in owners)) == (
-        legacy.POSTGRES_TEST_PATHS | full.collection.SUCCESSOR_PATHS
+        legacy.POSTGRES_TEST_PATHS
+        | full.collection.SUCCESSOR_PATHS
+        | full.collection.RETAINED0017_OWNER_PATHS
     )
     for index, paths in enumerate(owners):
         assert not paths.intersection(set().union(*owners[:index]))
     assert legacy.POSTGRES_ANCHOR_PATHS <= owners[0]
     assert full.collection.HISTORICAL_PRODUCER_PATHS <= owners[1]
     assert owners[2] == full.collection.SUCCESSOR_PATHS
-    assert owners[3] <= legacy.postgres_paths(0)
+    assert owners[
+        3
+    ] - full.collection.RETAINED0017_OWNER_PATHS <= legacy.postgres_paths(0)
+    assert full.collection.RETAINED0017_OWNER_PATHS <= owners[3]
     assert owners[4] <= legacy.postgres_paths(1)
     assert {Path(path).name for path in owners[2]} <= set(windows.POSTGRES_INTEGRATION)
+    assert {
+        Path(path).name for path in full.collection.RETAINED0017_OWNER_PATHS
+    } <= set(windows.POSTGRES_INTEGRATION)
 
 
 @pytest.mark.parametrize("index", [3, 4])

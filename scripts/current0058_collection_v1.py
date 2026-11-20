@@ -35,6 +35,12 @@ SUCCESSOR_PATHS = frozenset(
         "tests/integration/test_native_postsubmit_profiles0057_pg.py",
     }
 )
+# The source58 read-only owner tool observes a genuine disposable0017 clone.
+# It belongs to the retained-state owner worker, never successor profile proof
+# or an execution-capable unit shard. Frozen56/57 inventories stay unchanged.
+RETAINED0017_OWNER_PATHS = frozenset(
+    {"tests/integration/test_retained0017_owner_plan_v1_pg.py"}
+)
 _OBSERVED = set()
 # Keep every historical receipt producer together on its original observer.
 # Other whole modules split deterministically; the complete collection/JUnit
@@ -77,7 +83,8 @@ def postgres_paths(index):
         for path in paths
         if path not in retained and previous.module_shard(path) >= 4
     )
-    return paths - moved if index < 2 else moved
+    owned = paths - moved if index < 2 else moved
+    return owned | RETAINED0017_OWNER_PATHS if index == 3 else owned
 
 
 def selected_for(mode, index, node):
@@ -95,7 +102,8 @@ def selected_for(mode, index, node):
     if mode == "postgres":
         return path in postgres_paths(index)
     return (
-        path not in previous.POSTGRES_TEST_PATHS | SUCCESSOR_PATHS
+        path
+        not in previous.POSTGRES_TEST_PATHS | SUCCESSOR_PATHS | RETAINED0017_OWNER_PATHS
         and previous.module_shard(path) == index
     )
 

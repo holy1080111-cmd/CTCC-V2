@@ -84,6 +84,7 @@ POSTGRES_INTEGRATION = (
     "test_terminal_readout_profiles0057_pg.py",
     "test_native_owner_upgrade_0057_pg.py",
     "test_native_owner_upgrade_0058_pg.py",
+    "test_retained0017_owner_plan_v1_pg.py",
     "test_native_postsubmit_profiles0057_pg.py",
     "test_native_live_ledger_v1_pg.py",
     "test_native_live_financial_epoch_v1_pg.py",

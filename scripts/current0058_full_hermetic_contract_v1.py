@@ -85,6 +85,34 @@ OWNER_UPGRADE_CASES = tuple(
         "test_actual0057_owner58_unreviewed_live_access_rolls_back_without_granting_or_commit",
     )
 )
+RETAINED0017_OWNER_CASES = tuple(
+    ("tests.integration.test_retained0017_owner_plan_v1_pg", name)
+    for name in (
+        "test_actual0017_two_readonly_snapshots_preserve_all_rows_oids_sequences_and_unknown_intent",
+        "test_actual0017_outer_cli_replays_admitted_source_private_pins_tls_and_receipt",
+        "test_actual0017_row_hash_encoding_distinguishes_sql_null_from_json_null",
+        *(
+            "test_actual0017_readonly_inventory_refuses_changed_actual_head["
+            + head
+            + "]"
+            for head in ("0016", "0018", "0058")
+        ),
+        "test_actual0017_readonly_inventory_refuses_missing_original_risk_column",
+        "test_actual0017_head_view_is_refused_before_its_select_function_runs",
+        *(
+            "test_actual0017_readonly_inventory_refuses_unobserved_storage_scope["
+            + outside
+            + "]"
+            for outside in ("user_schema", "large_object")
+        ),
+        *(
+            "test_actual0017_independent_reads_refuse_retained_state_or_catalog_drift["
+            + drift
+            + "]"
+            for drift in ("row", "sequence", "function_acl")
+        ),
+    )
+)
 ORIGINAL_OCO_REPORT_CASES = tuple(
     ("tests.integration.test_native_original_oco_reporting_0058_pg", name)
     for name in (
@@ -261,6 +289,7 @@ REQUIRED_CASES = (
     *LIVE_LIFECYCLE_CASES,
     *STOPPED_SETUP_CASES,
     *LIVE_CONTROLLED_CLOSE_CASES,
+    *RETAINED0017_OWNER_CASES,
     SUCCESSOR_CASES[-1],
 )
 HISTORICAL_REPORTS = base.HISTORICAL_REPORTS
