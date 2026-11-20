@@ -59,10 +59,10 @@ _PROOFS = """CREATE TABLE public.native_live_lifecycle_proofs_v1 (
 # turn an unrelated principal into the configured reconciler.
 _ACTOR = """
  IF current_setting('role')<>'none' OR
- NOT EXISTS(SELECT 1 FROM pg_catalog.pg_roles r
- WHERE r.oid=k.reconciler_oid AND r.rolname=session_user AND r.rolcanlogin
- AND NOT(r.rolsuper OR r.rolcreaterole OR r.rolcreatedb OR r.rolreplication OR r.rolbypassrls)
- AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_auth_members m WHERE m.member=r.oid OR m.roleid=r.oid))
+ NOT EXISTS(SELECT 1 FROM pg_catalog.pg_roles lifecycle_actor_role
+ WHERE lifecycle_actor_role.oid=k.reconciler_oid AND lifecycle_actor_role.rolname=session_user AND lifecycle_actor_role.rolcanlogin
+ AND NOT(lifecycle_actor_role.rolsuper OR lifecycle_actor_role.rolcreaterole OR lifecycle_actor_role.rolcreatedb OR lifecycle_actor_role.rolreplication OR lifecycle_actor_role.rolbypassrls)
+ AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_auth_members m WHERE m.member=lifecycle_actor_role.oid OR m.roleid=lifecycle_actor_role.oid))
  OR k.database_oid IS DISTINCT FROM (SELECT oid FROM pg_catalog.pg_database WHERE datname=current_database())
  OR k.owner_oid IS DISTINCT FROM (SELECT datdba FROM pg_catalog.pg_database WHERE datname=current_database())
  OR current_user::text IS DISTINCT FROM (SELECT rolname::text FROM pg_catalog.pg_roles WHERE oid=k.owner_oid)

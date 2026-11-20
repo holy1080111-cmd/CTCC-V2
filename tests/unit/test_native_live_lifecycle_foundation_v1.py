@@ -181,3 +181,37 @@ def test_incomplete_capture_flow_does_not_unlock_positive_arm(monkeypatch):
         lifecycle.NativeLiveLifecycleError, match="entry_flow_unavailable"
     ):
         lifecycle._require_complete_entry_flow_v1()
+
+
+@pytest.mark.parametrize("wire", (False, True))
+def test_catalog_plan_decodes_only_root_json_and_preserves_string_predicates(wire):
+    plan = [
+        {
+            "Plan": {
+                "Node Type": "Seq Scan",
+                "Relation Name": "native_live_lifecycle_keys_v1",
+                "Filter": "((environment)::text = 'live'::text)",
+                "Plan Rows": 1,
+            }
+        }
+    ]
+    expected = [
+        {
+            "Plan": {
+                "Node Type": "Seq Scan",
+                "Relation Name": "native_live_lifecycle_keys_v1",
+                "Filter": "((environment)::text = 'live'::text)",
+            }
+        }
+    ]
+    value = canonical(plan).decode() if wire else plan
+    assert repository._plan_shape(value) == expected
+    changed = [
+        {
+            "Plan": {
+                **expected[0]["Plan"],
+                "Filter": "((environment)::text = 'demo'::text)",
+            }
+        }
+    ]
+    assert repository._plan_shape(value) != repository._plan_shape(changed)

@@ -232,14 +232,14 @@ def _factory(factory, pins):
     )
 
 
-def _plan_shape(value):
-    if type(value) is str:
+def _plan_shape(value, *, root=True):
+    if root and type(value) is str:
         value = decode(value.encode("utf8"), maximum=1048576)
     if type(value) is list:
-        return [_plan_shape(item) for item in value]
+        return [_plan_shape(item, root=False) for item in value]
     if type(value) is dict:
         return {
-            key: _plan_shape(item)
+            key: _plan_shape(item, root=False)
             for key, item in value.items()
             if key not in {"Startup Cost", "Total Cost", "Plan Rows", "Plan Width"}
         }
