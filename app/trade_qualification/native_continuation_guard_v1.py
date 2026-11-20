@@ -157,6 +157,29 @@ def _function(value):
     return value if type(value) is FunctionType else None
 
 
+def _keyword_defaults_pin_v2(values):
+    """Read exact builtin keys; arbitrary default values remain identity DATA."""
+    if values is None:
+        return ()
+    if type(values) is not dict or any(type(name) is not str for name in values):
+        raise NativeSourceClosureError("native_continuation_source_changed")
+    return tuple((name, values[name]) for name in sorted(values))
+
+
+def _keyword_defaults_match_v2(values, pinned):
+    if values is None:
+        return not pinned
+    # Check every key before lookup: a foreign key's hash/equality or a mapping
+    # subclass's items/iteration must never execute during source admission.
+    if (
+        type(values) is not dict
+        or len(values) != len(pinned)
+        or any(type(name) is not str for name in values)
+    ):
+        return False
+    return all(name in values and values[name] is original for name, original in pinned)
+
+
 def _function_pin(function, files, *, generated_dataclass=False):
     path = Path(function.__code__.co_filename)
     compiled = None
@@ -197,7 +220,7 @@ def _function_pin(function, files, *, generated_dataclass=False):
         function.__builtins__,
         function.__defaults__,
         kw,
-        () if kw is None else tuple(sorted(kw.items())),
+        _keyword_defaults_pin_v2(kw),
         closure,
         () if closure is None else tuple(cell.cell_contents for cell in closure),
         compiled,
@@ -224,7 +247,7 @@ def _check_function(pin):
         or function.__defaults__ is not defaults
         or function.__kwdefaults__ is not kw
         or function.__closure__ is not closure
-        or (kw is not None and tuple(sorted(kw.items())) != kw_values)
+        or (kw is not None and not _keyword_defaults_match_v2(kw, kw_values))
         or (
             closure is not None
             and (
