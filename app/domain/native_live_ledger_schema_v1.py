@@ -17,6 +17,8 @@ TABLES = (
     "native_live_transitions_v1",
 )
 HEAD = "0058"
+# Actual-head verification is a metadata read, not access to any Demo record.
+METADATA_READ_TABLES = ("alembic_version",)
 EXECUTABLE_FUNCTIONS = (
     "native_live_control_fence_v1",
     "native_live_disarm_v1",
@@ -223,7 +225,10 @@ def live_ledger_grant_sql_v1(writer: str) -> tuple[str, ...]:
         raise ValueError("native_live_writer_identifier_refused")
     return (
         f'GRANT USAGE ON SCHEMA public TO "{writer}"',
-        *(f'GRANT SELECT ON TABLE public.{table} TO "{writer}"' for table in TABLES),
+        *(
+            f'GRANT SELECT ON TABLE public.{table} TO "{writer}"'
+            for table in (*TABLES, *METADATA_READ_TABLES)
+        ),
         *(
             f'GRANT INSERT ON TABLE public.{table} TO "{writer}"'
             for table in TABLES[1:]

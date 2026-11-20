@@ -337,3 +337,17 @@ async def test_actual58_negative_procedures_cannot_arm_or_clear_estop(_live58_la
                 )
             )
     assert await _counts(owner) == (0, 0, 0)
+
+
+async def test_actual58_writer_can_observe_real_head_but_cannot_read_demo_records(
+    _live58_lab,
+):
+    _, repository, _ = _live58_lab
+    async with repository.factory() as session, session.begin():
+        assert (
+            await session.scalar(text("SELECT version_num FROM public.alembic_version"))
+            == "0058"
+        )
+    with pytest.raises(DBAPIError):
+        async with repository.factory() as session, session.begin():
+            await session.execute(text("SELECT * FROM public.demo_account_controls"))

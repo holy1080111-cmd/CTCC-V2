@@ -345,7 +345,11 @@ async def test_constructor_saved_receipt_or_foreign_task_cannot_create_owned_sou
 
 def test_schema_is_additive_live_only_append_only_and_dedicated_writer_has_no_arm_or_delete():
     grants = schema.live_ledger_grant_sql_v1("ctcc_live_ledger")
-    assert len(grants) == 11 and all("demo" not in sql for sql in grants)
+    assert len(grants) == 12 and all("demo" not in sql for sql in grants)
+    assert schema.METADATA_READ_TABLES == ("alembic_version",)
+    assert [sql for sql in grants if "alembic_version" in sql] == [
+        'GRANT SELECT ON TABLE public.alembic_version TO "ctcc_live_ledger"'
+    ]
     assert all(
         "UPDATE" not in sql and "DELETE" not in sql and "TRUNCATE" not in sql
         for sql in grants

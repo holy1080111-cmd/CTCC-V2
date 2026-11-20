@@ -151,9 +151,9 @@ async def _profile(session, pins):
         )
     )
     observed = {tuple(row) for row in (await session.execute(_ACCESS)).all()}
-    expected = {(table, "SELECT") for table in schema.TABLES} | {
-        (table, "INSERT") for table in schema.TABLES[1:]
-    }
+    expected = {
+        (table, "SELECT") for table in (*schema.TABLES, *schema.METADATA_READ_TABLES)
+    } | {(table, "INSERT") for table in schema.TABLES[1:]}
     inherited_helpers = await require_inherited_live_data_helpers_v1(
         session, owner_oid=pins.owner_oid
     )
