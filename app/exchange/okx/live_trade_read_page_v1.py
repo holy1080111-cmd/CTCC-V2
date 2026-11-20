@@ -37,6 +37,7 @@ _PATHS = {
     "order": "/api/v5/trade/order",
     "algo": "/api/v5/trade/order-algo",
     "fills": "/api/v5/trade/fills",
+    "fills_history": "/api/v5/trade/fills-history",
 }
 
 
@@ -160,7 +161,10 @@ def _body(raw, selector, *, private_tokens):
     )
     _need(type(value["msg"]) is str and len(value["msg"]) <= 4096)
     rows = value["data"]
-    _need(type(rows) is list and len(rows) <= (100 if selector.kind == "fills" else 1))
+    _need(
+        type(rows) is list
+        and len(rows) <= (100 if selector.kind in ("fills", "fills_history") else 1)
+    )
     _need(all(type(row) is dict for row in rows))
     # Explicit API error DATA is retained, never converted into an empty
     # successful source. Semantic order/protection checks belong to replay.
@@ -171,7 +175,7 @@ def _body(raw, selector, *, private_tokens):
     for row in rows:
         identity = row.get(
             "billId"
-            if selector.kind == "fills"
+            if selector.kind in ("fills", "fills_history")
             else "algoId"
             if selector.kind == "algo"
             else "ordId"
@@ -179,7 +183,10 @@ def _body(raw, selector, *, private_tokens):
         _need(type(identity) is str and _ID.fullmatch(identity) is not None)
         identities.append(identity)
         _need(row.get("instId") == selector.instrument_id)
-        if selector.kind in ("order", "fills") and selector.order_id is not None:
+        if (
+            selector.kind in ("order", "fills", "fills_history")
+            and selector.order_id is not None
+        ):
             _need(row.get("ordId") == selector.order_id)
         if selector.client_order_id is not None:
             _need(row.get("clOrdId") == selector.client_order_id)
@@ -188,7 +195,7 @@ def _body(raw, selector, *, private_tokens):
         if selector.algo_client_id is not None:
             _need(row.get("algoClOrdId") == selector.algo_client_id)
     _need(len(set(identities)) == len(identities))
-    if selector.kind == "fills":
+    if selector.kind in ("fills", "fills_history"):
         _need(all(int(left) > int(right) for left, right in pairwise(identities)))
         _need(
             selector.after_bill_id is None

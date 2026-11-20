@@ -318,3 +318,32 @@ async def test_actual58_lifecycle_terminal_zero_fill_releases_only_authenticated
     _, changed, changed_signature = _proof(lab, sequence=2, previous_sha256=sha(raw))
     with pytest.raises(DBAPIError):
         await _append(lab, changed, changed_signature)
+
+
+async def test_actual58_live_recovery_journal_preserves_db_intent_recorded_time(
+    lifecycle_lab,
+    monkeypatch,
+):
+    """Real TLS/role/catalog/query, synthetic key handoff; no venue/Arm credit."""
+    lab = lifecycle_lab
+    repository = subject.NativeLiveLifecycleRepositoryV1(lab[3], lab[4])
+    # Only the private key-file handoff is declared synthetic. The actual
+    # role/catalog, original intent decoder and committed query stay intact.
+    monkeypatch.setattr(repository, "_key", lambda owner: dict(lab[5]))
+    rid, intent_json, intent_sha = exact_live_intent_document_v1(lab[2])
+    first = await repository.read_journal_v1(object(), rid)
+    second = await repository.read_journal_v1(object(), rid)
+    async with lab[0].connect() as connection:
+        recorded = await connection.scalar(
+            text(
+                "SELECT created_at FROM public.native_live_intents_v1 WHERE reservation_id=:id"
+            ),
+            {"id": rid},
+        )
+    assert type(recorded) is datetime and recorded.tzinfo is UTC
+    assert first.intent_recorded_at == second.intent_recorded_at == recorded
+    assert first.intent_json == second.intent_json == intent_json
+    assert first.intent_sha256 == second.intent_sha256 == intent_sha
+    assert first.reservation_state == second.reservation_state == "reserved"
+    assert first.proofs == second.proofs == ()
+    assert first.execution_authority is second.execution_authority is False

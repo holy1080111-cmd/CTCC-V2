@@ -112,6 +112,11 @@ def test_only_exact_linear_usdt_instrument_is_accepted(instrument):
             {"order_id": "123"},
             {"instId": INSTRUMENT, "ordId": "123", "billId": "789", "tradeId": "10"},
         ),
+        (
+            "fills_history",
+            {"order_id": "123", "after_bill_id": "790"},
+            {"instId": INSTRUMENT, "ordId": "123", "billId": "789", "tradeId": "10"},
+        ),
     ),
 )
 async def test_exact_request_retains_original_raw_and_never_claims_protection(

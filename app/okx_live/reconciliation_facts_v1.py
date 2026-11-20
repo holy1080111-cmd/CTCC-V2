@@ -46,6 +46,14 @@ from app.exchange.okx.live_trade_read_page_v1 import (
 MAX_CURRENT_AGE_NS = 5_000_000_000
 
 
+@dataclass(frozen=True, slots=True)
+class LiveReconciliationHistoryV1:
+    """Historical UTC facts, never a current clock or an original POST claim."""
+
+    intent_recorded_at: datetime
+    submission_started_utc: datetime | None = None
+
+
 class LiveReconciliationFactsError(ValueError):
     pass
 
@@ -163,7 +171,11 @@ def _chain(pages, *, kind, params, getter, barrier, validated_at, origin, bindin
     for index, page in enumerate(pages):
         _need(
             type(page)
-            is (LiveTradeReadPageV1 if kind == "fills" else LiveAccountRawPageV1),
+            is (
+                LiveTradeReadPageV1
+                if kind in ("fills", "fills_history")
+                else LiveAccountRawPageV1
+            ),
             "live_reconcile_chain_invalid",
         )
         selector = page.selector
@@ -185,7 +197,7 @@ def _chain(pages, *, kind, params, getter, barrier, validated_at, origin, bindin
         _need(index < len(pages) - 1, "live_reconcile_terminal_page_missing")
         field_name = (
             "billId"
-            if kind == "fills"
+            if kind in ("fills", "fills_history")
             else "ordId"
             if kind == "orders_pending"
             else "algoId"
@@ -250,6 +262,7 @@ def _assess_live_postsubmit_facts_v1(
     submission_barrier,
     validated_at,
     tick_size,
+    history=None,
 ):
     """Pure raw replay; caller-created inputs cannot sign or release anything."""
     reservation_id = intent_sha = None
@@ -257,19 +270,57 @@ def _assess_live_postsubmit_facts_v1(
         intent = checked_live_intent_data_v1(intent)
         reservation_id, _, intent_sha = exact_live_intent_document_v1(intent)
         _need(
-            type(submission_started)
-            is type(submission_barrier)
-            is type(validated_at)
-            is ClockStamp,
+            type(submission_barrier) is type(validated_at) is ClockStamp,
             "live_reconcile_clock_invalid",
         )
-        validate_stamps(
-            (
-                submission_started.model_dump(),
-                submission_barrier.model_dump(),
-                validated_at.model_dump(),
+        if history is None:
+            _need(
+                type(submission_started) is ClockStamp, "live_reconcile_clock_invalid"
             )
-        )
+            validate_stamps(
+                (
+                    submission_started.model_dump(),
+                    submission_barrier.model_dump(),
+                    validated_at.model_dump(),
+                )
+            )
+            earliest_ns = submission_started.utc_ns
+        else:
+            _need(
+                type(history) is LiveReconciliationHistoryV1
+                and submission_started is None,
+                "live_reconcile_history_clock_invalid",
+            )
+            recorded, submitted = (
+                history.intent_recorded_at,
+                history.submission_started_utc,
+            )
+            _need(
+                type(recorded) is datetime
+                and recorded.tzinfo is UTC
+                and recorded <= intent.deadline,
+                "live_reconcile_history_clock_invalid",
+            )
+            _need(
+                submitted is None
+                or type(submitted) is datetime
+                and submitted.tzinfo is UTC
+                and recorded <= submitted <= intent.deadline,
+                "live_reconcile_history_clock_invalid",
+            )
+            lower = submitted if submitted is not None else recorded
+            delta = lower - datetime(1970, 1, 1, tzinfo=UTC)
+            earliest_ns = (
+                delta.days * 86400 + delta.seconds
+            ) * 1_000_000_000 + delta.microseconds * 1000
+            _need(
+                earliest_ns <= submission_barrier.utc_ns,
+                "live_reconcile_history_clock_invalid",
+            )
+            # The old process's monotonic domain is deliberately absent here.
+            validate_stamps(
+                (submission_barrier.model_dump(), validated_at.model_dump())
+            )
         _need(
             type(tick_size) is Decimal and tick_size.is_finite() and tick_size > 0,
             "live_reconcile_tick_unknown",
@@ -334,7 +385,7 @@ def _assess_live_postsubmit_facts_v1(
             type(order.get("cTime")) is str
             and order["cTime"].isascii()
             and order["cTime"].isdecimal()
-            and int(order["cTime"]) >= submission_started.utc_ns // 1_000_000,
+            and int(order["cTime"]) >= earliest_ns // 1_000_000,
             "live_reconcile_order_predates_original_submission",
         )
         deadline_delta = intent.deadline - datetime(1970, 1, 1, tzinfo=UTC)
@@ -350,9 +401,10 @@ def _assess_live_postsubmit_facts_v1(
             and _decimal(order, "lever", positive=True) == intent.leverage,
             "live_reconcile_size_or_leverage_changed",
         )
+        fills_kind = "fills_history" if history is not None else "fills"
         fills = _chain(
             fill_pages,
-            kind="fills",
+            kind=fills_kind,
             params=(intent.instrument_id, order_id),
             getter=lambda value: (
                 value.kind,
@@ -394,7 +446,7 @@ def _assess_live_postsubmit_facts_v1(
                     "live_reconcile_fill_time_unknown",
                 )
             _need(
-                submission_started.utc_ns // 1_000_000
+                earliest_ns // 1_000_000
                 <= int(row["fillTime"])
                 <= int(row["ts"])
                 <= validated_at.utc_ns // 1_000_000,
@@ -613,6 +665,7 @@ def assess_live_postsubmit_facts_v1(
     submission_barrier,
     validated_at,
     tick_size,
+    history=None,
 ):
     # Source-number bounds and a fixed context make the result independent of
     # another task/caller's Decimal precision, rounding mode or disabled traps.
@@ -636,4 +689,5 @@ def assess_live_postsubmit_facts_v1(
             submission_barrier=submission_barrier,
             validated_at=validated_at,
             tick_size=tick_size,
+            history=history,
         )

@@ -159,7 +159,9 @@ async def capture_owned_live_postsubmit_pages_v1(owner, *, key):
             client,
             lease,
             select_live_trade_read_v1(
-                "fills",
+                "fills_history"
+                if state.get("recovery_history") is not None
+                else "fills",
                 instrument_id=intent.instrument_id,
                 order_id=order_id,
                 after_bill_id=after,

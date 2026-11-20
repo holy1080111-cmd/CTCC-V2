@@ -186,6 +186,7 @@ def _require_complete_entry_flow_v1():
 def _require_lifecycle_source_modules_v1():
     from app.okx_live import (
         lifecycle_custody_v1,
+        owned_recovery_v1,
         postfill_economics_v1,
         postsubmit_capture_v1,
         reconciliation_facts_v1,
@@ -195,6 +196,7 @@ def _require_lifecycle_source_modules_v1():
     root = Path(__file__).resolve().parent
     for module in (
         lifecycle_custody_v1,
+        owned_recovery_v1,
         postfill_economics_v1,
         postsubmit_capture_v1,
         reconciliation_facts_v1,
@@ -220,6 +222,11 @@ def _verify_source_for_signing_v1(owner, *, key_owner):
 
     state = _record(owner)
     _need(state["phase"] == "source_verified" and state["key_owner"] is key_owner)
+    recovery = state.get("recovery_history") is not None
+    if recovery:
+        from app.okx_live.owned_recovery_v1 import _verify_recovery_observation_v1
+
+        _verify_recovery_observation_v1(owner, key=_SOURCE_LEASE_KEY_V1)
     raw = state["proof_json"]
     _need(type(raw) is bytes and canonical(decode(raw, maximum=65536)) == raw)
     # A real capture retains these exact bytes before the signer can run. The
@@ -311,7 +318,7 @@ def _verify_source_for_signing_v1(owner, *, key_owner):
                 policy_json=handoff.policy_json,
                 recheck_math_json=handoff.recheck_math_json,
             )
-            if observed.outcome == "FULL_FILL_PROTECTED"
+            if observed.outcome == "FULL_FILL_PROTECTED" and not recovery
             else None
         )
         _need(economics == state["assessed_economics"])
@@ -467,7 +474,7 @@ def _submission_bytes(response, *, intent_sha256):
 
 
 def _capture_arguments(state, capture):
-    return {
+    arguments = {
         "order_page": capture.order,
         "fill_pages": capture.fills,
         "protection_page": capture.protection,
@@ -479,6 +486,9 @@ def _capture_arguments(state, capture):
         "validated_at": capture.validated_at,
         "tick_size": capture.tick_size,
     }
+    if state.get("recovery_history") is not None:
+        arguments["history"] = state["recovery_history"]
+    return arguments
 
 
 async def _capture_owned_live_postsubmit_v1(owner):
@@ -523,8 +533,11 @@ def _proof_document(state, *, capture, facts, economics, failure_code=None):
     protected = (
         facts is not None
         and facts.outcome == "FULL_FILL_PROTECTED"
-        and economics is not None
-        and economics["passed"] is True
+        and (
+            state.get("recovery_history") is not None
+            or economics is not None
+            and economics["passed"] is True
+        )
     )
     zero = facts is not None and facts.outcome == "ZERO_FILL_FLAT"
     outcome = (
@@ -599,12 +612,29 @@ def _proof_document(state, *, capture, facts, economics, failure_code=None):
         "failure_code": failure_code,
         "source_fact_codes": list(facts.codes) if facts else None,
     }
+    if state.get("recovery_history") is not None:
+        history = state["recovery_history"]
+        proof["recovery_history"] = {
+            "intent_recorded_at": history.intent_recorded_at.isoformat(),
+            "retained_original_submission_started_utc": history.submission_started_utc.isoformat()
+            if history.submission_started_utc is not None
+            else None,
+            "semantics": "historical_utc_not_current_monotonic_or_post_start",
+            "economic_qualification_reestablished": False,
+        }
     # Frozen dataclass fields are replayed at signing; not a caller passed flag.
     state["assessed_facts"] = facts
     state["assessed_economics"] = economics
     state["capture"] = capture
     state["outcome"] = outcome
     return canonical(proof)
+
+
+async def reconcile_pending_owned_live_intent_v1(reservation_id):
+    """Fixed read-only restart delegate; no Arm/entry/controlled-close action."""
+    from app.okx_live import owned_recovery_v1 as recovery
+
+    return await recovery.reconcile_pending_owned_live_intent_v1(reservation_id)
 
 
 async def reconcile_owned_live_postsubmit_v1(qualified_owner, physical_handle):

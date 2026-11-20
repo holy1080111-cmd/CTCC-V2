@@ -93,6 +93,7 @@ class LiveLifecycleJournalDataV1:
     intent_json: bytes
     intent_sha256: str
     proofs: tuple[bytes, ...]
+    intent_recorded_at: datetime | None = None
     execution_authority: bool = False
 
 
@@ -733,7 +734,7 @@ class NativeLiveLifecycleRepositoryV1:
             await _profile(session, self.pins)
             row = (
                 await session.execute(
-                    text("""SELECT r.state,r.resolution_sha256,i.intent_json,i.intent_sha256
+                    text("""SELECT r.state,r.resolution_sha256,i.intent_json,i.intent_sha256,i.created_at
  FROM public.native_live_reservations_v1 r LEFT JOIN public.native_live_intents_v1 i USING(reservation_id)
  WHERE r.reservation_id=:id AND r.environment='live' AND r.account_uid=:uid"""),
                     {"id": reservation_id, "uid": expected["account_uid"]},
@@ -752,6 +753,12 @@ class NativeLiveLifecycleRepositoryV1:
             _need(len(records) <= 1000)
             proofs, previous = [], None
             now = await session.scalar(text("SELECT clock_timestamp()"))
+            _need(
+                type(row[4]) is datetime
+                and row[4].tzinfo is UTC
+                and row[4] <= now
+                and row[4] <= intent.deadline
+            )
             for sequence, proof in enumerate(records, 1):
                 _need(
                     type(proof[0]) is int
@@ -786,7 +793,14 @@ class NativeLiveLifecycleRepositoryV1:
             _need(row[1] == previous if terminal else row[1] is None)
         _need(self._key(key_owner) == expected)
         return LiveLifecycleJournalDataV1(
-            reservation_id, row[0], row[1], intent, encoded, row[3], tuple(proofs)
+            reservation_id,
+            row[0],
+            row[1],
+            intent,
+            encoded,
+            row[3],
+            tuple(proofs),
+            intent_recorded_at=row[4],
         )
 
     async def append_owned_proof_v1(self, lifecycle_owner):
