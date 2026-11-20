@@ -20,6 +20,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database.repositories import (
     collector_current_0055_multirole_catalog_v1 as _custody_catalog,
 )
+from app.database.repositories import native_issuer_transaction as _issuer_transaction
+from app.domain import native_database_profile_v1 as _database_profiles
 from app.domain.native_clock import native_stamp
 from app.domain.source_primitives import (
     canonical,
@@ -34,6 +36,7 @@ from app.trade_qualification import account_capture as capture
 from app.trade_qualification import g12_invocation_custody as custody
 from app.trade_qualification import native_continuation_guard_v1 as _native_guard
 from app.trade_qualification import owned_native_candidate_v1 as candidate
+from scripts import current0057_native_g12_acl_v1 as _g12_acl
 
 _CANDIDATE_KEY_V2 = object()
 _OWNERS = WeakKeyDictionary()
@@ -136,7 +139,114 @@ def _custody_context(repository, binding, *, key):
     _local, _replay, issued, _stamp = _check(state)
     if repository.session_factory is not issued.session_factory:
         _deny("native_g12_custody_factory_changed")
+    if _issued_writer_pin(issued) != state.get("custody_issued_writer_pin"):
+        _deny("native_g12_issued_writer_changed")
     return state, issued
+
+
+def _issued_writer_pin(issued):
+    """Metadata from the replayed live account owner, never a caller permit."""
+    if (
+        type(issued) is not candidate.account.IssuedAccountForG11V1
+        or type(issued.database_head) is not str
+        or issued.database_head not in {"0055", "0056", "0057"}
+        or type(issued.writer_role_oid) is not int
+        or not 0 < issued.writer_role_oid < 2**32
+        or issued.execution_authority is not False
+    ):
+        _deny("native_g12_genuine_issued_writer_required")
+    if issued.database_head == "0055":
+        if issued.database_factories is not None or issued.database_roles is not None:
+            _deny("native_g12_genuine_issued_writer_required")
+    else:
+        profile = (
+            _database_profiles.DB0056
+            if issued.database_head == "0056"
+            else _database_profiles.DB0057
+        )
+        factories, roles = issued.database_factories, issued.database_roles
+        if (
+            type(factories)
+            is not _issuer_transaction.locked.ConfiguredNativeDemoFactoriesV2
+            or factories.writer_factory is not issued.session_factory
+            or type(roles)
+            is not _issuer_transaction.locked.RestrictedNativeRoles0056WitnessV1
+            or type(roles.observation)
+            is not _issuer_transaction.locked.roles56.RestrictedNativeRoles0056ObservationV1
+            or roles.observation.database_head != issued.database_head
+            or roles.observation.admission != "DENY"
+            or roles.observation.execution_authority is not False
+            or roles.schema
+            != _database_profiles.schema(
+                profile, "ctcc.native_only.restricted0056_runtime_witness.v1"
+            )
+            or roles.startup_admission is not False
+            or roles.execution_authority is not False
+        ):
+            _deny("native_g12_genuine_issued_writer_required")
+    return issued.database_head, issued.writer_role_oid
+
+
+async def _verify_custody_writer_catalog_v2(repository, binding, session, *, key):
+    state, issued = _custody_context(repository, binding, key=key)
+    expected_head, expected_oid = _issued_writer_pin(issued)
+    if expected_head == "0055":
+        observed = await _custody_catalog.verify_actual_issuer_catalog_v2(session)
+        _custody_context(repository, binding, key=key)
+        if (
+            observed["database_head"] != expected_head
+            or observed["role_oid"] != expected_oid
+            or observed["native_baseline_admission"] is not True
+            or observed["execution_authority"] is not False
+        ):
+            _deny("native_g12_issued_writer_catalog_changed")
+        digest = observed["catalog_sha256"]
+    else:
+        # This actual SQL dispatcher chooses only the closed 0056/0057 physical
+        # profile. Its observations retain native_baseline_admission=false.
+        actual, _ = await _issuer_transaction.read_actual_native_issuer_transaction(
+            session
+        )
+        _custody_context(repository, binding, key=key)
+        if actual.head != expected_head or actual.role_oid != expected_oid:
+            _deny("native_g12_issued_writer_catalog_changed")
+        profile = (
+            _database_profiles.DB0056
+            if expected_head == "0056"
+            else _database_profiles.DB0057
+        )
+        factories, roles = issued.database_factories, issued.database_roles
+        _, engine, names, _ = _issuer_transaction.locked._factory_pins(factories)
+        if session.bind is not engine:
+            _deny("native_g12_issued_writer_catalog_changed")
+        await _database_profiles.require_exact_acl(
+            await session.connection(),
+            names,
+            expected_oid,
+            profile=profile,
+            read_only=False,
+        )
+        _custody_context(repository, binding, key=key)
+        if (
+            expected_head == "0057"
+            and actual.native_definitions_sha256
+            != roles.observation.inherited_native_definitions_sha256
+        ):
+            _deny("native_g12_issued_writer_catalog_changed")
+        digest = actual.observation_sha256
+    if (
+        type(digest) is not str
+        or len(digest) != 64
+        or any(c not in "0123456789abcdef" for c in digest)
+    ):
+        _deny("native_g12_issued_writer_catalog_changed")
+    pin = (expected_head, expected_oid, digest)
+    previous = state.get("custody_catalog_pin")
+    if previous is None:
+        state["custody_catalog_pin"] = pin
+    elif previous != pin:
+        _deny("native_g12_issued_writer_catalog_changed")
+    _custody_context(repository, binding, key=key)
 
 
 def _require_custody_entry_v2(
@@ -238,7 +348,7 @@ async def _prepare_custody_session_v2(repository, binding, session, *, stage, ke
         {"statement": str(min(10000, remaining)), "lock": str(min(3000, remaining))},
     )
     _custody_context(repository, binding, key=key)
-    await _custody_catalog.verify_actual_issuer_catalog_v2(session)
+    await _verify_custody_writer_catalog_v2(repository, binding, session, key=key)
     _custody_context(repository, binding, key=key)
     metadata = await _custody_metadata(repository, binding, session, key=key)
     if any(previous[2][4] == metadata[4] for previous in completed):
@@ -251,7 +361,7 @@ async def _finish_custody_session_v2(repository, binding, session, *, stage, key
     pending = state.get("custody_pending_session")
     if pending is None or pending[0] != stage or pending[1] is not session:
         _deny("native_g12_custody_transaction_changed")
-    await _custody_catalog.verify_actual_issuer_catalog_v2(session)
+    await _verify_custody_writer_catalog_v2(repository, binding, session, key=key)
     _custody_context(repository, binding, key=key)
     metadata = await _custody_metadata(repository, binding, session, key=key)
     original = pending[2]
@@ -275,18 +385,43 @@ def _custody_transcript_sha256(state):
         or len({item[2][4] for item in sessions}) != len(_CUSTODY_STAGES)
     ):
         _deny("native_g12_complete_custody_readbacks_required")
-    return sha(
-        canonical(
-            [
+    transcript = [
+        {
+            "stage": stage,
+            "started": [*before[:5], before[5].isoformat(), *before[6:]],
+            "completed": [*after[:5], after[5].isoformat(), *after[6:]],
+        }
+        for stage, _session, before, after in sessions
+    ]
+    issued = state.get("custody_issued_writer_pin")
+    catalog = state.get("custody_catalog_pin")
+    if (
+        type(issued) is not tuple
+        or len(issued) != 2
+        or type(catalog) is not tuple
+        or len(catalog) != 3
+        or issued[0] not in {"0055", "0056", "0057"}
+        or type(issued[1]) is not int
+        or not 0 < issued[1] < 2**32
+        or type(catalog[2]) is not str
+        or len(catalog[2]) != 64
+        or any(c not in "0123456789abcdef" for c in catalog[2])
+        or catalog[:2] != issued
+    ):
+        _deny("native_g12_issued_writer_catalog_changed")
+    if issued[0] == "0057":
+        return sha(
+            canonical(
                 {
-                    "stage": stage,
-                    "started": [*before[:5], before[5].isoformat(), *before[6:]],
-                    "completed": [*after[:5], after[5].isoformat(), *after[6:]],
+                    "schema_version": "ctcc.native_g12_custody0057.v1",
+                    "database_head": issued[0],
+                    "writer_role_oid": issued[1],
+                    "catalog_sha256": catalog[2],
+                    "sessions": transcript,
                 }
-                for stage, _session, before, after in sessions
-            ]
+            )
         )
-    )
+    return sha(canonical(transcript))
 
 
 def _claim(state, local, issued):
@@ -444,6 +579,7 @@ async def _publish(state):
         async with asyncio.timeout(remaining):
             repository = custody.G12InvocationCustodyRepository(issued.session_factory)
             state["custody_repository"] = repository
+            state["custody_issued_writer_pin"] = _issued_writer_pin(issued)
             prepared_claim = _claim(state, local, issued)
             state["custody_claim_raw"] = prepared_claim.claim_json
             claim = await repository.claim(
@@ -639,5 +775,16 @@ _NATIVE_GUARD = _native_guard.install_native_guards_v1(
         _custody_catalog.policy.lineage,
         _custody_catalog.policy.issued,
         _custody_catalog.policy.operator,
+        _issuer_transaction,
+        _issuer_transaction.writer56,
+        _issuer_transaction.writer56.inherited,
+        _issuer_transaction.writer56.inherited.g12,
+        _database_profiles,
+        _g12_acl,
+        _g12_acl.g12,
+        _g12_acl.core,
+        _g12_acl.account,
+        _g12_acl.lifecycle,
+        _g12_acl.fitted,
     ),
 )

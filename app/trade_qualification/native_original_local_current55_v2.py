@@ -148,7 +148,7 @@ def _source(record):
         or value.current_plan.environment != "demo"
         or value.current_plan.settlement_currency != "USDT"
         or type(value.database_head) is not str
-        or value.database_head not in {"0055", "0056"}
+        or value.database_head not in {"0055", "0056", "0057"}
         or type(value.writer_role_oid) is not int
         or value.writer_role_oid <= 0
         or value.execution_authority is not False
@@ -915,6 +915,9 @@ _NATIVE_GUARD = source_guard.install_native_guards_v1(
         catalog55.policy,
         issuer_transaction,
         issuer_transaction.writer56,
+        issuer_transaction.profiles,
+        issuer_transaction.writer56.inherited,
+        issuer_transaction.writer56.inherited.g12,
         catalog55.policy.native_close_intent,
         catalog55.policy.native_close_index,
         local.precursor,

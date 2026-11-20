@@ -6,8 +6,10 @@ No running production database or installed credential is selected here.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from dataclasses import fields
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -376,3 +378,95 @@ async def test_actual0057_inherited_roles_writer_control_and_frame_keep_actual_h
         assert "current0057" in observed and "current0056" not in observed
         assert observed["execution_authority"] is False
         assert observed["current0057"]["profile"]["native_baseline_admission"] is False
+
+
+async def test_actual0057_native_custody_six_real_sessions_keep_issued_profile(
+    _isolated_0057_g12_lab, monkeypatch
+):
+    """Real PostgreSQL native hooks; synthetic private-owner handoff, no trade."""
+    import asyncio
+
+    from app.core import native_role_witness_0056_v1 as witness
+    from app.demo_automation.native_server_selectors_v2 import (
+        ConfiguredNativeDemoFactoriesV2,
+    )
+    from app.domain.source_primitives import canonical, sha
+    from app.trade_qualification import native_g12_publication_v2 as publisher
+
+    owner, engines, _ = _isolated_0057_g12_lab
+    factories = tuple(
+        async_sessionmaker(engine, autoflush=False, expire_on_commit=False)
+        for engine in engines
+    )
+    selected = ConfiguredNativeDemoFactoriesV2(*factories, engines[1], engines[2])
+    roles = await witness.observe_restricted_native_roles_0056_witness_v1(
+        selected, source=ROOT, profile=profiles.DB0057
+    )
+    async with factories[0]() as session, session.begin():
+        oid = await session.scalar(
+            text(
+                "SELECT oid::bigint FROM pg_catalog.pg_roles WHERE rolname=current_user"
+            )
+        )
+    start = datetime.now(UTC)
+    deadline = start + timedelta(seconds=60)
+    values = {
+        field.name: None
+        for field in fields(publisher.candidate.account.IssuedAccountForG11V1)
+        if field.init
+    }
+    values.update(
+        session_factory=factories[0],
+        database_head="0057",
+        writer_role_oid=oid,
+        database_factories=selected,
+        database_roles=roles,
+    )
+    issued = publisher.candidate.account.IssuedAccountForG11V1(**values)
+    assert issued.execution_authority is False
+    repository = G12InvocationCustodyRepository(factories[0])
+    initial = _claim()
+    document = initial.values
+    document["deadline"] = deadline.isoformat()
+    raw = canonical(document)
+    claim = publisher.custody.G12InvocationClaim(initial.invocation_id, raw, sha(raw))
+    binding = object()
+    task = asyncio.current_task()
+    state = {
+        "candidate": {"facts": SimpleNamespace(created_at=start), "deadline": deadline},
+        "custody_sessions": [],
+        "custody_pending_session": None,
+        "custody_claim_raw": claim.claim_json,
+        "custody_issued_writer_pin": ("0057", oid),
+    }
+
+    def synthetic_owner_handoff(actual_repository, actual_binding, *, key):
+        assert actual_repository is repository and actual_binding is binding
+        assert (
+            key is publisher.custody._NATIVE_V2_KEY and asyncio.current_task() is task
+        )
+        return state, issued
+
+    # Only the private in-memory account-owner handoff is synthetic. Both
+    # physical head/role/catalog checks per stage, all effective ACL checks,
+    # native metadata clocks, INSERTs, commits and six independent XIDs are real.
+    # This cannot qualify a public candidate, call R7, reserve risk or submit.
+    with monkeypatch.context() as handoff:
+        handoff.setattr(publisher, "_custody_context", synthetic_owner_handoff)
+        committed = await repository.claim(claim, _native_binding=binding)
+        prepared_publication = _publication(committed)
+        state["custody_publication_raw"] = prepared_publication.publication_json
+        publication = await repository.publication(
+            committed, prepared_publication, _native_binding=binding
+        )
+        transcript = publisher._custody_transcript_sha256(state)
+        assert len(state["custody_sessions"]) == 6
+        assert len({session[2][4] for session in state["custody_sessions"]}) == 6
+        assert state["custody_catalog_pin"][:2] == ("0057", oid)
+        assert len(transcript) == 64 and publication.execution_authority is False
+        with pytest.raises(
+            publisher.custody.G12InvocationCustodyError,
+            match="g12_custody_claim_unavailable",
+        ):
+            await repository.claim(claim, _native_binding=binding)
+    assert await _counts(owner) == (1, 1)

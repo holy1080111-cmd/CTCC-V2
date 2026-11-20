@@ -133,7 +133,13 @@ async def test_db0056_writer_holds_exact_live_control_before_current_source(
         owner = "f" * 64
     else:
         owner = state.owner_sha256
-    factories, roles = object(), object()
+    factories = object()
+    roles = source.witness56.RestrictedNativeRoles0056WitnessV1(
+        source.control56.roles56.RestrictedNativeRoles0056ObservationV1(
+            "4" * 64, "5" * 64, "6" * 64, "7" * 64
+        ),
+        *source.witness56.runtime_witness_0056(_ACTOR, _NAMES, (_ROUTE,) * 3),
+    )
     check = Mock()
 
     @asynccontextmanager

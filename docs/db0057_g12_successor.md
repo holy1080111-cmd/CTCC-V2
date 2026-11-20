@@ -79,8 +79,14 @@ work must precede any installation or execution claim:
   must still explicitly carry this profile; observed 0057 records are never
   rewritten as 0056.
 - Dispatch all six G12 custody-session checks from the genuine issued profile
-  and actual writer OID. Preserve task/factory/session/XID/deadline pins and the
-  post-publication barrier.
+  and actual writer OID. This source now carries those pins in the private live
+  account replay view together with its original configured factories and role
+  witness. G12 validates the complete profile and effective ACL before and after
+  every custody session, retains one catalog fingerprint across all six, and
+  binds physical head, writer OID and catalog fingerprint in the successor
+  transcript. Task/factory/session/XID/deadline pins and the post-publication
+  barrier remain required. Higher selector/startup admission must still provide
+  the genuine successor owner; DATA constructors never enter the publisher.
 - Measure and review the complete new schema/ACL/role/source identities on two
   isolated real PostgreSQL installations. Update the attended owner plan and
   independent readback for the successor; do not add grants to the installed
@@ -99,3 +105,18 @@ migration inventory and the unchanged 57-file source56 prefix. DB0057 always
 requires source57. It does not change the separate physical database-head
 check. Source57 owner/pregrant provisioning remains unsupported until its own
 attended plan and catalog are supplied.
+
+The native issuer transaction and original G6 reader now recognize actual 0057
+through the closed profile. The original DB0055 strict catalog path continues
+to require its sealed baseline flag; 0056/0057 observations must keep that flag
+false. The owned V6 writer, frame reader and counter Control context carry the
+profile derived from the same original role witness. No branch sets a passing
+or authority flag to compensate for an unavailable successor owner.
+
+The fourth isolated PostgreSQL case exercises the real native G12 custody hooks
+with a clearly synthetic private-owner handoff. All twelve physical catalog
+checks, full effective ACL checks, six SQL sessions/transaction IDs, inserts and
+independent committed readbacks are real when this test runs. It does not
+manufacture a public candidate, run R7, reserve risk or submit an order. This
+case has been collected only in the current source work; it is not an executed
+PostgreSQL or Demo acceptance claim.

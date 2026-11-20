@@ -158,3 +158,48 @@ async def test_original_g6_confirmed_old_writer_uses_only_db0055_catalog(
     )
     database.legacy.assert_awaited_once_with(session)
     database.writer.assert_not_awaited()
+
+
+async def test_db57_keeps_actual_head_native_reference_and_closed_profile(
+    session, database
+):
+    database.head.return_value = SimpleNamespace(all=lambda: ["0057"])
+    database.identity.return_value = (["0057"], *_IDENTITY[1:])
+    database.writer.return_value = issuer.writer56.NativeWriter0056ObservationV1(
+        "a" * 64,
+        "b" * 64,
+        schema="ctcc.current0057.restricted_readwrite_writer_observation.v1",
+        database_head="0057",
+    )
+    actual, metadata = await issuer.read_actual_native_issuer_transaction(session)
+    assert actual.head == "0057" and actual.role_oid == 55
+    assert actual.native_definitions_sha256 == "a" * 64 and metadata == _METADATA
+    database.writer.assert_awaited_once_with(session, profile=issuer.profiles.DB0057)
+    database.legacy.assert_not_awaited()
+    database.writer.reset_mock()
+    await issuer.require_actual_issued_writer_v1(
+        session, database_head="0057", role_oid=55
+    )
+    database.writer.assert_awaited_once_with(session, profile=issuer.profiles.DB0057)
+    with pytest.raises(issuer.NativeIssuerTransactionError):
+        await issuer.require_actual_issued_writer_v1(
+            session, database_head="0056", role_oid=55
+        )
+
+
+async def test_successor_cannot_promote_observation_native_baseline_flag(
+    session, database
+):
+    database.head.return_value = SimpleNamespace(all=lambda: ["0057"])
+    database.identity.return_value = (["0057"], *_IDENTITY[1:])
+    value = issuer.writer56.NativeWriter0056ObservationV1(
+        "a" * 64,
+        "b" * 64,
+        schema="ctcc.current0057.restricted_readwrite_writer_observation.v1",
+        database_head="0057",
+    )
+    object.__setattr__(value, "native_baseline_admission", True)
+    database.writer.return_value = value
+    with pytest.raises(issuer.NativeIssuerTransactionError):
+        await issuer.read_actual_native_issuer_transaction(session)
+    database.legacy.assert_not_awaited()

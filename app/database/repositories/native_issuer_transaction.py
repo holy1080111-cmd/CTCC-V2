@@ -18,6 +18,7 @@ from app.database.repositories import (
 from app.database.repositories import public_runtime_bundle_custody as custody
 from app.database.repositories.demo_control import DemoControlRepository
 from app.database.repositories.demo_control_current55_v2 import DemoControlRepositoryV2
+from app.domain import native_database_profile_v1 as profiles
 from app.domain.source_primitives import canonical, sha
 from app.trade_qualification.demo_control import ControlScope
 
@@ -33,6 +34,7 @@ class NativeIssuerCatalogIdentity:
     head: str
     role_oid: int
     observation_sha256: str
+    native_definitions_sha256: str | None = None
 
 
 def _require(condition: bool) -> None:
@@ -48,9 +50,12 @@ async def read_actual_native_issuer_transaction(
         _require(type(session) is AsyncSession and custody._native_engine(session.bind))
         engine = session.bind
         transaction = session.sync_session.get_transaction()
+        profile = profiles.DB0056
 
         def require_same_transaction() -> None:
-            writer56._require_same_transaction(session, engine, transaction)
+            writer56._require_same_transaction(
+                session, engine, transaction, **profiles.arguments(profile)
+            )
             _require(
                 session.get_bind(clause=_HEAD) is engine.sync_engine
                 and session.get_bind(clause=lineage._META_SQL) is engine.sync_engine
@@ -71,20 +76,28 @@ async def read_actual_native_issuer_transaction(
             result = NativeIssuerCatalogIdentity(
                 "0055", metadata[3], observed["catalog_sha256"]
             )
-        elif rows == ["0056"]:
+        elif rows in (["0056"], ["0057"]):
+            profile = profiles.DB0056 if rows == ["0056"] else profiles.DB0057
             route = locked._direct_tls_route(engine)
-            before = await writer56._session_identity(session, engine)
+            before = await writer56._session_identity(
+                session, engine, **profiles.arguments(profile)
+            )
             require_same_transaction()
             observed = await writer56.observe_restricted_readwrite_writer_0056_v1(
-                session
+                session, **profiles.arguments(profile)
             )
             require_same_transaction()
             metadata = await lineage._metadata(session)
             require_same_transaction()
-            after = await writer56._session_identity(session, engine)
+            after = await writer56._session_identity(
+                session, engine, **profiles.arguments(profile)
+            )
             _require(
                 type(observed) is writer56.NativeWriter0056ObservationV1
-                and observed.database_head == "0056"
+                and observed.database_head == profiles.head(profile)
+                and observed.native_baseline_admission
+                is observed.startup_admission
+                is False
                 and observed.execution_authority is False
                 and before == after
                 and locked._direct_tls_route(engine) == route
@@ -95,7 +108,7 @@ async def read_actual_native_issuer_transaction(
                 and metadata[9] >= before[9]
             )
             result = NativeIssuerCatalogIdentity(
-                "0056",
+                profiles.head(profile),
                 metadata[3],
                 sha(
                     canonical(
@@ -104,6 +117,11 @@ async def read_actual_native_issuer_transaction(
                             observed.actor_catalog_sha256,
                         ]
                     )
+                ),
+                native_definitions_sha256=(
+                    observed.native_definitions_sha256
+                    if profile is profiles.DB0057
+                    else None
                 ),
             )
         else:
@@ -122,7 +140,7 @@ async def require_actual_issued_writer_v1(
     """Compare actual writer evidence to the original issued role and head."""
     _require(
         type(database_head) is str
-        and database_head in {"0055", "0056"}
+        and database_head in {"0055", "0056", "0057"}
         and type(role_oid) is int
         and role_oid > 0
     )
@@ -130,10 +148,16 @@ async def require_actual_issued_writer_v1(
     _require(actual.head == database_head and actual.role_oid == role_oid)
 
 
-async def read_actual_issuer_control_0056(session: AsyncSession, scope: ControlScope):
+async def read_actual_issuer_control_0056(
+    session: AsyncSession, scope: ControlScope, *, database_head="0056"
+):
     """Replay the inherited Control journal with the exact DB0056 writer."""
     catalog, before = await read_actual_native_issuer_transaction(session)
-    _require(catalog.head == "0056" and type(scope) is ControlScope)
+    _require(
+        database_head in {"0056", "0057"}
+        and catalog.head == database_head
+        and type(scope) is ControlScope
+    )
     row = await DemoControlRepository._locked(session, scope)
     state, event = await DemoControlRepositoryV2._snapshot(session, row)
     checked, after = await read_actual_native_issuer_transaction(session)

@@ -60,6 +60,7 @@ from app.database.repositories.qualification_ledger import QualificationLedgerRe
 from app.demo_automation import native_server_selectors_v2 as selector56
 from app.domain import account_history_partition_v1 as partition_policy
 from app.domain import native_clock
+from app.domain import native_database_profile_v1 as database_profiles
 from app.domain import source_primitives as clock_contract
 from app.domain.source_primitives import (
     canonical,
@@ -90,6 +91,7 @@ from app.trade_qualification import native_account_risk_assembly_v1 as native
 from app.trade_qualification import native_demo_control_owner_v2 as owner55
 from app.trade_qualification import portfolio, reservations
 from app.trade_qualification.account_runtime import ControlledDemoAccountSession
+from scripts import current0057_native_g12_acl_v1 as g12_acl57
 
 _SOURCE_KEY_V6 = object()
 _SCAN_KEY_V6 = object()
@@ -493,8 +495,42 @@ def _owned_database_0056_v6(state):
     return factories, roles
 
 
+def _database_profile_from_roles_v6(roles):
+    """Read only the closed physical profile of the already-owned witness."""
+    if (
+        type(roles) is not witness56.RestrictedNativeRoles0056WitnessV1
+        or type(roles.observation)
+        is not frame56.roles56.RestrictedNativeRoles0056ObservationV1
+        or roles.observation.database_head not in {"0056", "0057"}
+    ):
+        _deny("controlled_account_original_database_profile_required")
+    profile = (
+        database_profiles.DB0056
+        if roles.observation.database_head == "0056"
+        else database_profiles.DB0057
+    )
+    if (
+        roles.schema
+        != database_profiles.schema(
+            profile, "ctcc.native_only.restricted0056_runtime_witness.v1"
+        )
+        or roles.observation.schema
+        != database_profiles.schema(
+            profile, "ctcc.native_only.restricted0056_role_observation.v1"
+        )
+        or roles.startup_admission is not False
+        or roles.execution_authority is not False
+        or roles.observation.native_baseline_admission is not False
+        or roles.observation.execution_authority is not False
+        or roles.observation.admission != "DENY"
+    ):
+        _deny("controlled_account_original_database_profile_changed")
+    return profile
+
+
 async def _admit_writer_0056_v6(state, factories, roles):
     ctrl = state["control"]
+    profile = _database_profile_from_roles_v6(roles)
     async with (
         ctrl["factory"]() as session,
         session.begin(),
@@ -504,6 +540,7 @@ async def _admit_writer_0056_v6(state, factories, roles):
             ctrl["scope"],
             roles=roles,
             purpose=control56.NativeWriterControlPurpose0056.PREPARE_OBSERVATION,
+            **database_profiles.arguments(profile),
         ) as held,
     ):
         _check_v6(state)
@@ -1296,6 +1333,7 @@ async def _reader_role_0056_v6(state, session, fence, factories, roles):
 
 
 async def _reader_catalog_0056_v6(state, session, fence, factories, roles):
+    selected_profile = _database_profile_from_roles_v6(roles)
     reader = state["reader_factory"]
     routes, names = frame56._checked_factories(
         session,
@@ -1310,17 +1348,20 @@ async def _reader_catalog_0056_v6(state, session, fence, factories, roles):
     ):
         _deny("controlled_account_original_0056_frame_factory_changed")
     route = selector56._database_route(reader.kw["bind"].url)
-    raw_before = await frame56._identity(session, fence, names[2])
+    raw_before = await frame56._identity(
+        session, fence, names[2], **database_profiles.arguments(selected_profile)
+    )
     proof_bytes = await frame56.verify_held_frame_catalog_0056_v1(
         session,
         fence,
         factories.writer_factory,
         factories.custody_factory,
         reader,
+        **database_profiles.arguments(selected_profile),
     )
     fence.check()
     actual = decode(proof_bytes, 4 * 1024 * 1024)
-    graphs = actual["current0056"]
+    graphs = actual["current" + database_profiles.head(selected_profile)]
     profile = graphs["profile"]
     writer_name, writer_oid = (
         graphs["writer"]["role"]["name"],
@@ -1329,13 +1370,21 @@ async def _reader_catalog_0056_v6(state, session, fence, factories, roles):
     writer_identity = (writer_name, writer_name, "none", writer_oid, *raw_before[4:])
     if (
         writer_name != names[0]
-        or actual["schema"] != "ctcc.native_only.held_frame_catalog_0056.v1"
-        or actual["database_head"] != "0056"
+        or actual["schema"]
+        != database_profiles.schema(
+            selected_profile, "ctcc.native_only.held_frame_catalog_0056.v1"
+        )
+        or actual["database_head"] != database_profiles.head(selected_profile)
         or actual["granted_inherited_acl_shape_sha256"]
         != roles.observation.granted_inherited_acl_shape_sha256
         or profile["native_definitions_sha256"]
         != roles.observation.inherited_native_definitions_sha256
-        or witness56.runtime_witness_0056(writer_identity, names, (route,) * 3)
+        or witness56.runtime_witness_0056(
+            writer_identity,
+            names,
+            (route,) * 3,
+            **database_profiles.arguments(selected_profile),
+        )
         != (roles.server_incarnation_sha256, roles.role_route_sha256)
         or graphs["raw"]["role"]["oid"] != raw_before[3]
         or actual["account_complete"] is not False
@@ -1343,7 +1392,12 @@ async def _reader_catalog_0056_v6(state, session, fence, factories, roles):
         or actual["admission"] != "DENY"
     ):
         _deny("controlled_account_original_0056_frame_role_changed")
-    if await frame56._identity(session, fence, names[2]) != raw_before:
+    if (
+        await frame56._identity(
+            session, fence, names[2], **database_profiles.arguments(selected_profile)
+        )
+        != raw_before
+    ):
         _deny("controlled_account_original_0056_frame_transaction_changed")
     fence.check()
     if (
@@ -1597,12 +1651,14 @@ async def _held_selected_live_control_v6(state, session):
         yield actual, event, None
         return
     selected, roles = profile
+    selected_profile = _database_profile_from_roles_v6(roles)
     async with control56.held_native_writer_control_0056_v1(
         selected,
         session,
         ctrl["scope"],
         roles=roles,
         purpose=control56.NativeWriterControlPurpose0056.PREPARE_OBSERVATION,
+        **database_profiles.arguments(selected_profile),
     ) as held:
         _check_v6(state)
         held.check_held()
@@ -2235,9 +2291,10 @@ def _finish_owned_account_issuer_v1(state, readback, *, key):
     if (
         readback.source != source
         or readback.claims_json != state["claims_json"]
-        or readback.database_head not in {"0055", "0056"}
+        or readback.database_head not in {"0055", "0056", "0057"}
         or sha(readback.proof_json) != readback.transition.issuer_sha256
         or readback.write_metadata[3] != readback.readback_metadata[3]
+        or readback.transition.write_role_oid != readback.write_metadata[3]
         or readback.write_metadata[8] == readback.readback_metadata[8]
         or readback.write_metadata[9] > readback.readback_metadata[9]
         or readback.readback_observed_at >= state["expires_at"]
@@ -2346,6 +2403,7 @@ def _issued_state_v6(
 def _issued_view_v6(state):
     _check_v6(state)
     readback, ctrl = state["issued_readback"], state["control"]
+    database = _owned_database_0056_v6(state)
     return native.IssuedAccountForG11V1(
         scope=ctrl["ledger_scope"],
         session_factory=ctrl["factory"],
@@ -2365,6 +2423,9 @@ def _issued_view_v6(state):
         execution_mode=state["execution_mode"],
         source_generation=state["generation"],
         database_head=readback.database_head,
+        writer_role_oid=readback.transition.write_role_oid,
+        database_factories=None if database is None else database[0],
+        database_roles=None if database is None else database[1],
     )
 
 
@@ -8076,6 +8137,13 @@ def _install_source_kernel_v6():
             issuer55.issuer_transaction.locked,
             issuer55.issuer_transaction.writer56,
             issuer55.issuer_transaction.writer56.inherited,
+            database_profiles,
+            g12_acl57,
+            g12_acl57.g12,
+            g12_acl57.core,
+            g12_acl57.account,
+            g12_acl57.lifecycle,
+            g12_acl57.fitted,
             repository56,
             control56,
             counter56,

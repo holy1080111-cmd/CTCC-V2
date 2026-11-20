@@ -7697,6 +7697,9 @@ class IssuedAccountForG11V1:
     execution_mode: object = field(repr=False)
     source_generation: object = field(repr=False)
     database_head: str
+    writer_role_oid: int
+    database_factories: object = field(repr=False)
+    database_roles: object = field(repr=False)
     execution_authority: bool = field(default=False, init=False)
 
 
@@ -8055,6 +8058,11 @@ _CONTROLLED_SOURCE_PATHS_V1 = (
     "app/core/native_writer_observation_0056_v1.py",
     "app/core/native_locked_demo_control_0056_v1.py",
     "app/domain/collector_current_0056_inherited_catalog_v1.py",
+    "app/domain/native_database_profile_v1.py",
+    "app/domain/g12_custody_catalog_0057_v1.py",
+    "scripts/current0057_native_g12_acl_v1.py",
+    "scripts/current0057_migration_pin.py",
+    "migrations/versions/0057_g12_restricted_writer.py",
     "app/database/repositories/account_history_original_raw_proof_bank_current55_v1.py",
     "app/exchange/okx/native_demo_source_identity_v2.py",
     "app/exchange/okx/native_demo_write_v2.py",
