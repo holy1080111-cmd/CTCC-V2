@@ -504,9 +504,7 @@ def _database_profile_from_roles_v6(roles):
         or roles.observation.database_head not in {"0056", "0057", "0058"}
     ):
         _deny("controlled_account_original_database_profile_required")
-    profile = (
-        database_profiles.from_head(roles.observation.database_head)
-    )
+    profile = database_profiles.from_head(roles.observation.database_head)
     if (
         roles.schema
         != database_profiles.schema(

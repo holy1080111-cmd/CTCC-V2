@@ -224,7 +224,8 @@ async def require_held_event_journal_write_0056_v1(repository, session, scope, w
                 witness.control.control.state.scope.environment,
                 witness.control.control.state.scope.account_id,
             )
-            or witness.profile not in (profiles.DB0056, profiles.DB0057, profiles.DB0058)
+            or witness.profile
+            not in (profiles.DB0056, profiles.DB0057, profiles.DB0058)
         ):
             _deny("ledger56_event_journal_original_checkpoint_required")
         witness.check()
