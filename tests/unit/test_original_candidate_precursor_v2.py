@@ -39,6 +39,7 @@ from tests.unit import test_original_candidate_policy as base_fixture
 from tests.unit.history_qualification_fixtures import history_source
 from tests.unit.qualification_range_v5_fixtures import range_v5_source
 from tests.unit.qualification_sweep_v6_fixtures import sweep_v6_source
+from tests.unit.raw_capture_diagnostics_v1 import retained_public_failure_stage_v1
 from tests.unit.research.test_owned_public_runtime_v2 import (
     empty_registries,
     invoke,
@@ -434,7 +435,7 @@ def declared_history_funding_row(source):
 
 def capture_raw_source(source, root, *, declared_funding=None):
     with pytest.MonkeyPatch.context() as patch:
-        _, _, harness, publications = setup(patch, source)
+        _, raw_directory, harness, publications = setup(patch, source)
         funding_before = source.quote.provenance[2].response_body
         normalized_before = source.market.next_funding_time
         served_funding = []
@@ -455,7 +456,9 @@ def capture_raw_source(source, root, *, declared_funding=None):
         assert source.market.next_funding_time is normalized_before
         if declared_funding is not None:
             assert served_funding == [declared_funding]
-        assert diagnostic.packet is not None and diagnostic.context is not None
+        assert diagnostic.packet is not None and diagnostic.context is not None, (
+            retained_public_failure_stage_v1(raw_directory.content)
+        )
         harness.assert_closed()
         assert not publications
         assert all(request.method == "GET" for request in harness.requests)
