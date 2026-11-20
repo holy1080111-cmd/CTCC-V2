@@ -88,7 +88,7 @@ class OwnerRoutePinsV1:
     owner: str
     database_oid: int
     owner_oid: int
-    database_head: Literal["0055", "0056", "0057"]
+    database_head: Literal["0055", "0056", "0057", "0058"]
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -225,7 +225,7 @@ def _prepare(
     """Validate external pins, actual source and private transport before SQL."""
     try:
         profiles.checked(profile)
-        if profile not in {profiles.DB0056, profiles.DB0057}:
+        if profile not in {profiles.DB0056, profiles.DB0057, profiles.DB0058}:
             _deny()
         if (
             type(pins) is not OwnerRoutePinsV1
@@ -250,7 +250,11 @@ def _prepare(
             or pins.owner_oid <= 0
             or pins.database_head
             not in (
-                ("0055", "0056") if profile is profiles.DB0056 else ("0056", "0057")
+                ("0055", "0056")
+                if profile is profiles.DB0056
+                else ("0056", "0057")
+                if profile is profiles.DB0057
+                else ("0057", "0058")
             )
         ):
             _deny()

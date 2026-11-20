@@ -75,6 +75,14 @@ ORIGINAL_OCO_CASES = tuple(
     )
     for parameter in parameters
 )
+OWNER_UPGRADE_CASES = tuple(
+    ("tests.integration.test_native_owner_upgrade_0058_pg", name)
+    for name in (
+        "test_actual0057_owner58_rehearsal_and_commit_preserve_every_row_actor_and44_acl",
+        "test_actual0057_owner58_final_ddl_failure_restores_original_head_rows_oids_and_acl",
+        "test_actual0057_owner58_unreviewed_live_access_rolls_back_without_granting_or_commit",
+    )
+)
 SUCCESSOR_CASES = (
     *base.SUCCESSOR_CASES,
     *live_cases.REQUIRED_CASES,
@@ -83,6 +91,7 @@ SUCCESSOR_CASES = (
     *PHYSICAL_LIVE_CASES,
     *BINDING_CASES,
     *ORIGINAL_OCO_CASES,
+    *OWNER_UPGRADE_CASES,
     (
         "tests.integration.test_native_protective_hold_schema_v58_pg",
         "test_actual0058_original_oco_predicate_compiles_and_missing_targets_never_resolve",
@@ -96,6 +105,7 @@ REQUIRED_CASES = (
     *PHYSICAL_LIVE_CASES,
     *BINDING_CASES,
     *ORIGINAL_OCO_CASES,
+    *OWNER_UPGRADE_CASES,
     SUCCESSOR_CASES[-1],
 )
 HISTORICAL_REPORTS = base.HISTORICAL_REPORTS

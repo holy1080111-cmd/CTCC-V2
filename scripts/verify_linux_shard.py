@@ -46,6 +46,7 @@ POSTGRES_TEST_PATHS = frozenset(
         "tests/integration/test_owned_history_profiles0057_pg.py",
         "tests/integration/test_terminal_readout_profiles0057_pg.py",
         "tests/integration/test_native_owner_upgrade_0057_pg.py",
+        "tests/integration/test_native_owner_upgrade_0058_pg.py",
         "tests/integration/test_native_postsubmit_profiles0057_pg.py",
         "tests/integration/test_native_live_ledger_v1_pg.py",
         "tests/integration/test_native_live_physical_v1_pg.py",
