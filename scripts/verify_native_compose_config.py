@@ -35,10 +35,10 @@ _FLAGS = (
 )
 _RUNTIME_ENV = {
     "ENVIRONMENT": "production",
-    "TRADING_MODE": "okx_demo",
-    "CTCC_NATIVE_ONLY_LIFESPAN_V1": "true",
+    "TRADING_MODE": "analysis_only",
+    "CTCC_NATIVE_ONLY_LIFESPAN_V1": "false",
     "WEB_CONCURRENCY": "1",
-    "OKX_DEMO_ENABLED": "true",
+    "OKX_DEMO_ENABLED": "false",
     "READINESS_REQUIRE_DATABASE": "true",
     "READINESS_REQUIRE_REDIS": "true",
     **dict.fromkeys(_FLAGS, "false"),
@@ -50,17 +50,13 @@ _OWNER_ENV = {
         ("AUTO_TRADE", "LIVE_TRADING", "OKX_DEMO_ENABLED", "OKX_LIVE_ENABLED"), "false"
     ),
 }
-_RUNTIME_SCRIPT = """\
-DATABASE_URL="$(cat /run/secrets/native_writer_dsn)"
-OKX_DEMO_NATIVE_CUSTODY_DATABASE_URL="$(cat /run/secrets/native_custody_dsn)"
-OKX_DEMO_NATIVE_FRAME_READER_DATABASE_URL="$(cat /run/secrets/native_frame_dsn)"
-API_TOKEN="$(cat /run/secrets/native_api_token)"
-export DATABASE_URL OKX_DEMO_NATIVE_CUSTODY_DATABASE_URL OKX_DEMO_NATIVE_FRAME_READER_DATABASE_URL API_TOKEN
-exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1"""
+_RUNTIME_SCRIPT = (
+    "exec python -c \"raise SystemExit('historical0055_bootstrap_api_forbidden')\""
+)
 _MIGRATE_SCRIPT = """\
 DATABASE_URL="$(cat /run/secrets/native_owner_dsn)"
 export DATABASE_URL
-exec alembic upgrade head"""
+exec alembic upgrade 0055"""
 _APP_FIELDS = {
     "command",
     "depends_on",
@@ -71,6 +67,7 @@ _APP_FIELDS = {
     "pull_policy",
     "restart",
     "secrets",
+    "profiles",
     # Some Compose versions keep empty reset fields in the rendered model.
     "build",
     "env_file",
@@ -83,12 +80,7 @@ _RUNTIME_FIELDS = _APP_FIELDS | {
     "profiles",
     "security_opt",
 }
-_RUNTIME_HEALTHCHECK = [
-    "CMD",
-    "python",
-    "-c",
-    "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/readiness', timeout=3)",
-]
+_RUNTIME_HEALTHCHECK = {"disable": True}
 _POSTGRES_HEALTHCHECK_SCRIPT = (
     "password=$(cat /run/secrets/native_postgres_init_password) "
     '&& test -n "$password" '
@@ -125,6 +117,18 @@ def _shell_script(service, expected):
     _need(service.get("command") in ([expected], [expected.replace("$", "$$")]))
 
 
+def _dependency(service, name, condition):
+    dependencies = service.get("depends_on")
+    _need(type(dependencies) is dict and set(dependencies) == {name})
+    item = dependencies[name]
+    _need(type(item) is dict and set(item) <= {"condition", "required", "restart"})
+    _need(
+        item.get("condition") == condition
+        and item.get("required", True) is True
+        and item.get("restart", False) is False
+    )
+
+
 def verify(document, deployment_id, image_ref):
     _need(type(document) is dict and type(document.get("services")) is dict)
     _need(document.get("name") == f"ctcc-native-{deployment_id}")
@@ -139,6 +143,15 @@ def verify(document, deployment_id, image_ref):
         service = services[name]
         _need(set(service.get("networks", {})) == {"native_internal"})
         _need(not service.get("ports"))
+        _need(service.get("restart") == "no")
+        _need(
+            service.get("profiles")
+            == [
+                "historical55-api-forbidden"
+                if name == "api"
+                else "historical55-owner-setup"
+            ]
+        )
     for name in ("api", "native_migrate", "native_role_provision"):
         service = services[name]
         _need(service.get("image") == image_ref)
@@ -158,21 +171,14 @@ def verify(document, deployment_id, image_ref):
         == ["python", "-B", "-m", "scripts.provision_native_roles_v1"]
     )
     _need(provision.get("command") == ["--provision-reviewed-native-roles"])
-    _need(api.get("healthcheck", {}).get("test") == _RUNTIME_HEALTHCHECK)
+    _need(api.get("healthcheck") == _RUNTIME_HEALTHCHECK)
     _need(api.get("security_opt") == ["no-new-privileges:true"])
     _need(api.get("container_name") == f"ctcc-native-{deployment_id}-api")
-    _need(api.get("profiles") == ["native-runtime"])
-    _need(
-        _secrets(api)
-        == {
-            "native_writer_dsn",
-            "native_custody_dsn",
-            "native_frame_dsn",
-            "native_api_token",
-        }
-    )
+    _need(_secrets(api) == set())
+    _need(not api.get("depends_on"))
     _need(_secrets(migrate) == {"native_owner_dsn"})
-    _need(provision.get("profiles") == ["native-role-setup"])
+    _dependency(migrate, "postgres", "service_healthy")
+    _dependency(provision, "native_migrate", "service_completed_successfully")
     _need(
         _secrets(provision)
         == {
@@ -206,7 +212,9 @@ def verify(document, deployment_id, image_ref):
     _need(migrate.get("environment") == provision.get("environment") == _OWNER_ENV)
     return {
         "status": "PASS",
-        "profile": "native_no_execution_merge_v1",
+        "profile": "historical0055_owner_bootstrap_v2",
+        "database_head": "0055",
+        "final0058_runtime": False,
         "execution_authority": False,
     }
 

@@ -1,3 +1,4 @@
+# HISTORICAL physical0055 owner bootstrap only; never the final0058 runtime.
 # Apply only with the exact reviewed source image after independent review.
 # `docker compose config` must prove the base api env_file and migration CMD
 # are gone before any `up`. All DSN files are private host-owned files.
@@ -5,7 +6,7 @@ name: ctcc-native-${CTCC_NATIVE_DEPLOYMENT_ID:?Reviewed unique deployment id req
 
 services:
   api:
-    profiles: [native-runtime]
+    profiles: [historical55-api-forbidden]
     image: ${CTCC_NATIVE_IMAGE_REF:?Pin exact reviewed source image}
     pull_policy: never
     build: !reset null
@@ -15,18 +16,13 @@ services:
     entrypoint: ["/bin/sh", "-ec"]
     command:
       - |-
-        DATABASE_URL="$$(cat /run/secrets/native_writer_dsn)"
-        OKX_DEMO_NATIVE_CUSTODY_DATABASE_URL="$$(cat /run/secrets/native_custody_dsn)"
-        OKX_DEMO_NATIVE_FRAME_READER_DATABASE_URL="$$(cat /run/secrets/native_frame_dsn)"
-        API_TOKEN="$$(cat /run/secrets/native_api_token)"
-        export DATABASE_URL OKX_DEMO_NATIVE_CUSTODY_DATABASE_URL OKX_DEMO_NATIVE_FRAME_READER_DATABASE_URL API_TOKEN
-        exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
+        exec python -c "raise SystemExit('historical0055_bootstrap_api_forbidden')"
     environment:
       ENVIRONMENT: production
-      TRADING_MODE: okx_demo
-      CTCC_NATIVE_ONLY_LIFESPAN_V1: "true"
+      TRADING_MODE: analysis_only
+      CTCC_NATIVE_ONLY_LIFESPAN_V1: "false"
       WEB_CONCURRENCY: "1"
-      OKX_DEMO_ENABLED: "true"
+      OKX_DEMO_ENABLED: "false"
       AUTO_TRADE: "false"
       LIVE_TRADING: "false"
       PAPER_PERSISTENCE_ENABLED: "false"
@@ -48,22 +44,15 @@ services:
       SUBMISSION_OUTBOX_ENABLED: "false"
       READINESS_REQUIRE_DATABASE: "true"
       READINESS_REQUIRE_REDIS: "true"
-    secrets:
-      - native_writer_dsn
-      - native_custody_dsn
-      - native_frame_dsn
-      - native_api_token
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      native_migrate:
-        condition: service_completed_successfully
+    secrets: !reset []
+    healthcheck: !override
+      disable: true
+    depends_on: !reset {}
     networks: [native_internal]
     restart: "no"
 
   native_migrate:
+    profiles: [historical55-owner-setup]
     image: ${CTCC_NATIVE_IMAGE_REF:?Pin exact reviewed source image}
     pull_policy: never
     entrypoint: ["/bin/sh", "-ec"]
@@ -71,7 +60,7 @@ services:
       - |-
         DATABASE_URL="$$(cat /run/secrets/native_owner_dsn)"
         export DATABASE_URL
-        exec alembic upgrade head
+        exec alembic upgrade 0055
     environment:
       ENVIRONMENT: production
       TRADING_MODE: analysis_only
@@ -87,7 +76,7 @@ services:
     restart: "no"
 
   native_role_provision:
-    profiles: [native-role-setup]
+    profiles: [historical55-owner-setup]
     image: ${CTCC_NATIVE_IMAGE_REF:?Pin exact reviewed source image}
     pull_policy: never
     entrypoint: ["python", "-B", "-m", "scripts.provision_native_roles_v1"]
@@ -111,6 +100,8 @@ services:
     restart: "no"
 
   postgres:
+    profiles: [historical55-owner-setup]
+    restart: "no"
     container_name: ctcc-native-${CTCC_NATIVE_DEPLOYMENT_ID}-postgres
     environment:
       POSTGRES_PASSWORD: !reset null
@@ -129,6 +120,8 @@ services:
     networks: [native_internal]
 
   redis:
+    profiles: [historical55-owner-setup]
+    restart: "no"
     container_name: ctcc-native-${CTCC_NATIVE_DEPLOYMENT_ID}-redis
     networks: [native_internal]
 
