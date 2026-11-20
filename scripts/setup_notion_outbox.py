@@ -24,6 +24,7 @@ from app.trade_evidence import storage
 from app.trade_evidence.notion_binding import (
     database_sources,
     external_secret_path,
+    private_file,
     read_notion_resource,
     save_private_token,
     verify_binding,
@@ -97,12 +98,14 @@ async def discover_destination(
 
 
 def write_local_record(path: Path, raw: bytes):
-    with path.open("xb") as stream:
-        stream.write(raw)
-        stream.flush()
-        os.fsync(stream.fileno())
-    if path.read_bytes() != raw:
-        raise ValueError("notion_setup_local_readback_failed")
+    # The parent may have permissive inherited ACLs. Use the same owner-only,
+    # CREATE_NEW and pinned-ancestor boundary as the token, for both destination
+    # and setup receipt. Late failure retains every already-created file.
+    with private_file(path, create=True) as fd:
+        storage._write_fd(fd, raw)
+        os.lseek(fd, 0, os.SEEK_SET)
+        if storage._read_fd(fd, max(1, len(raw))) != raw:
+            raise ValueError("notion_setup_local_readback_failed")
 
 
 async def configure(args):
