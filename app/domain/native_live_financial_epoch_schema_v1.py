@@ -133,7 +133,12 @@ DOWNGRADE_SQL = (
 
 
 def live_financial_collector_grant_sql_v1(name):
-    if type(name) is not str or re.fullmatch(r"[a-z_][a-z0-9_]{0,62}", name) is None:
+    if (
+        type(name) is not str
+        or re.fullmatch(r"[a-z_][a-z0-9_]{0,62}", name) is None
+        or name == "public"
+        or name.startswith("pg_")
+    ):
         raise ValueError("native_live_financial_role_refused")
     return (
         f'GRANT USAGE ON SCHEMA public TO "{name}"',

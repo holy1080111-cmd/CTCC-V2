@@ -222,6 +222,8 @@ def live_ledger_grant_sql_v1(writer: str) -> tuple[str, ...]:
     if (
         type(writer) is not str
         or re.fullmatch(r"[a-z_][a-z0-9_]{0,62}", writer) is None
+        or writer == "public"
+        or writer.startswith("pg_")
     ):
         raise ValueError("native_live_writer_identifier_refused")
     return (
