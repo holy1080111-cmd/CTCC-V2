@@ -11,8 +11,35 @@ from app.domain.source_primitives import canonical
 from app.trade_evidence import native_current58_reporting_v1 as current
 from app.trade_evidence import outbox, post_submit
 
+READBACK_STAGES = (
+    "lease",
+    "catalog",
+    "spool",
+    "lineage",
+    "projection",
+    "local_pair",
+    "metadata",
+    "proof",
+    "commit",
+)
+
+
+class Current58NotionProjectionRefused(ValueError):
+    def __init__(self, stage):
+        reports._need(stage in READBACK_STAGES)
+        self.stage = stage
+        super().__init__("current58_notion_projection_refused")
+
 
 async def read_current58_notion_projection_v1(binding, *, key):
+    stage = ["lease"]
+    try:
+        return await _read_current58_notion_projection_v1(binding, key=key, stage=stage)
+    except Exception:  # noqa: BLE001 -- fixed source-defined phase only, never SQL or private values.
+        raise Current58NotionProjectionRefused(stage[0]) from None
+
+
+async def _read_current58_notion_projection_v1(binding, *, key, stage):
     from app.trade_evidence import native_notion_delivery_source_v55 as source
 
     reports._need(key is source._REPOSITORY_KEY_V55)
@@ -40,9 +67,11 @@ async def read_current58_notion_projection_v1(binding, *, key):
             binding, key=reports._SOURCE_FACTORY_KEY_V55
         )
 
+    stage[0] = "catalog"
     async with current.current58_reporting_transaction_v1(
         cap, key=current._CONTEXT_KEY_V1
     ) as session:
+        stage[0] = "spool"
         rows = tuple(
             (
                 await session.scalars(
@@ -55,11 +84,13 @@ async def read_current58_notion_projection_v1(binding, *, key):
         check()
         reports._need(len(rows) == 1 and type(rows[0]) is Spool)
         spool = rows[0]
+        stage[0] = "lineage"
         outcome, report, policy = await reports._replay_native_terminal_spool(
             session, spool
         )
         check()
         reports._need(type(report) is reports.NativeTerminalReportDataV55)
+        stage[0] = "projection"
         projection = await session.get(
             Projection, spool.spool_id, populate_existing=True
         )
@@ -72,6 +103,7 @@ async def read_current58_notion_projection_v1(binding, *, key):
             and projection.queue_namespace == namespace
             and projection.verified_at >= spool.created_at
         )
+        stage[0] = "local_pair"
         view = outbox.validate_outbox_view(
             outbox.read_job(root, report_id, clock=outbox.actual_utc)
         )
@@ -81,8 +113,10 @@ async def read_current58_notion_projection_v1(binding, *, key):
             == post_submit._outbox_payload(report, spool.report_sha256)
             and view.envelope.policy == policy
         )
+        stage[0] = "metadata"
         metadata = await reports.lineage55._metadata(session)
         check()
+        stage[0] = "proof"
         proof = canonical(
             {
                 "schema_version": "ctcc.native_historical_notion_projection.v1",
@@ -104,5 +138,6 @@ async def read_current58_notion_projection_v1(binding, *, key):
             }
         )
         reports._need(0 < len(proof) <= 65536)
+        stage[0] = "commit"
     check()
     return reports.NativeNotionProjectionReadbackV55(proof, tuple(metadata), session)

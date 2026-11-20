@@ -152,13 +152,23 @@ async def check():
 def main():
     try:
         result = asyncio.run(check())
-    except Exception:  # noqa: BLE001 -- print only a fixed stage; private SQL/TLS details never escape.
+    except Exception as error:  # noqa: BLE001 -- closed stages only; private SQL/TLS details never escape.
+        from app.trade_evidence.native_notion_delivery_source_v55 import (
+            NativeNotionSourceUnavailable,
+        )
+
+        code = (
+            error.stage
+            if type(error) is NativeNotionSourceUnavailable
+            else "source_guard_or_child_assertion"
+        )
         print(
             json.dumps(
                 {
                     "schema": "ctcc.current58_reporting.actual_pg_child.v1",
                     "status": "FAIL",
                     "failed_stage": STAGE[0],
+                    "failed_source_phase": code,
                     "notion_writes": 0,
                     "order_writes": 0,
                 },

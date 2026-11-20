@@ -48,11 +48,26 @@ _ADAPTER_CALL_V55 = notion.NotionDeliveryAdapter.__call__
 class NativeNotionSourceUnavailable(ValueError):
     """Only a fixed code; no DSN, credential, SQL, account or path detail."""
 
+    def __init__(self, stage="admission"):
+        if stage not in (
+            "admission",
+            "destination",
+            "lease",
+            "factory",
+            "first_read",
+            "second_read",
+            "compare",
+            "dispose",
+            "prepared",
+            *current_projection.READBACK_STAGES,
+        ):
+            stage = "admission"
+        self.stage = stage
+        super().__init__("notion_native_historical_source_unavailable")
 
-def _deny():
-    raise NativeNotionSourceUnavailable(
-        "notion_native_historical_source_unavailable"
-    ) from None
+
+def _deny(stage="admission"):
+    raise NativeNotionSourceUnavailable(stage) from None
 
 
 class OwnedNativeNotionDeliverySourceV55:
@@ -251,6 +266,7 @@ async def acquire_native_notion_delivery_source_v55(
     engine = current_cap = None
     binding = object()
     kept = False
+    stage = "destination"
     try:
         destination = notion_binding.load_destination(
             Path(settings.notion_outbox_destination_file),
@@ -261,6 +277,7 @@ async def acquire_native_notion_delivery_source_v55(
         # This worker owns this real engine on its own event loop. The issuer
         # cannot accept an injected sessionmaker, DB connection or mocked row.
         is_current58 = settings.ctcc_native_demo_manual_lifespan_0056_v1 is True
+        stage = "lease"
         if is_current58:
             current_cap = await current58.acquire_current58_reporting_v1()
             selected, _ = current58.current58_reporting_context_v1(
@@ -282,6 +299,7 @@ async def acquire_native_notion_delivery_source_v55(
             factory = async_sessionmaker(
                 engine, class_=AsyncSession, expire_on_commit=False
             )
+        stage = "factory"
         state.update(
             engine=engine,
             factory=factory,
@@ -295,10 +313,13 @@ async def acquire_native_notion_delivery_source_v55(
                 if is_current58
                 else reports.read_native_notion_projection_v55
             )
+            stage = "first_read"
             first = await reader(binding, key=_REPOSITORY_KEY_V55)
             _check(state)
+            stage = "second_read"
             second = await reader(binding, key=_REPOSITORY_KEY_V55)
             _check(state)
+            stage = "compare"
             if (
                 type(first) is not reports.NativeNotionProjectionReadbackV55
                 or type(second) is not reports.NativeNotionProjectionReadbackV55
@@ -333,6 +354,7 @@ async def acquire_native_notion_delivery_source_v55(
                 phase="DISPOSING",
             )
             _ISSUING.pop(binding)
+            stage = "dispose"
             async with asyncio.timeout(5):
                 if current_cap is not None:
                     await current58.close_current58_reporting_v1(current_cap)
@@ -342,6 +364,7 @@ async def acquire_native_notion_delivery_source_v55(
                     await engine.dispose()
             engine = None
             _check(state)
+        stage = "prepared"
         state.pop("engine")
         state.pop("factory")
         state.pop("factory_pin")
@@ -355,9 +378,11 @@ async def acquire_native_notion_delivery_source_v55(
     except asyncio.CancelledError:
         raise
     except NativeNotionSourceUnavailable:
-        raise
+        _deny(stage)
+    except current_projection.Current58NotionProjectionRefused as error:
+        _deny(error.stage)
     except Exception:  # noqa: BLE001 -- Redact private source and database failures.
-        _deny()
+        _deny(stage)
     finally:
         _ISSUING.pop(binding, None)
         try:

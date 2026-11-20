@@ -71,3 +71,24 @@ def test_real_source_guard_rejects_a_replaced_db_reader(monkeypatch):
     )
     with pytest.raises(guard.NativeSourceClosureError):
         source._NATIVE_GUARD()
+
+
+@pytest.mark.parametrize(
+    "stage", ("metadata", "first_read", "dispose", "synthetic_private_dsn")
+)
+def test_source_diagnostic_phase_is_closed_and_never_echoes_private_text(stage):
+    error = source.NativeNotionSourceUnavailable(stage)
+    assert str(error) == "notion_native_historical_source_unavailable"
+    assert error.stage == ("admission" if stage == "synthetic_private_dsn" else stage)
+
+
+@pytest.mark.asyncio
+async def test_current58_reader_refuses_foreign_binding_with_safe_phase_before_sql():
+    from app.database.repositories import (
+        native_current58_notion_projection_v1 as current,
+    )
+
+    with pytest.raises(current.Current58NotionProjectionRefused) as failure:
+        await current.read_current58_notion_projection_v1(object(), key=object())
+    assert str(failure.value) == "current58_notion_projection_refused"
+    assert failure.value.stage == "lease"
