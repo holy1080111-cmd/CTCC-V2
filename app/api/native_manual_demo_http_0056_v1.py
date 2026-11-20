@@ -44,6 +44,7 @@ async def readiness(request: Request):
 _ROUTES = {
     "/api/demo-automation/status": "GET",
     "/api/demo-automation/history": "GET",
+    "/api/demo-automation/native/journal": "GET",
     "/api/demo-automation/stop": "POST",
     "/api/demo-automation/emergency-stop": "POST",
     "/api/demo-automation/native/arm-execute": "POST",

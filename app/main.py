@@ -53,7 +53,7 @@ async def lifespan(instance: FastAPI):
             head = await start_manual_demo_0056_v1(
                 settings, AsyncSessionFactory, safe_demo_automation
             )
-            if type(head) is not str or head not in ("0056", "0057"):
+            if type(head) is not str or head not in ("0056", "0057", "0058"):
                 raise RuntimeError("native_manual_demo_database_head_unconfirmed")
             instance.state.native_manual_demo_database_head = head
         except BaseException:

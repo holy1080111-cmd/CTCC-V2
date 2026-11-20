@@ -181,11 +181,15 @@ def lab(monkeypatch, profile=profiles.DB0056):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("profile", (profiles.DB0056, profiles.DB0057, profiles.DB0058))
 async def test_original_stop_then_genuine_recovery_and_independent_readback(
     monkeypatch,
+    profile,
 ):
-    config, factory, chosen, automation, seen, dispose, *_ = lab(monkeypatch)
-    await manual.start_manual_demo_0056_v1(config, factory, automation)
+    config, factory, chosen, automation, seen, dispose, *_ = lab(monkeypatch, profile)
+    assert await manual.start_manual_demo_0056_v1(
+        config, factory, automation
+    ) == profiles.head(profile)
     assert seen == ["roles", "account_stop", "genuine_recover", "roles"]
     dispose.assert_awaited_once_with(chosen)
 
