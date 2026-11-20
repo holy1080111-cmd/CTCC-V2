@@ -16,6 +16,7 @@ from pathlib import Path
 from types import ModuleType
 from weakref import WeakKeyDictionary
 
+from sqlalchemy import text
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
@@ -47,6 +48,8 @@ _SELECTING = {}
 _MAX_SELECTIONS = 16
 _SOURCE_ONLY_0056 = object()
 _CONTROLLED_0056 = object()
+_RUNTIME_CONTROLLED = object()
+_RUNTIME_HISTORY = object()
 _ROUTE_ARTIFACT_NAME = "configured_demo_official_route_evidence_v2.json"
 _ROUTE_ARTIFACT_SHA = "426a0fe117bc756e2c8c2c850f5658134966e8be785d1f2aca46e4ed0e0d7544"
 _ORIGIN = "https://openapi.okx.com"
@@ -318,7 +321,15 @@ async def select_configured_demo_identity_v2(
         _need(
             _source_use is None
             or (
-                (_source_use is _SOURCE_ONLY_0056 or _source_use is _CONTROLLED_0056)
+                any(
+                    _source_use is purpose
+                    for purpose in (
+                        _SOURCE_ONLY_0056,
+                        _CONTROLLED_0056,
+                        _RUNTIME_CONTROLLED,
+                        _RUNTIME_HISTORY,
+                    )
+                )
                 and not source_only_role_preflight
                 and not retain_read_transport
             )
@@ -327,6 +338,17 @@ async def select_configured_demo_identity_v2(
         server_pin = _server_settings_pin(settings)
         artifact = _route_artifact()
         factories = select_configured_native_demo_factories_v2()
+        if _source_use is _RUNTIME_CONTROLLED or _source_use is _RUNTIME_HISTORY:
+            head = await _observe_runtime_database_head_v2(factories)
+            if head == "0056":
+                _source_use = (
+                    _CONTROLLED_0056
+                    if _source_use is _RUNTIME_CONTROLLED
+                    else _SOURCE_ONLY_0056
+                )
+            else:
+                _source_use = None
+                source_only_role_preflight = True
         source_roles_0056 = None
         if _source_use is not None:
             source_roles_0056 = await _source_roles_before_get_0056(factories)
@@ -353,6 +375,11 @@ async def select_configured_demo_identity_v2(
                 and roles.get("execution_authority") is False,
                 "native_demo_source_only_pre_get_role_preflight_failed",
             )
+        _need(
+            _configured_inputs(private_client, read_session, instrument_ids) is settings
+            and _server_settings_pin(settings) == server_pin,
+            "native_demo_selector_settings_changed_before_get",
+        )
         prepare_demo_config_reader_v2()
         before = native_stamp()
         async with asyncio.timeout(5):
@@ -528,6 +555,69 @@ async def _source_roles_before_get_0056(factories):
     return roles
 
 
+async def _observe_runtime_database_head_v2(factories):
+    """Choose a strict verifier from actual SQL; this DATA grants no authority."""
+    _need(type(factories) is ConfiguredNativeDemoFactoriesV2)
+    writer = factories.writer_factory
+    _need(runtime._configured_factory(writer))
+    pin = history._factory_pin(writer)
+    async with asyncio.timeout(5), writer() as session, session.begin():
+        await session.execute(
+            text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+        )
+        rows = (
+            (
+                await session.execute(
+                    text("SELECT version_num FROM public.alembic_version")
+                )
+            )
+            .scalars()
+            .all()
+        )
+        _need(
+            len(rows) == 1
+            and type(rows[0]) is str
+            and rows[0] in ("0055", "0056")
+            and history._factory_pin(writer) == pin,
+            "native_demo_runtime_database_profile_refused",
+        )
+    return rows[0]
+
+
+async def _select_configured_demo_runtime_identity_v2(
+    *, private_client, read_session, instrument_ids, history_only=False
+):
+    """Select the exact original role profile before any signed account GET."""
+    _need(type(history_only) is bool)
+    return await select_configured_demo_identity_v2(
+        private_client=private_client,
+        read_session=read_session,
+        instrument_ids=instrument_ids,
+        _source_use=_RUNTIME_HISTORY if history_only else _RUNTIME_CONTROLLED,
+    )
+
+
+def _runtime_selection_database_head_v2(selection, *, history_only=False):
+    """Read the original same-task registered purpose, never a success flag."""
+    from app.core.native_role_witness_0056_v1 import RestrictedNativeRoles0056WitnessV1
+
+    _need(type(history_only) is bool)
+    entry = _record(selection)
+    roles = entry["source_roles_0056"]
+    if roles is None:
+        _need(entry["purpose_0056"] is None)
+        return "0055"
+    _need(
+        entry["purpose_0056"]
+        is (_SOURCE_ONLY_0056 if history_only else _CONTROLLED_0056)
+        and type(roles) is RestrictedNativeRoles0056WitnessV1
+        and roles.observation.database_head == "0056"
+        and roles.startup_admission is roles.execution_authority is False,
+        "native_demo_runtime_selector_purpose_refused",
+    )
+    return "0056"
+
+
 async def select_configured_demo_source_identity_0056_v1(
     *, private_client, read_session, instrument_ids
 ):
@@ -565,6 +655,26 @@ def _controlled_identity_0056(selection):
         "native_demo_selector_0056_controlled_identity_required",
     )
     return entry["record"], entry["factories"], entry["source_roles_0056"]
+
+
+def _replay_configured_demo_recovery_identity_v2(selection, *, key):
+    """Give the genuine recovery DATA owner its original selected role profile."""
+    source = sys.modules.get(
+        "app.trade_qualification.native_controlled_account_source_v6"
+    )
+    _need(
+        type(source) is ModuleType
+        and type(vars(source).get("_SOURCE_KEY_V6")) is object
+        and key is vars(source)["_SOURCE_KEY_V6"],
+        "native_demo_recovery_selector_key_required",
+    )
+    head = _runtime_selection_database_head_v2(selection)
+    if head == "0056":
+        record, factories, roles = _controlled_identity_0056(selection)
+        return record, (factories, roles)
+    entry = _record(selection)
+    _need(entry["source_roles_0056"] is entry["purpose_0056"] is None)
+    return entry["record"], None
 
 
 async def _dispose_failed_selection_factories_v2(factories):

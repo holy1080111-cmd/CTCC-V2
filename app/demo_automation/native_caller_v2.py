@@ -295,6 +295,7 @@ def _check_pending_owned_arm_0056(state, request, plan, owner):
     _check_request_v2(request, plan)
     _need(
         state["action"] == "arm_execute"
+        and state["database_head"] == "0056"
         and state.get("pending_arm_0056") is request
         and state.get("arm_plan_0056") is plan
         and state.get("controller") is owner
@@ -384,11 +385,19 @@ async def _cold_history(service, state, instrument_id):
     client = OkxDemoPrivateRestClient(settings=state["settings"])
     state["cold_client"] = client
     with client.pinned_read_session() as lease:
-        selection = await selectors.select_configured_demo_identity_v2(
-            private_client=client, read_session=lease, instrument_ids=(instrument_id,)
+        selection = await selectors._select_configured_demo_runtime_identity_v2(
+            private_client=client,
+            read_session=lease,
+            instrument_ids=(instrument_id,),
+            history_only=True,
         )
         state["cold_selection"] = selection
         _ready(service, state)
+        head = selectors._runtime_selection_database_head_v2(
+            selection, history_only=True
+        )
+        _need("database_head" not in state or state["database_head"] == head)
+        state["database_head"] = head
         scope = selection.scope_config
         factories = selection.factories
         state["cold_factories"] = factories
@@ -407,24 +416,79 @@ async def _cold_history(service, state, instrument_id):
             )
         _ready(service, state)
         if genesis is None:
-            owner = await history.acquire_native_history_current_source_v2(
-                read_session=lease,
-                private_client=client,
-                scope_config=scope,
-                session_factory=factories.writer_factory,
-                custody_session_factory=factories.custody_factory,
-                raw_root=state["roots"]["cold-history-raw"],
-                companion_root=state["roots"]["cold-history-companion"],
-            )
-            state["cold_owner"] = owner
-            _ready(service, state)
-            history._release_financial_assembly_v1(owner, key=native._HOOK_KEY)
-            state["cold_owner"] = None
+            if head == "0056":
+                await _bootstrap_cold_history_0056(
+                    service, state, selection, lease, client
+                )
+            else:
+                owner = await history.acquire_native_history_current_source_v2(
+                    read_session=lease,
+                    private_client=client,
+                    scope_config=scope,
+                    session_factory=factories.writer_factory,
+                    custody_session_factory=factories.custody_factory,
+                    raw_root=state["roots"]["cold-history-raw"],
+                    companion_root=state["roots"]["cold-history-companion"],
+                )
+                state["cold_owner"] = owner
+                _ready(service, state)
+                history._release_financial_assembly_v1(owner, key=native._HOOK_KEY)
+                state["cold_owner"] = None
         else:
             _need(type(genesis) is int and genesis == 1)
         await _dispose_selection(selection, factories)
         state["cold_selection"] = None
     _ready(service, state)
+
+
+async def _bootstrap_cold_history_0056(service, state, selection, lease, client):
+    """Only the genuine stopped account may acquire original sequence one."""
+    from app.demo_automation import native_current_source_0056_v1 as source
+    from app.demo_automation import native_server_selectors_v2 as selectors
+    from app.demo_automation.native_source_only_v1 import _history_bundle_hash
+    from app.trade_qualification import account_history_source_v1 as history
+    from app.trade_qualification import native_demo_control_owner_v2 as facade
+    from app.trade_qualification.demo_control import ControlScope
+    from app.trade_qualification.reservations import LedgerScope
+
+    _need(
+        selectors._runtime_selection_database_head_v2(selection, history_only=True)
+        == "0056"
+    )
+    factories, roles = selection.factories, selection.source_roles_0056
+    scope = ControlScope("demo", selection.scope_config.expected_uid)
+    before = await source._observe_control(factories, scope, roles)
+    _ready(service, state)
+    _need(before.control.state.emergency_stop is True)
+    digest = await history.acquire_configured_history_current_source_0056_v1(
+        selection=selection,
+        read_session=lease,
+        private_client=client,
+        raw_root=state["roots"]["cold-history-raw"],
+        companion_root=state["roots"]["cold-history-companion"],
+        bootstrap_only=True,
+    )
+    _ready(service, state)
+    after = await source._observe_control(factories, scope, roles)
+    _ready(service, state)
+    source._readback_control(before, after)
+    measured = await facade._read_genesis(
+        factories.writer_factory,
+        LedgerScope(account_id=scope.account_id, settlement_currency="USDT"),
+    )
+    _ready(service, state)
+    final = await source._observe_control(factories, scope, roles)
+    _ready(service, state)
+    source._readback_control(after, final)
+    _need(
+        selectors._runtime_selection_database_head_v2(selection, history_only=True)
+        == "0056"
+        and selection.factories is factories
+        and selection.source_roles_0056 is roles
+        and _history_bundle_hash(state["roots"]["cold-history-raw"]) == digest
+    )
+    lease.verify_current()
+    state["cold_genesis_sha256"] = measured.source_sha256
 
 
 def _handoff_roots(paths):
@@ -648,7 +712,7 @@ async def perform_native_demo_action_v2(service, request, *, operator_token):
             state["client"] = client
             # This is a NEW lease: cold-history credentials/session are not reused.
             with client.pinned_read_session() as lease:
-                selection = await selectors.select_configured_demo_identity_v2(
+                selection = await selectors._select_configured_demo_runtime_identity_v2(
                     private_client=client,
                     read_session=lease,
                     instrument_ids=(instrument,),
@@ -657,8 +721,17 @@ async def perform_native_demo_action_v2(service, request, *, operator_token):
                 factories = selection.factories
                 state["factories"] = factories
                 _ready(service, state)
+                head = selectors._runtime_selection_database_head_v2(selection)
+                _need(
+                    head == state["database_head"],
+                    "native_demo_database_profile_changed",
+                )
                 prepare_started = utc_from_ns(native_stamp()["utc_ns"])
-                owner = await facade.prepare_selected_demo_control_owner_v3(selection)
+                owner = await (
+                    facade.prepare_selected_demo_control_owner_0056(selection)
+                    if head == "0056"
+                    else facade.prepare_selected_demo_control_owner_v3(selection)
+                )
                 state["controller"] = owner
                 _ready(service, state)
                 if action == "configure_leverage":
@@ -680,7 +753,18 @@ async def perform_native_demo_action_v2(service, request, *, operator_token):
                         prepare_started
                         + timedelta(seconds=demo_control.MAX_ARM_SECONDS),
                     )
-                    await owner.request_arm(expires_at=expires_at)
+                    if head == "0056":
+                        state["pending_arm_0056"] = request
+                        state["arm_plan_0056"] = selected
+                        try:
+                            await facade._request_owned_arm_0056(
+                                owner, state, request, selected, expires_at=expires_at
+                            )
+                        finally:
+                            state.pop("pending_arm_0056", None)
+                            state.pop("arm_plan_0056", None)
+                    else:
+                        await owner.request_arm(expires_at=expires_at)
                     _ready(service, state)
                     source_roots = controlled.ControlledAccountRootsV6(
                         state["roots"]["current-history-raw"],

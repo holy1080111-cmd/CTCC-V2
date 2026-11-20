@@ -64,6 +64,7 @@ async def test_pending_arm_requires_original_exact_confirmation_and_request(
         "settings": service.settings,
         "task": asyncio.current_task(),
         "action": "arm_execute",
+        "database_head": "0056",
         "pending_arm_0056": request,
         "arm_plan_0056": plan,
         "controller": cap,
