@@ -10,6 +10,57 @@ The tool is under final integration. No final completion or Micro Live readiness
 flag is set. Main remains`d3f206a59888ef3d72732fa30deaa8278ac72cc5`;
 no final release has been made.
 
+## Latest verified integration snapshot
+
+The usable-tool delivery remains incomplete. The installed legacy application
+and original Docker database have not been started or upgraded. Gate3 and actual
+trading acceptance stay deferred, never green checkboxes.
+
+On exact source`4f956520dfb5ea94ffc1af766a6439ae76f8b24b`, the genuine
+CI-matching Sep29 CPython3.12.14 runtime with the unchanged41 locked verifier
+dependencies passed separate Windows groups of121,202 and3 cases, each with
+zero failures/errors/skips. Groups overlap and must not be summed as unique
+regression coverage. Root receipt SHA256:
+`80a6b3e14db9fe1c0ee2f142e21e53f10c968b75a08cd43068c0d0b98bfa29f0`.
+The three physical-path cases use real local TCP/TLS/vendor code but explicitly
+synthetic source, account, credential, configuration and SQL admission. They
+prove one complete synthetic request/ACK and stale-spec refusal, not configured
+Demo/Live acceptance. Their4.33645025-second enqueue observation omits the
+genuine source-guard cost and remains a lower bound. Reducing repeated synchronous
+constructor/getter work remains under review; every actual write retains a
+fresh complete authority check and the original freshness limits.
+
+The [original complete b40f7e7 run](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/44822336458)
+finished FAIL. Original archived verification accepts its five PostgreSQL
+components with1140 passes/zero skips, and only Windows shard5 with3627 passes
+and11 exact approved skips. The four failed unit shards remain part of that
+result. Their stale source-roster and liveness-version assertions have scoped
+repairs; a fresh final-source full union is still required. The original-readback
+index SHA256 is
+`343aed726338b1debe2ac17a0eb9d25ef403d959c0b625182622f777132e0200`.
+
+The retained original VM has a complete private cold copy. The selected PG17
+volume has1579 separately copied and fully hashed/read-back regular files
+and28 directories,136846581 bytes. A later read-only control-file observation
+reported `shut down`, with the file identity/mtime/hash unchanged. Only the
+independent validation WSL metadata tool was started; no PostgreSQL server,
+Docker daemon, legacy API, SQL or migration was started by these observations.
+This is not a logical backup/restore, actual Alembic-head, schema or flat-account
+acceptance. Raw private files are excluded from Git, reports and release bundles.
+Preservation receipt SHA256:
+`a8e99ab2e76ab6e5418761723b0c7d0e53ab527c9cf1688f5e7c34c691d5155c`;
+preliminary control observation:
+`555f4cbeaa269ff3c8e48d99179b6d76441f4c14b5d5a2f34ba3298c0d40c7c7`.
+
+The canonical55→56 owner command now requires reviewed V2 inputs, three exact
+restricted role identities, real catalog admission, all-old-row/null/layout/OID/
+sequence preservation, savepoint rehearsal/verified rollback and independent
+postcommit readback. Its new actual PostgreSQL cases are authored but their
+matching-source execution is not yet accepted. The complete retained17 schema
+baseline and17→55 continuation are still being implemented; a fresh empty58
+database cannot replace the retained ledger. The genuine desktop picker,
+reopen/stop acceptance also remains pending while the Windows session is locked.
+
 ## Operator tools
 
 | Tool | Implementation and boundary |
