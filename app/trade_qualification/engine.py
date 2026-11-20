@@ -42,12 +42,17 @@ from app.trade_qualification.portfolio import (
     ContractRiskSpec,
     DemoRiskAuthority,
     EvidenceStamp,
+    LiveEvidenceStamp,
+    LivePortfolioRiskSnapshot,
+    LiveRiskAuthority,
     PendingReservation,
     PortfolioRiskPolicy,
     PortfolioRiskResult,
     PortfolioRiskSnapshot,
     PositionExposure,
     RealizedOutcome,
+    RiskAssessmentProfileV1,
+    evaluate_live_portfolio,
     evaluate_portfolio,
 )
 from app.trade_qualification.quote_collector import (
@@ -100,6 +105,14 @@ class PortfolioInputs(QualificationModel):
     authority: DemoRiskAuthority | None
 
 
+class LivePortfolioInputs(QualificationModel):
+    requested_contracts: Price
+    requested_leverage: int = Field(ge=1, le=125)
+    instrument: ContractRiskSpec | None
+    account: LivePortfolioRiskSnapshot | None
+    authority: LiveRiskAuthority | None
+
+
 def _preflight(value, depth=0, budget=None):
     """Exact declared models and bounded raw fields, before any serializer."""
     if budget is None:
@@ -112,7 +125,9 @@ def _preflight(value, depth=0, budget=None):
             ProtectionPolicy,
             PreEvidencePolicy,
             PortfolioInputs,
+            LivePortfolioInputs,
             PreEvidenceRun,
+            LivePreEvidenceRun,
             EconomicsPolicy,
             EconomicsResult,
             PortfolioRiskPolicy,
@@ -121,6 +136,9 @@ def _preflight(value, depth=0, budget=None):
             PortfolioRiskSnapshot,
             DemoRiskAuthority,
             EvidenceStamp,
+            LiveEvidenceStamp,
+            LivePortfolioRiskSnapshot,
+            LiveRiskAuthority,
             PositionExposure,
             PendingReservation,
             RealizedOutcome,
@@ -409,7 +427,11 @@ class PreEvidenceRun(QualificationModel):
         return _hash(_copy(self, PreEvidenceRun))
 
 
-def evaluate_pre_evidence(
+class LivePreEvidenceRun(PreEvidenceRun):
+    risk_inputs: LivePortfolioInputs
+
+
+def _evaluate_pre_evidence(
     market: MarketSnapshot,
     *,
     intent: QualificationIntent,
@@ -419,10 +441,16 @@ def evaluate_pre_evidence(
     risk_inputs: PortfolioInputs,
     consumed_event_keys: frozenset[str],
     evaluated_at: datetime,
+    _profile=RiskAssessmentProfileV1.DEMO,
 ) -> PreEvidenceRun:
     """Re-run original G1--G7 inputs, then stop at the first failed G8--G11 gate."""
+    if type(_profile) is not RiskAssessmentProfileV1:
+        raise ValueError("pre_evidence_profile_invalid")
+    live = _profile is RiskAssessmentProfileV1.LIVE
+    inputs_type = LivePortfolioInputs if live else PortfolioInputs
+    run_type = LivePreEvidenceRun if live else PreEvidenceRun
     policy = _copy(policy, PreEvidencePolicy)
-    risk_inputs = _copy(risk_inputs, PortfolioInputs)
+    risk_inputs = _copy(risk_inputs, inputs_type)
     prefix = evaluate_qualification_prefix(
         market,
         intent=intent,
@@ -438,7 +466,7 @@ def evaluate_pre_evidence(
 
     def finish():
         values["gates"] = tuple(gates)
-        return PreEvidenceRun.model_validate(
+        return run_type.model_validate(
             _plain(
                 {
                     "prefix": prefix,
@@ -572,7 +600,8 @@ def evaluate_pre_evidence(
             },
         ):
             return finish()
-        risk = evaluate_portfolio(
+        risk_evaluator = evaluate_live_portfolio if live else evaluate_portfolio
+        risk = risk_evaluator(
             report_id=prefix.intent.report_id,
             instrument_id=prefix.intent.instrument_id,
             direction=prefix.intent.direction,
@@ -606,6 +635,43 @@ def evaluate_pre_evidence(
             },
         )
         return finish()
+
+
+def evaluate_pre_evidence(
+    market: MarketSnapshot,
+    *,
+    intent: QualificationIntent,
+    quote: CollectedQuote | None,
+    reference: WSReferenceObservation | None,
+    policy: PreEvidencePolicy,
+    risk_inputs: PortfolioInputs,
+    consumed_event_keys: frozenset[str],
+    evaluated_at: datetime,
+) -> PreEvidenceRun:
+    return _evaluate_pre_evidence(**locals())
+
+
+def evaluate_live_pre_evidence(
+    market: MarketSnapshot,
+    *,
+    intent: QualificationIntent,
+    quote: CollectedQuote | None,
+    reference: WSReferenceObservation | None,
+    policy: PreEvidencePolicy,
+    risk_inputs: LivePortfolioInputs,
+    consumed_event_keys: frozenset[str],
+    evaluated_at: datetime,
+) -> LivePreEvidenceRun:
+    """Recompute the same gates using exact Live claims; never issue a permit."""
+    return _evaluate_pre_evidence(**locals(), _profile=RiskAssessmentProfileV1.LIVE)
+
+
+def verify_live_pre_evidence(run, market, **original_inputs) -> LivePreEvidenceRun:
+    checked = _copy(run, LivePreEvidenceRun)
+    replayed = evaluate_live_pre_evidence(market, **original_inputs)
+    if checked != replayed:
+        raise ValueError("live_pre_evidence_replay_mismatch")
+    return replayed
 
 
 def verify_pre_evidence(run, market, **original_inputs) -> PreEvidenceRun:

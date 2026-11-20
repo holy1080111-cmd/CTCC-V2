@@ -15,6 +15,7 @@ import hashlib
 import json
 from datetime import UTC, datetime, timedelta
 from decimal import Context, Decimal, DecimalException, localcontext
+from enum import Enum
 from fractions import Fraction
 from typing import Annotated, Literal
 from weakref import WeakKeyDictionary
@@ -66,6 +67,12 @@ class EvidenceStamp(ObservedSource):
     # Demo and Live can share an account identifier; a complete Live receipt
     # must never become Demo account evidence merely because the guard is Demo.
     environment: Literal["demo"]
+    account_id: Text
+    complete: bool
+
+
+class LiveEvidenceStamp(ObservedSource):
+    environment: Literal["live"]
     account_id: Text
     complete: bool
 
@@ -185,6 +192,37 @@ class PortfolioRiskPolicy(QualificationModel):
     max_leverage: Leverage
 
     _utc_drawdown = field_validator("drawdown_window_started_at")(_utc)
+
+
+class LivePortfolioRiskSnapshot(PortfolioRiskSnapshot):
+    """Live claims keep their own exact stamps; no Demo re-labelling."""
+
+    balance_stamp: LiveEvidenceStamp
+    positions_stamp: LiveEvidenceStamp
+    history_stamp: LiveEvidenceStamp
+    reservations_stamp: LiveEvidenceStamp
+
+
+class LiveRiskAuthority(QualificationModel):
+    """Pure operator-control claims, never an Arm or submission capability."""
+
+    stamp: LiveEvidenceStamp
+    environment: Literal["live"]
+    live_enabled: bool
+    armed: bool
+    order_writes_allowed: bool
+    one_shot: bool
+    emergency_stop: bool
+    demo_enabled: bool
+    automation_enabled: bool
+    simulated_trading_header: None
+    credential_session_sha256: Digest
+    arm_id: Digest
+
+
+class RiskAssessmentProfileV1(Enum):
+    DEMO = "demo"
+    LIVE = "live"
 
 
 class DemoRiskAuthority(QualificationModel):
@@ -337,6 +375,7 @@ def _evaluate_portfolio(
     current_time: datetime,
     _financial=None,
     _finite=None,
+    _profile=RiskAssessmentProfileV1.DEMO,
 ) -> PortfolioRiskResult:
     """Assess fixed linear-contract risk against fresh complete scoped evidence.
 
@@ -394,7 +433,12 @@ def _evaluate_portfolio(
         outputs.update(requested_contracts=contracts, requested_leverage=leverage)
     except _INVALID:
         causes.append("candidate_invalid")
-    account_type = PortfolioRiskSnapshot
+    if type(_profile) is not RiskAssessmentProfileV1:
+        causes.append("risk_assessment_profile_invalid")
+        return finish()
+    live = _profile is RiskAssessmentProfileV1.LIVE
+    account_type = LivePortfolioRiskSnapshot if live else PortfolioRiskSnapshot
+    authority_type = LiveRiskAuthority if live else DemoRiskAuthority
     if _finite is not None:
         from app.trade_qualification.account_ledger_claims_v2 import (
             FiniteAccountLedgerClaimsV1,
@@ -402,7 +446,8 @@ def _evaluate_portfolio(
         )
 
         if (
-            type(_finite) is not FiniteAccountLedgerClaimsV1
+            live
+            or type(_finite) is not FiniteAccountLedgerClaimsV1
             or _financial is None
             or account is not _finite.account
             or policy is not _finite.risk_policy
@@ -416,7 +461,7 @@ def _evaluate_portfolio(
         ("instrument", instrument, ContractRiskSpec),
         ("account", account, account_type),
         ("policy", policy, PortfolioRiskPolicy),
-        ("authority", authority, DemoRiskAuthority),
+        ("authority", authority, authority_type),
     ):
         if value is None:
             causes.append(f"{name}_missing")
@@ -448,6 +493,8 @@ def _evaluate_portfolio(
     )
     if any(stamp.account_id != state.account_id for stamp in stamps):
         causes.append("scope_mismatch")
+    if any(stamp.environment != _profile.value for stamp in stamps):
+        causes.append("environment_mismatch")
     if any(not stamp.complete for stamp in stamps):
         causes.append("evidence_incomplete")
     max_age = timedelta(seconds=limits.max_age_seconds)
@@ -470,7 +517,18 @@ def _evaluate_portfolio(
         causes.append("instrument_contract_unsupported")
     if spec.min_contracts > spec.max_contracts:
         causes.append("instrument_limits_invalid")
-    if (
+    if live and (
+        guard.environment != "live"
+        or not guard.live_enabled
+        or not guard.armed
+        or not guard.order_writes_allowed
+        or not guard.one_shot
+        or guard.demo_enabled
+        or guard.automation_enabled
+        or guard.simulated_trading_header is not None
+    ):
+        causes.append("live_authority_denied")
+    if not live and (
         guard.environment != "demo"
         or not guard.demo_enabled
         or not guard.armed
@@ -810,6 +868,26 @@ def evaluate_portfolio(
 ) -> PortfolioRiskResult:
     """Legacy source-claim diagnostic; never an owned account issuer."""
     return _evaluate_portfolio(**locals())
+
+
+def evaluate_live_portfolio(
+    *,
+    report_id: str,
+    instrument_id: str,
+    direction: Literal["long", "short"],
+    candidate_entry: Decimal,
+    stop_loss: Decimal,
+    round_trip_cost_per_base: Decimal,
+    requested_contracts: Decimal,
+    requested_leverage: int,
+    instrument: ContractRiskSpec | None,
+    account: LivePortfolioRiskSnapshot | None,
+    policy: PortfolioRiskPolicy | None,
+    authority: LiveRiskAuthority | None,
+    current_time: datetime,
+) -> PortfolioRiskResult:
+    """Use identical risk arithmetic for exact Live claims; grant no authority."""
+    return _evaluate_portfolio(**locals(), _profile=RiskAssessmentProfileV1.LIVE)
 
 
 def evaluate_portfolio_with_risk_windows_v2(

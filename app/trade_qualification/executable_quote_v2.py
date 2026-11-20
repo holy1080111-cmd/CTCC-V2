@@ -209,15 +209,25 @@ def _component(value, instrument, start, completed, now, *, role):
     }
 
 
-def _inspect(value, current_time, expected_policy_sha256):
-    _exact(value, ExecutableQuoteV2)
+def _inspect_profile(
+    value,
+    current_time,
+    expected_policy_sha256,
+    *,
+    quote_type,
+    quote_schema,
+    policy_sha256,
+    environments,
+):
+    """Shared pure component checks; the exact typed entry fixes the profile."""
+    _exact(value, quote_type)
     if (
         type(expected_policy_sha256) is not str
-        or expected_policy_sha256 != POLICY_SHA256
+        or expected_policy_sha256 != policy_sha256
     ):
         _deny("quote_profile_identity_mismatch")
     for name, expected in (
-        ("schema_version", "ctcc.executable_quote.v2"),
+        ("schema_version", quote_schema),
         ("region", "global"),
         ("source_authenticity_verified", False),
         ("execution_authority", False),
@@ -232,7 +242,7 @@ def _inspect(value, current_time, expected_policy_sha256):
         or type(value.instrument_id) is not str
         or not _INSTRUMENT.fullmatch(value.instrument_id)
         or type(value.environment) is not str
-        or value.environment not in ("analysis_only", "demo")
+        or value.environment not in environments
     ):
         _deny("quote_scope_invalid")
     now, start, completed = map(
@@ -283,7 +293,7 @@ def _inspect(value, current_time, expected_policy_sha256):
         "instrument_id": value.instrument_id,
         "environment": value.environment,
         "region": value.region,
-        "policy_sha256": POLICY_SHA256,
+        "policy_sha256": policy_sha256,
         "capture_started_at": start.isoformat(),
         "capture_completed_at": completed.isoformat(),
         "ticker": ticker,
@@ -305,6 +315,18 @@ def _inspect(value, current_time, expected_policy_sha256):
         },
     }
     return now, document
+
+
+def _inspect(value, current_time, expected_policy_sha256):
+    return _inspect_profile(
+        value,
+        current_time,
+        expected_policy_sha256,
+        quote_type=ExecutableQuoteV2,
+        quote_schema="ctcc.executable_quote.v2",
+        policy_sha256=POLICY_SHA256,
+        environments=("analysis_only", "demo"),
+    )
 
 
 def inspect_executable_quote_v2(
