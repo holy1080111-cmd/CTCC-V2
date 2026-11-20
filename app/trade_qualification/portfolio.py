@@ -375,6 +375,7 @@ def _evaluate_portfolio(
     current_time: datetime,
     _financial=None,
     _finite=None,
+    _live_finite=None,
     _profile=RiskAssessmentProfileV1.DEMO,
 ) -> PortfolioRiskResult:
     """Assess fixed linear-contract risk against fresh complete scoped evidence.
@@ -439,6 +440,11 @@ def _evaluate_portfolio(
     live = _profile is RiskAssessmentProfileV1.LIVE
     account_type = LivePortfolioRiskSnapshot if live else PortfolioRiskSnapshot
     authority_type = LiveRiskAuthority if live else DemoRiskAuthority
+    finite_claims = _finite if _finite is not None else _live_finite
+    finite = finite_claims is not None
+    if _finite is not None and _live_finite is not None:
+        causes.append("finite_financial_claim_binding_invalid")
+        return finish()
     if _finite is not None:
         from app.trade_qualification.account_ledger_claims_v2 import (
             FiniteAccountLedgerClaimsV1,
@@ -456,6 +462,37 @@ def _evaluate_portfolio(
             causes.append("finite_financial_claim_binding_invalid")
             return finish()
         account_type = FinitePortfolioSnapshotV1
+    if _live_finite is not None:
+        from app.okx_live.finite_portfolio_v1 import (
+            LiveFinitePortfolioClaimsV1,
+            LiveFinitePortfolioSnapshotV1,
+            _checked_live_finite_evaluation_v1,
+        )
+
+        if (
+            not live
+            or type(_live_finite) is not LiveFinitePortfolioClaimsV1
+            or _financial is None
+            or account is not _live_finite.account
+            or policy is not _live_finite.risk_policy
+            or authority is not _live_finite.authority
+        ):
+            causes.append("live_finite_financial_claim_binding_invalid")
+            return finish()
+        try:
+            replayed_financial = _checked_live_finite_evaluation_v1(
+                _live_finite, current_time=now
+            )
+        except _INVALID:
+            causes.append("live_finite_financial_claim_binding_invalid")
+            return finish()
+        if (
+            type(_financial) is not type(replayed_financial)
+            or _financial != replayed_financial
+        ):
+            causes.append("live_finite_financial_evaluation_changed")
+            return finish()
+        account_type = LiveFinitePortfolioSnapshotV1
     checked = {}
     for name, value, expected in (
         ("instrument", instrument, ContractRiskSpec),
@@ -566,7 +603,7 @@ def _evaluate_portfolio(
         )
     if any(len(groups) != 1 for groups in groups_by_instrument.values()):
         causes.append("correlation_identity_mismatch")
-    if _finite is None:
+    if not finite:
         if (
             state.available_margin > state.equity
             or state.peak_equity < state.equity
@@ -577,6 +614,23 @@ def _evaluate_portfolio(
             causes.append("peak_equity_invalid")
         if state.peak_window_started_at != limits.drawdown_window_started_at:
             causes.append("drawdown_window_mismatch")
+    elif _live_finite is not None:
+        f = _live_finite.financial
+        if (
+            state.available_margin > state.equity
+            or _financial.measured_peak is None
+            or _financial.measured_current is None
+            or _financial.measured_peak < _financial.measured_current
+            or _financial.measured_current != Fraction(state.equity)
+            or f.epoch_started_at != limits.drawdown_window_started_at
+            or f.measured_peak_observed_at is None
+            or not f.epoch_started_at
+            <= f.measured_peak_observed_at
+            <= f.source_as_of_at
+            <= f.available_at
+            <= now
+        ):
+            causes.append("live_finite_measured_hwm_invalid")
     elif (
         state.available_margin > state.equity
         or _financial.measured_peak is None
@@ -601,7 +655,7 @@ def _evaluate_portfolio(
         causes.append("history_coverage_incomplete")
     # Finite source windows carry their original closed-run population separately;
     # no legacy outcome rows or initial streak seed are fabricated for that type.
-    rows = state.loss_history if _finite is None else ()
+    rows = state.loss_history if not finite else ()
     if len({row.outcome_id for row in rows}) != len(rows):
         causes.append("history_invalid")
     for index, row in enumerate(rows):
@@ -666,7 +720,7 @@ def _evaluate_portfolio(
         weekly_loss = None if weekly_pnl is None else max(Fraction(0), -weekly_pnl)
         drawdown = (
             (Fraction(state.peak_equity) - equity) / Fraction(state.peak_equity)
-            if _finite is None
+            if not finite
             else (
                 (_financial.measured_peak - _financial.measured_current)
                 / _financial.measured_peak
@@ -703,7 +757,7 @@ def _evaluate_portfolio(
             causes.append("quantity_limit_exceeded")
         if leverage > min(spec.max_leverage, limits.max_leverage):
             causes.append("leverage_limit_exceeded")
-        streak = state.loss_streak_at_history_start if _finite is None else None
+        streak = state.loss_streak_at_history_start if not finite else None
         if _financial is None:
             for row in rows:
                 if row.realized_pnl < 0:
@@ -795,7 +849,7 @@ def _evaluate_portfolio(
                     used
                     > (
                         MAX_SINGLE_POSITION_MARGIN_USDT
-                        if _finite is None
+                        if not finite
                         else min(
                             MAX_SINGLE_POSITION_MARGIN_USDT,
                             _financial.position_margin_bucket,
