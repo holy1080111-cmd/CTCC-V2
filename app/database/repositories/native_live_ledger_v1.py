@@ -19,6 +19,9 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 from sqlalchemy.pool import NullPool
 
 from app.domain import native_live_ledger_schema_v1 as schema
+from app.domain.native_live_inherited_acl_v1 import (
+    require_inherited_live_data_helpers_v1,
+)
 from app.domain.native_live_intent_v1 import (
     checked_live_intent_data_v1,
     exact_live_intent_document_v1,
@@ -107,7 +110,7 @@ _PROFILE = text("""
 _ACCESS = text("""
  SELECT c.relname::text,p.right FROM pg_catalog.pg_class c
  JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
- CROSS JOIN (VALUES ('SELECT'),('INSERT'),('UPDATE'),('DELETE'),('TRUNCATE'),('REFERENCES'),('TRIGGER')) p(right)
+ CROSS JOIN (VALUES ('SELECT'),('INSERT'),('UPDATE'),('DELETE'),('TRUNCATE'),('REFERENCES'),('TRIGGER'),('MAINTAIN')) p(right)
  WHERE n.nspname='public' AND c.relkind IN ('r','p','v','m','f')
  AND pg_catalog.has_table_privilege(current_user,c.oid,p.right)
  ORDER BY c.relname,p.right
@@ -151,10 +154,16 @@ async def _profile(session, pins):
     expected = {(table, "SELECT") for table in schema.TABLES} | {
         (table, "INSERT") for table in schema.TABLES[1:]
     }
+    inherited_helpers = await require_inherited_live_data_helpers_v1(
+        session, owner_oid=pins.owner_oid
+    )
     _need(
         observed == expected
         and (await session.execute(_ROUTINES)).all()
-        == [("native_live_control_fence_v1",)]
+        == [
+            (name,)
+            for name in sorted((*schema.EXECUTABLE_FUNCTIONS, *inherited_helpers))
+        ]
     )
     expected_functions = {}
     for statement in schema.UPGRADE_SQL:
@@ -162,7 +171,7 @@ async def _profile(session, pins):
             name = statement.split("public.", 1)[1].split("(", 1)[0]
             expected_functions[name] = (
                 sha(statement.split("$body$")[1].encode("utf8")),
-                name == "native_live_control_fence_v1",
+                name in schema.EXECUTABLE_FUNCTIONS,
             )
     functions = (
         await session.execute(

@@ -17,6 +17,11 @@ TABLES = (
     "native_live_transitions_v1",
 )
 HEAD = "0058"
+EXECUTABLE_FUNCTIONS = (
+    "native_live_control_fence_v1",
+    "native_live_disarm_v1",
+    "native_live_inhibit_v1",
+)
 
 UPGRADE_SQL = (
     """CREATE TABLE public.native_live_controls_v1 (
@@ -102,6 +107,31 @@ UPGRADE_SQL = (
  RETURN NEXT c;
  END $body$""",
     """REVOKE ALL ON FUNCTION public.native_live_control_fence_v1(text,text) FROM PUBLIC""",
+    """CREATE FUNCTION public.native_live_inhibit_v1(e text,u text) RETURNS bigint
+ LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+ DECLARE c public.native_live_controls_v1; r bigint;
+ BEGIN
+ SELECT * INTO c FROM public.native_live_control_fence_v1(e,u);
+ IF c.account_uid IS NULL THEN RAISE EXCEPTION 'native_live_inhibit_denied'; END IF;
+ UPDATE public.native_live_controls_v1 SET emergency_stop=true,armed=false,arm_id=NULL,arm_expires_at=NULL,
+ revision=revision+1,updated_at=clock_timestamp() WHERE environment=e AND account_uid=u RETURNING revision INTO r;
+ RETURN r;
+ END $body$""",
+    """REVOKE ALL ON FUNCTION public.native_live_inhibit_v1(text,text) FROM PUBLIC""",
+    """CREATE FUNCTION public.native_live_disarm_v1(e text,u text,a text) RETURNS bigint
+ LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+ DECLARE c public.native_live_controls_v1; r bigint;
+ BEGIN
+ SELECT * INTO c FROM public.native_live_control_fence_v1(e,u);
+ IF c.account_uid IS NULL OR a IS NULL OR a !~ '^[a-f0-9]{64}$'
+ THEN RAISE EXCEPTION 'native_live_disarm_denied'; END IF;
+ IF c.arm_id IS NULL THEN RETURN c.revision; END IF;
+ IF c.arm_id IS DISTINCT FROM a THEN RAISE EXCEPTION 'native_live_disarm_arm_changed'; END IF;
+ UPDATE public.native_live_controls_v1 SET armed=false,arm_id=NULL,arm_expires_at=NULL,
+ revision=revision+1,updated_at=clock_timestamp() WHERE environment=e AND account_uid=u RETURNING revision INTO r;
+ RETURN r;
+ END $body$""",
+    """REVOKE ALL ON FUNCTION public.native_live_disarm_v1(text,text,text) FROM PUBLIC""",
     """CREATE FUNCTION public.native_live_reservation_guard_v1() RETURNS trigger
  LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
  DECLARE c public.native_live_controls_v1; r numeric; m numeric; n numeric;
@@ -199,6 +229,8 @@ def live_ledger_grant_sql_v1(writer: str) -> tuple[str, ...]:
             for table in TABLES[1:]
         ),
         f'GRANT EXECUTE ON FUNCTION public.native_live_control_fence_v1(text,text) TO "{writer}"',
+        f'GRANT EXECUTE ON FUNCTION public.native_live_inhibit_v1(text,text) TO "{writer}"',
+        f'GRANT EXECUTE ON FUNCTION public.native_live_disarm_v1(text,text,text) TO "{writer}"',
     )
 
 
@@ -267,6 +299,8 @@ DOWNGRADE_SQL = (
     *(f"DROP TRIGGER {table}_immutable ON public.{table}" for table in TABLES[1:]),
     "DROP FUNCTION public.native_live_data_guard_v1()",
     "DROP FUNCTION public.native_live_reservation_guard_v1()",
+    "DROP FUNCTION public.native_live_inhibit_v1(text,text)",
+    "DROP FUNCTION public.native_live_disarm_v1(text,text,text)",
     "DROP FUNCTION public.native_live_control_fence_v1(text,text)",
     *(f"DROP TABLE public.{table}" for table in reversed(TABLES)),
 )

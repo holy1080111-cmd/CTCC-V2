@@ -292,3 +292,48 @@ async def test_actual58_downgrade_refuses_retained_control_without_deleting_cust
             == "0058"
         )
     assert await _counts(owner) == (0, 0, 0)
+
+
+async def test_actual58_effective_maintain_drift_blocks_data_hold(_live58_lab):
+    owner, repository, value = _live58_lab
+    async with owner.begin() as connection:
+        await connection.exec_driver_sql(
+            f'GRANT MAINTAIN ON TABLE public.native_live_controls_v1 TO "{repository.pins.writer_name}"'
+        )
+    with pytest.raises(subject.LiveLedgerDataError):
+        await repository.reserve_and_commit_intent_data_v1(value, owned_source=object())
+    assert await _counts(owner) == (0, 0, 0)
+
+
+async def test_actual58_negative_procedures_cannot_arm_or_clear_estop(_live58_lab):
+    owner, repository, value = _live58_lab
+    async with repository.factory() as session, session.begin():
+        for sql in subject._SETTINGS:
+            await session.execute(text(sql))
+        await subject._profile(session, repository.pins)
+        await session.scalar(
+            text("SELECT public.native_live_inhibit_v1('live',:uid)"),
+            {"uid": value.account_uid},
+        )
+        await session.scalar(
+            text("SELECT public.native_live_disarm_v1('live',:uid,:arm)"),
+            {"uid": value.account_uid, "arm": value.arm_id},
+        )
+    async with owner.connect() as connection:
+        assert tuple(
+            (
+                await connection.execute(
+                    text(
+                        "SELECT armed,emergency_stop,arm_id,arm_expires_at FROM public.native_live_controls_v1"
+                    )
+                )
+            ).one()
+        ) == (False, True, None, None)
+    with pytest.raises(DBAPIError):
+        async with repository.factory() as session, session.begin():
+            await session.execute(
+                text(
+                    "UPDATE public.native_live_controls_v1 SET emergency_stop=false,armed=true"
+                )
+            )
+    assert await _counts(owner) == (0, 0, 0)
