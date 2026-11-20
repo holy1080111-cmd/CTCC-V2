@@ -82,15 +82,19 @@ def verify_historical0056_components(root, identity, files):
     """Replay retained raw receipts, original catalogs and selected real cases."""
     from scripts import current0056_hermetic_contract as previous
     from scripts import current0058_full_hermetic_contract_v1 as full
-    from scripts import verify_final_hermetic as shared
 
     source = historical_source_identity(identity, files, full.canonical(files))
     mode, index = identity.get("suite"), identity.get("postgres_component_index")
     _need(full.requires_historical(mode, index))
     junit, _ = full.component_report_paths(mode, index)
-    checked = shared.verify_pytest_report(
+    # Component admission and historical receipts request different case sets.
+    # Replay the SAME complete component summary for identity equality, then
+    # independently demand every historical case in those original XML bytes.
+    _verified_component_tests(
         root / junit,
-        required_cases=tuple(
+        identity.get("tests"),
+        component_cases=full.required_cases(mode, index),
+        historical_cases=tuple(
             dict.fromkeys(
                 (
                     campaign.HERMETIC_CATALOG_CASE,
@@ -102,7 +106,6 @@ def verify_historical0056_components(root, identity, files):
         ),
         allow_unrelated_skips=mode == "full",
     )
-    _need(checked == identity.get("tests"))
     _need(
         all(
             files.get(path, {}).get("sha256") == pin
@@ -134,6 +137,32 @@ def verify_historical0056_components(root, identity, files):
         "execution_authority": False,
         "admission": "DENY",
     }
+
+
+def _verified_component_tests(
+    path, expected, *, component_cases, historical_cases, allow_unrelated_skips
+):
+    from scripts import verify_final_hermetic as shared
+
+    checked = shared.verify_pytest_report(
+        path,
+        required_cases=component_cases,
+        allow_unrelated_skips=allow_unrelated_skips,
+    )
+    _need(checked == expected)
+    historical = shared.verify_pytest_report(
+        path,
+        required_cases=historical_cases,
+        allow_unrelated_skips=allow_unrelated_skips,
+    )
+    # Both demand sets must refer to exactly the same original complete report.
+    _need(
+        all(
+            checked[key] == historical[key]
+            for key in ("tests", "failures", "errors", "skipped", "passed", "sha256")
+        )
+    )
+    return checked
 
 
 def _pair_sources(kwargs):
