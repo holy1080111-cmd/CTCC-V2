@@ -424,7 +424,7 @@ def _observe_inherited_graph(value, *, owner_mode, read_only, profile=profiles.D
         value["native_terminal55"], owner=owner
     )
     report_defs = (
-        inherited.native_report.observe_protective58_catalog
+        protective58.report_catalog.observe_catalog
         if profile is profiles.DB0058
         else inherited.native_report.observe_catalog
     )(value["native_report55"], owner=owner, actor=role["oid"], owner_mode=owner_mode)

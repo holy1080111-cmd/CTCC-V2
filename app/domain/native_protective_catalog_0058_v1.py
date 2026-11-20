@@ -9,6 +9,7 @@ import hashlib
 from app.domain import collector_current_0055_catalog_v1 as inherited
 from app.domain import native_close_intent_catalog_v55 as index55
 from app.domain import native_protective_hold_schema_v58 as schema
+from app.domain import native_protective_report_catalog_v58 as report_catalog
 from app.domain import native_protective_report_schema_v58 as report
 from app.domain import native_submission_binding_schema_v58 as submission
 from app.domain import native_terminal_catalog_v55 as functions55
@@ -16,6 +17,7 @@ from app.domain.source_primitives import canonical
 
 SCHEMA = "ctcc.native_protective58.actual_catalog.v1"
 REPORT_ELIGIBILITY_BODY_SHA256 = report.ELIGIBLE_BODY_SHA256
+REPORT_CATALOG_SQL = report_catalog.CATALOG_SQL
 _FUNCTION_LIST = "'qualification_native_plain_v55','qualification_native_canonical_v55','qualification_native_manifest_v55',\n 'qualification_native_rows_v55','qualification_native_number_v55','qualification_native_clock_v55','qualification_native_filled_flat_data_v55'"
 FUNCTION_SQL = functions55.CATALOG_SQL.replace(functions55.SCHEMA, SCHEMA).replace(
     _FUNCTION_LIST, "'qualification_native_protective_flat_data_v58'"

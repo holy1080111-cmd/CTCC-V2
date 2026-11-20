@@ -228,32 +228,7 @@ def _deny():
 
 
 def observe_catalog(value, *, owner, actor, owner_mode, legacy=False):
-    return _observe_catalog(
-        value,
-        owner=owner,
-        actor=actor,
-        owner_mode=owner_mode,
-        legacy=legacy,
-        protective58=False,
-    )
-
-
-def observe_protective58_catalog(value, *, owner, actor, owner_mode):
-    """Actual58 outer graph chooses this exact expected body, never rewrites rows."""
-    return _observe_catalog(
-        value,
-        owner=owner,
-        actor=actor,
-        owner_mode=owner_mode,
-        legacy=False,
-        protective58=True,
-    )
-
-
-def _observe_catalog(value, *, owner, actor, owner_mode, legacy, protective58):
     schema.statements()
-    if type(protective58) is not bool or protective58 and legacy:
-        _deny()
     if (
         type(owner) is not int
         or not 0 < owner < 2**32
@@ -294,23 +269,6 @@ def _observe_catalog(value, *, owner, actor, owner_mode, legacy, protective58):
             ),
         )
     )
-    if protective58:
-        from app.domain import native_protective_report_schema_v58 as current
-
-        current.statements()
-        specs = tuple(
-            (
-                name,
-                args,
-                returns,
-                current.ELIGIBLE_SQL
-                if name == "qualification_native_report_eligible_v55"
-                else sql,
-                delimiter,
-                public,
-            )
-            for name, args, returns, sql, delimiter, public in specs
-        )
     expected = {
         name: (args, returns, sql.split(delimiter)[1], public)
         for name, args, returns, sql, delimiter, public in specs
