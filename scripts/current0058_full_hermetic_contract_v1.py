@@ -91,6 +91,22 @@ ORIGINAL_OCO_REPORT_CASES = tuple(
         "test_actual0058_original_oco_report_policy_refuses_rehashed_changed_analysis",
     )
 )
+LIVE_OPERATOR_CASES = tuple(
+    ("tests.integration.test_native_live_operator_control_v1_pg", name)
+    for name in (
+        "test_actual_operator_clear_arm_and_separate_readback",
+        "test_actual_two_operator_workers_same_revision_allow_only_one_arm",
+        "test_actual_extra_operator_ledger_write_grant_is_refused_before_positive_change",
+        "test_actual_operator_cannot_write_intents_or_financial_history",
+        "test_actual_startup_negative_inhibits_without_source_or_legacy_flat_claim",
+        *(
+            "test_actual_live4_catalog_drift_never_becomes_operator_readiness["
+            + kind
+            + "]"
+            for kind in ("column", "check", "foreign_key", "index", "schema_create")
+        ),
+    )
+)
 SUCCESSOR_CASES = (
     *base.SUCCESSOR_CASES,
     *live_cases.REQUIRED_CASES,
@@ -101,6 +117,7 @@ SUCCESSOR_CASES = (
     *ORIGINAL_OCO_CASES,
     *OWNER_UPGRADE_CASES,
     *ORIGINAL_OCO_REPORT_CASES,
+    *LIVE_OPERATOR_CASES,
     (
         "tests.integration.test_native_protective_hold_schema_v58_pg",
         "test_actual0058_original_oco_predicate_compiles_and_missing_targets_never_resolve",
@@ -116,6 +133,7 @@ REQUIRED_CASES = (
     *ORIGINAL_OCO_CASES,
     *OWNER_UPGRADE_CASES,
     *ORIGINAL_OCO_REPORT_CASES,
+    *LIVE_OPERATOR_CASES,
     SUCCESSOR_CASES[-1],
 )
 HISTORICAL_REPORTS = base.HISTORICAL_REPORTS

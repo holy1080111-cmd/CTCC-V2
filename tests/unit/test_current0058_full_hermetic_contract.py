@@ -185,6 +185,8 @@ def test_source58_selection_executes_every_old_and_new_required_case_exactly_onc
     assert set(full.live_cases.REQUIRED_FINANCIAL_CASES) <= set(full.REQUIRED_CASES)
     assert len(full.BINDING_CASES) == 13
     assert len(full.ORIGINAL_OCO_REPORT_CASES) == 3
+    assert len(full.LIVE_OPERATOR_CASES) == 10
+    assert set(full.LIVE_OPERATOR_CASES) <= set(full.REQUIRED_CASES)
     assert set(full.ORIGINAL_OCO_REPORT_CASES) <= set(full.REQUIRED_CASES)
     assert all(
         full.collection.selected_for(
