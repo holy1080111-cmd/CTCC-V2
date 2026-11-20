@@ -4,7 +4,7 @@
   "architecture": "x86_64",
   "python": "3.12",
   "index": "https://pypi.org/simple",
-  "source_pyproject_sha256": "c47e6ba2cbb0f938ea961a7ff075e550e3c66c30b883e2d4fd1162ca94f83785",
+  "source_pyproject_sha256": "aa387d04aad4e5a07538a40615cb98cf7550db5e3d8df83d7e4c795f9fdbaa2a",
   "lock_sha256": "a4b4bb7f390a62fe0f032aa23ab0c288494d61956fc91bc40ffc2fab034d6f16",
   "resolver_input_sha256": "500eccff35e08d5c47865b0a5f86ef3bd7b33b924574fa830247eb7a2c491249",
   "resolver_input": [

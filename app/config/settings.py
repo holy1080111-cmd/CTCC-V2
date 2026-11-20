@@ -53,7 +53,7 @@ class Settings(BaseSettings):
     )
 
     app_name: str = "CTCC V2"
-    app_version: str = "1.6.9"
+    app_version: str = "2.0.0"
     environment: Literal["development", "test", "production"] = "development"
     log_level: str = "INFO"
 
