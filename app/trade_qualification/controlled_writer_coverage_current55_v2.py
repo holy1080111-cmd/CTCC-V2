@@ -32,6 +32,7 @@ from app.demo_automation.native_server_selectors_v2 import (
     ConfiguredNativeDemoFactoriesV2,
 )
 from app.domain import native_clock
+from app.domain import native_database_profile_v1 as profiles
 from app.domain.source_primitives import canonical, sha, utc_from_ns, validate_stamps
 from app.exchange.okx.private_rest import DemoPinnedReadSession
 from app.trade_qualification import account_current_source_v4 as current
@@ -155,7 +156,7 @@ class _LockedSnapshotV2:
 
 def _context_signature(value):
     _need(type(value) is ControlledCoverageSourceV6)
-    _database_profile(value)
+    database = _database_profile(value)
     _need(
         type(value.scope) is LedgerScope
         and value.scope.environment == "demo"
@@ -214,6 +215,13 @@ def _context_signature(value):
         record.native_readback_sha256,
         record.expires_at,
         record.monotonic_deadline_ns,
+        None
+        if database is None
+        else (
+            database[1].schema,
+            database[1].observation.schema,
+            database[1].observation.database_head,
+        ),
     )
 
 
@@ -363,11 +371,27 @@ def _database_profile(source):
         and type(roles) is RestrictedNativeRoles0056WitnessV1
         and factories.writer_factory is source.session_factory
         and type(roles.observation) is RestrictedNativeRoles0056ObservationV1
-        and roles.observation.database_head == "0056"
         and roles.startup_admission is roles.execution_authority is False,
         "controlled55_coverage_original_0056_roles_required",
     )
+    try:
+        checkpoint56._profile_for_original_roles_v1(roles)
+    except ledger.QualificationLedgerError:
+        _need(False, "controlled55_coverage_original_0056_roles_required")
     return factories, roles
+
+
+def _coverage_receipt_context_v2(source):
+    database = _database_profile(source)
+    if (
+        database is not None
+        and checkpoint56._profile_for_original_roles_v1(database[1]) is profiles.DB0057
+    ):
+        return {
+            "schema_version": "ctcc.controlled_source_coverage.current57.v2",
+            "database_head": "0057",
+        }
+    return {"schema_version": "ctcc.controlled_source_coverage.current55.v2"}
 
 
 @asynccontextmanager
@@ -582,7 +606,7 @@ async def _observe(state, absolute_deadline):
             _check(state)
             receipt = canonical(
                 {
-                    "schema_version": "ctcc.controlled_source_coverage.current55.v2",
+                    **_coverage_receipt_context_v2(source),
                     "environment": "demo",
                     "scope_sha256": sha(ledger.canonical(source.scope).encode()),
                     "control_state_sha256": sha(

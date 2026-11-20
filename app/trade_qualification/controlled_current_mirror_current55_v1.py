@@ -163,7 +163,7 @@ def _context_signature(value):
     )
     _utc(value.original_expires_at)
     record = value.current_record
-    _mirror_database_profile(value)
+    database = _mirror_database_profile(value)
     _utc(record.expires_at)
     _need(
         type(record.monotonic_deadline_ns) is int
@@ -192,6 +192,13 @@ def _context_signature(value):
         record.native_readback_sha256,
         record.expires_at,
         record.monotonic_deadline_ns,
+        None
+        if database is None
+        else (
+            database[1].schema,
+            database[1].observation.schema,
+            database[1].observation.database_head,
+        ),
     )
 
 
@@ -231,11 +238,14 @@ def _mirror_database_profile(value):
         type(factories) is ConfiguredNativeDemoFactoriesV2
         and type(roles) is RestrictedNativeRoles0056WitnessV1
         and factories.writer_factory is value.session_factory
-        and roles.observation.database_head == "0056"
         and roles.observation.admission == "DENY"
         and roles.execution_authority is False,
         "controlled56_mirror_original_roles_required",
     )
+    try:
+        checkpoint._profile_for_original_roles_v1(roles)
+    except ledger.QualificationLedgerError:
+        _need(False, "controlled56_mirror_original_roles_required")
     return factories, roles
 
 

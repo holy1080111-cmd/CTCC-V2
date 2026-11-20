@@ -25,6 +25,7 @@ from app.database.repositories import (
     collector_current_0055_multirole_catalog_v1 as catalog55,
 )
 from app.database.repositories.qualification_ledger import QualificationLedgerRepository
+from app.domain import native_database_profile_v1 as profiles
 from app.domain.source_primitives import canonical
 from app.trade_qualification import account_ledger_claims_v2 as codec
 from app.trade_qualification import reservations as ledger
@@ -37,6 +38,54 @@ _CHECKPOINT_FENCE = text(
 
 def _deny(code):
     raise ledger.QualificationLedgerError(code) from None
+
+
+def _profile_for_original_roles_v1(roles):
+    """Select only a closed DATA contract; actual locked role replay follows."""
+    if (
+        type(roles) is not RestrictedNativeRoles0056WitnessV1
+        or type(roles.observation)
+        is not locked.roles56.RestrictedNativeRoles0056ObservationV1
+        or type(roles.schema) is not str
+        or type(roles.observation.schema) is not str
+        or type(roles.observation.database_head) is not str
+        or type(roles.observation.admission) is not str
+    ):
+        _deny("ledger56_checkpoint_original_roles_required")
+    observed = roles.observation
+    profile = (
+        profiles.DB0056
+        if observed.database_head == "0056"
+        else profiles.DB0057
+        if observed.database_head == "0057"
+        else None
+    )
+    if (
+        profile is None
+        or roles.schema
+        != profiles.schema(
+            profile, "ctcc.native_only.restricted0056_runtime_witness.v1"
+        )
+        or observed.schema
+        != profiles.schema(
+            profile, "ctcc.native_only.restricted0056_role_observation.v1"
+        )
+        or observed.admission != "DENY"
+        or any(
+            value is not False
+            for value in (
+                roles.startup_admission,
+                roles.execution_authority,
+                observed.native_reference_sealed,
+                observed.native_baseline_admission,
+                observed.startup_admission,
+                observed.account_complete,
+                observed.execution_authority,
+            )
+        )
+    ):
+        _deny("ledger56_checkpoint_original_roles_required")
+    return profile
 
 
 def _finite_payload(raw):
@@ -62,6 +111,7 @@ class _HeldQualificationCheckpoint0056V1:
     session: AsyncSession
     control: locked.NativeLockedDemoControl0056V1
     _held: locked.HeldNativeWriterControl0056V1
+    profile: profiles.NativeDatabaseProfileV1 = profiles.DB0056
 
     def check(self) -> None:
         self._held.check_held()
@@ -69,7 +119,7 @@ class _HeldQualificationCheckpoint0056V1:
     async def recheck_catalog(self) -> None:
         self.check()
         fresh = await locked.writer56.observe_restricted_readwrite_writer_0056_v1(
-            self.session
+            self.session, **profiles.arguments(self.profile)
         )
         self.check()
         if fresh != self.control.writer_catalog:
@@ -95,14 +145,14 @@ async def held_qualification_checkpoint_0056_v1(
     selected, session, control_scope, *, roles
 ):
     """Retain the exact restricted Control and schema within this transaction."""
-    if type(roles) is not RestrictedNativeRoles0056WitnessV1:
-        _deny("ledger56_checkpoint_original_roles_required")
+    profile = _profile_for_original_roles_v1(roles)
     async with locked.held_native_writer_control_0056_v1(
         selected,
         session,
         control_scope,
         roles=roles,
         purpose=locked.NativeWriterControlPurpose0056.PREPARE_OBSERVATION,
+        **profiles.arguments(profile),
     ) as held:
         engine = selected.writer_factory.kw["bind"].sync_engine
         if (
@@ -114,7 +164,7 @@ async def held_qualification_checkpoint_0056_v1(
         await session.execute(_CHECKPOINT_FENCE)
         held.check_held()
         witness = _HeldQualificationCheckpoint0056V1(
-            selected, session, held.observation, held
+            selected, session, held.observation, held, profile
         )
         await witness.recheck_catalog()
         _ACTIVE_HELD_CHECKPOINTS_0056[id(witness)] = witness

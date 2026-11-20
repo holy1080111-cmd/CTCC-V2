@@ -20,9 +20,11 @@ from app.core.native_role_witness_0056_v1 import (
 )
 from app.core.native_startup_control_observation_0056_v1 import _factory_pins
 from app.database.repositories import account_history_partition as original
+from app.database.repositories import qualification_native_checkpoint_v2 as checkpoint
 from app.database.repositories.account_history_partition_current55_v2 import (
     _verify_current55_runtime_role_v2,
 )
+from app.domain import native_database_profile_v1 as profiles
 from app.domain.account_history_partition_v1 import HistoryPartitionScopeV1
 
 _READ = text(original._READ_SQL)
@@ -50,9 +52,11 @@ def _need(value: bool) -> None:
         ) from None
 
 
-def _require_session(session, engine, transaction) -> None:
+def _require_session(session, engine, transaction, *, profile=profiles.DB0056) -> None:
     _need(type(session) is AsyncSession)
-    writer56._require_same_transaction(session, engine, transaction)
+    writer56._require_same_transaction(
+        session, engine, transaction, **profiles.arguments(profile)
+    )
     _need(
         session.autoflush is False
         and not (session.new or session.dirty or session.deleted)
@@ -94,9 +98,9 @@ async def verify_held_partition_catalog_0056_v1(
 ) -> writer56.NativeWriter0056ObservationV1:
     """Verify the exact selected writer without creating or closing the transaction."""
     try:
+        profile = checkpoint._profile_for_original_roles_v1(expected_roles)
         _need(
             type(expected_roles) is RestrictedNativeRoles0056WitnessV1
-            and expected_roles.observation.database_head == "0056"
             and expected_roles.observation.admission == "DENY"
             and expected_roles.execution_authority is False
             and expected_roles.startup_admission is False
@@ -106,44 +110,62 @@ async def verify_held_partition_catalog_0056_v1(
         url_route = _direct_tls_route(engine)
         _need(type(session) is AsyncSession)
         transaction = session.sync_session.get_transaction()
-        _require_session(session, engine, transaction)
+        _require_session(session, engine, transaction, **profiles.arguments(profile))
 
-        first = await writer56._session_identity(session, engine)
+        first = await writer56._session_identity(
+            session, engine, **profiles.arguments(profile)
+        )
         actor = await roles56.current55._identity(session, names[0])
-        _require_session(session, engine, transaction)
+        _require_session(session, engine, transaction, **profiles.arguments(profile))
         _need(actor[3:6] == (first[5], first[6], first[8]))
         _need(
-            runtime_witness_0056(actor, names, (url_route,) * 3)
+            runtime_witness_0056(
+                actor, names, (url_route,) * 3, **profiles.arguments(profile)
+            )
             == (
                 expected_roles.server_incarnation_sha256,
                 expected_roles.role_route_sha256,
             )
         )
-        writer = await writer56.observe_restricted_readwrite_writer_0056_v1(session)
-        _require_session(session, engine, transaction)
-        await roles56.current55._exact_existing_acl(
-            await session.connection(), names, actor[3]
+        writer = await writer56.observe_restricted_readwrite_writer_0056_v1(
+            session, **profiles.arguments(profile)
         )
-        _require_session(session, engine, transaction)
+        _require_session(session, engine, transaction, **profiles.arguments(profile))
+        if profile is profiles.DB0056:
+            await roles56.current55._exact_existing_acl(
+                await session.connection(), names, actor[3]
+            )
+        else:
+            await profiles.require_exact_acl(
+                await session.connection(),
+                names,
+                actor[3],
+                profile=profile,
+                read_only=False,
+            )
+        _require_session(session, engine, transaction, **profiles.arguments(profile))
         await roles56._require_no_effective_demo_fitted_execute(session, names[1:])
-        _require_session(session, engine, transaction)
+        _require_session(session, engine, transaction, **profiles.arguments(profile))
         _need(
             writer.native_definitions_sha256
             == expected_roles.observation.inherited_native_definitions_sha256
             and roles56._granted_inherited_acl_shape_sha256(
-                names, writer.native_definitions_sha256
+                names, writer.native_definitions_sha256, **profiles.arguments(profile)
             )
             == expected_roles.observation.granted_inherited_acl_shape_sha256
         )
         catalog = await original.read_account_history_partition_catalog(session)
-        _require_session(session, engine, transaction)
+        _require_session(session, engine, transaction, **profiles.arguments(profile))
         _verify_partition_grants(catalog)
         _need(
             catalog["role"]["oid"] == first[5]
             and catalog["server"]["database"] == first[4]
-            and await writer56._session_identity(session, engine) == first
+            and await writer56._session_identity(
+                session, engine, **profiles.arguments(profile)
+            )
+            == first
         )
-        _require_session(session, engine, transaction)
+        _require_session(session, engine, transaction, **profiles.arguments(profile))
         _need(
             _factory_pins(factories) == pins and _direct_tls_route(engine) == url_route
         )
@@ -169,6 +191,7 @@ class Db0056SourcePartitionReaderV1:
             original.records._scope(scope)
             selected = self._factories
             roles = self._expected_roles
+            profile = checkpoint._profile_for_original_roles_v1(roles)
             pins = _factory_pins(selected)
             factory, engine, _, _ = pins
             async with (
@@ -177,10 +200,14 @@ class Db0056SourcePartitionReaderV1:
                 session.begin(),
             ):
                 transaction = session.sync_session.get_transaction()
-                _require_session(session, engine, transaction)
+                _require_session(
+                    session, engine, transaction, **profiles.arguments(profile)
+                )
                 for statement in _SETTINGS:
                     await session.execute(text(statement))
-                    _require_session(session, engine, transaction)
+                    _require_session(
+                        session, engine, transaction, **profiles.arguments(profile)
+                    )
                 before = await verify_held_partition_catalog_0056_v1(
                     selected, session, roles
                 )
@@ -192,10 +219,14 @@ class Db0056SourcePartitionReaderV1:
                         "currency": scope.settlement_currency,
                     },
                 )
-                _require_session(session, engine, transaction)
+                _require_session(
+                    session, engine, transaction, **profiles.arguments(profile)
+                )
                 actual = original._readback(raw, scope, original._utc(self._clock()))
                 db_tx = tuple((await session.execute(_DB_TX)).one())
-                _require_session(session, engine, transaction)
+                _require_session(
+                    session, engine, transaction, **profiles.arguments(profile)
+                )
                 _need(
                     db_tx == (actual.backend_pid, actual.transaction_id)
                     and actual.account_complete is False
@@ -205,7 +236,9 @@ class Db0056SourcePartitionReaderV1:
                     selected, session, roles
                 )
                 _need(before == after)
-                _require_session(session, engine, transaction)
+                _require_session(
+                    session, engine, transaction, **profiles.arguments(profile)
+                )
             _need(_factory_pins(selected) == pins)
             return actual
         except (asyncio.CancelledError, Db0056SourcePartitionError):

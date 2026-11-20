@@ -7,6 +7,7 @@ from app.database.repositories import (
     account_history_partition_current56_source_v1 as source,
 )
 from app.database.repositories import qualification_native_checkpoint_v2 as checkpoint
+from app.domain import native_database_profile_v1 as profiles
 
 _DURABLE = text("SET LOCAL synchronous_commit='on'")
 _CLOCK = checkpoint.locked._CLOCK
@@ -20,7 +21,8 @@ class Db0056ControlledPartitionRepositoryV2(previous.AccountHistoryPartitionRepo
 
         self._parent = parent
         self._replay = native._replay_owned_partition_repository_v6
-        factories, _, _, _, _, _ = self._replay(parent, self, opening=True)
+        factories, roles, _, _, _, _ = self._replay(parent, self, opening=True)
+        self._profile = checkpoint._profile_for_original_roles_v1(roles)
         super().__init__(factories.writer_factory, clock=self._clock)
 
     def _clock(self):
@@ -31,12 +33,17 @@ class Db0056ControlledPartitionRepositoryV2(previous.AccountHistoryPartitionRepo
             self._parent, self, append=append
         )
         factory = selected.writer_factory
-        if self.session_factory is not factory:
+        if (
+            self.session_factory is not factory
+            or checkpoint._profile_for_original_roles_v1(roles) is not self._profile
+        ):
             previous.policy.deny("account_history_partition_original_writer_required")
         async with factory() as session, session.begin():
             engine = factory.kw["bind"]
             transaction = session.sync_session.get_transaction()
-            source._require_session(session, engine, transaction)
+            source._require_session(
+                session, engine, transaction, **profiles.arguments(self._profile)
+            )
             if any(
                 session.get_bind(clause=statement) is not engine.sync_engine
                 for statement in (previous._CONTROLLED_APPEND, _DURABLE, _CLOCK)
@@ -51,7 +58,8 @@ class Db0056ControlledPartitionRepositoryV2(previous.AccountHistoryPartitionRepo
             ) as held:
                 actual = held.control.control
                 if (
-                    actual.state != expected.state
+                    held.control.database_head != profiles.head(self._profile)
+                    or actual.state != expected.state
                     or actual.event_sha256 != expected.event_sha256
                     or not expected.observed_at <= actual.observed_at < expiry
                     or not expected.state.arm_intent_current(actual.observed_at)
@@ -79,7 +87,9 @@ class Db0056ControlledPartitionRepositoryV2(previous.AccountHistoryPartitionRepo
                     )
             # Source checks follow the last catalog/Control await. PostgreSQL
             # still owns the same XID and all locks until the outer context commits.
-            source._require_session(session, engine, transaction)
+            source._require_session(
+                session, engine, transaction, **profiles.arguments(self._profile)
+            )
             self._replay(self._parent, self, append=append)
 
     @staticmethod
@@ -96,15 +106,22 @@ class Db0056ControlledPartitionRepositoryV2(previous.AccountHistoryPartitionRepo
         return original(selected, session, scope, roles=roles)
 
     async def _read_in_session(self, session, scope):
-        selected, _, original_scope, _, _, _ = self._replay(self._parent, self)
-        if scope != original_scope:
+        selected, roles, original_scope, _, _, _ = self._replay(self._parent, self)
+        if (
+            scope != original_scope
+            or checkpoint._profile_for_original_roles_v1(roles) is not self._profile
+        ):
             previous.policy.deny("account_history_partition_original_scope_required")
         engine = selected.writer_factory.kw["bind"]
         transaction = session.sync_session.get_transaction()
-        source._require_session(session, engine, transaction)
+        source._require_session(
+            session, engine, transaction, **profiles.arguments(self._profile)
+        )
         actual = await super()._read_in_session(session, scope)
         db_tx = tuple((await session.execute(source._DB_TX)).one())
-        source._require_session(session, engine, transaction)
+        source._require_session(
+            session, engine, transaction, **profiles.arguments(self._profile)
+        )
         if db_tx != (actual.backend_pid, actual.transaction_id):
             previous.policy.deny("account_history_partition_transaction")
         self._replay(self._parent, self)

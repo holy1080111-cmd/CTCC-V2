@@ -50,6 +50,7 @@ from app.database.repositories.qualification_ledger import (
     PortfolioLocalCheckpoint,
     QualificationLedgerRepository,
 )
+from app.domain import native_database_profile_v1 as profiles
 from app.domain.source_primitives import decode, utc_from_ns
 from app.trade_qualification import account_capture_journal as journal
 from app.trade_qualification import demo_control as control
@@ -221,11 +222,16 @@ async def _transaction(session, source):
     selected, roles = selected_database
     if replay.session_factory is not selected.writer_factory:
         _deny("control56_operator_original_writer_required")
+    profile = checkpoint._profile_for_original_roles_v1(roles)
     async with checkpoint.held_qualification_checkpoint_0056_v1(
         selected, session, replay.previous_control.scope, roles=roles
     ) as held:
         source()
         held.check()
+        if held.profile is not profile or held.control.database_head != profiles.head(
+            profile
+        ):
+            _deny("control56_operator_original_writer_required")
         connection = selected.writer_factory.kw["bind"].sync_engine
         if session.get_bind(clause=_OPERATOR_FENCE) is not connection or any(
             session.get_bind(mapper=model) is not connection

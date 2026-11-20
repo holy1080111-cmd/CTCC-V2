@@ -80,7 +80,9 @@ def test_forged_native_cap_is_not_a_repository_source():
         repository.record_owned_operator_acknowledgement_v1(forged)
 
 
-@pytest.mark.parametrize("branch", ["legacy", "original0056", "foreign0056"])
+@pytest.mark.parametrize(
+    "branch", ["legacy", "original0056", "original0057", "foreign0056"]
+)
 async def test_operator_transaction_keeps_catalog_context_through_write(
     monkeypatch, branch
 ):
@@ -90,7 +92,28 @@ async def test_operator_transaction_keeps_catalog_context_through_write(
 
     engine = object()
     scope = object()
-    roles = object()
+    profile = (
+        repository.profiles.DB0057
+        if branch == "original0057"
+        else repository.profiles.DB0056
+    )
+    roles = repository.checkpoint.RestrictedNativeRoles0056WitnessV1(
+        repository.checkpoint.locked.roles56.RestrictedNativeRoles0056ObservationV1(
+            "1" * 64,
+            "2" * 64,
+            "3" * 64,
+            "4" * 64,
+            schema=repository.profiles.schema(
+                profile, "ctcc.native_only.restricted0056_role_observation.v1"
+            ),
+            database_head=repository.profiles.head(profile),
+        ),
+        "5" * 64,
+        "6" * 64,
+        schema=repository.profiles.schema(
+            profile, "ctcc.native_only.restricted0056_runtime_witness.v1"
+        ),
+    )
     session = SimpleNamespace(
         execute=AsyncMock(),
         get_bind=Mock(return_value=engine),
@@ -104,7 +127,12 @@ async def test_operator_transaction_keeps_catalog_context_through_write(
     )
     source = Mock(return_value=replay)
     legacy = AsyncMock()
-    held = SimpleNamespace(check=Mock(), recheck_catalog=AsyncMock())
+    held = SimpleNamespace(
+        check=Mock(),
+        recheck_catalog=AsyncMock(),
+        profile=profile,
+        control=SimpleNamespace(database_head=repository.profiles.head(profile)),
+    )
     order = []
 
     @asynccontextmanager
@@ -135,15 +163,17 @@ async def test_operator_transaction_keeps_catalog_context_through_write(
         assert not order
     else:
         async with repository._transaction(session, source) as witness:
-            assert witness is (held if branch == "original0056" else None)
+            assert witness is (
+                held if branch in {"original0056", "original0057"} else None
+            )
             order.append("body")
         assert order == (
             ["enter", "body", "exit"]
-            if branch == "original0056"
+            if branch in {"original0056", "original0057"}
             else ["legacy", "body", "legacy"]
         )
     assert source.call_count >= 1
-    if branch == "original0056":
+    if branch in {"original0056", "original0057"}:
         assert any(
             call.args == (repository._OPERATOR_FENCE,)
             for call in session.execute.await_args_list
