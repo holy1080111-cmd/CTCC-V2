@@ -215,7 +215,10 @@ async def _catalog(session, *, owner_oid, actor_oid):
       encode(sha256(convert_to(p.prosrc,'UTF8')),'hex'),p.prosecdef,p.proconfig,p.prokind::text,p.proleakproof,
       p.proisstrict,p.provolatile::text,p.proparallel::text,p.prosupport::bigint,l.lanname::text,
       p.pronargs,p.proargtypes::text,p.proretset,p.prorettype::bigint,p.pronargdefaults,
-      p.provariadic::bigint,p.proargmodes,p.proallargtypes
+      p.provariadic::bigint,p.proargmodes,p.proallargtypes,p.proargnames,
+      p.probin IS NULL,p.prosqlbody IS NULL,
+      NOT EXISTS(SELECT 1 FROM pg_catalog.aclexplode(COALESCE(p.proacl,pg_catalog.acldefault('f',p.proowner))) x
+        WHERE x.grantee=0 OR x.is_grantable)
       FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
       JOIN pg_catalog.pg_language l ON l.oid=p.prolang
       WHERE n.nspname='public' AND p.proname=ANY(CAST(:names AS text[]))"""),
@@ -255,6 +258,10 @@ async def _catalog(session, *, owner_oid, actor_oid):
                 "variadic",
                 "argument_modes",
                 "all_argument_types",
+                "argument_names",
+                "binary_implementation",
+                "sql_body",
+                "public_or_delegable_execute",
             ),
             strict=True,
         ):

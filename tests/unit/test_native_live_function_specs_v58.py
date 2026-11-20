@@ -42,6 +42,10 @@ def test_exact_metadata_keeps_all_input_types_returns_and_execution_flags():
         0,
         None,
         None,
+        ["e", "u"],
+        True,
+        True,
+        True,
     )
     assert rows["native_live_disarm_v1"][5:9] == (3, "25 25 25", False, 20)
     assert rows["native_live_reservation_guard_v1"][5:9] == (0, "", False, 2279)

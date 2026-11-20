@@ -55,6 +55,7 @@ def _challenge():
         ],
         "existing_leverage": 3,
         "controlled_exit_requested": False,
+        "controlled_exit_seconds": 0,
         "challenge_expires_at": "2026-11-20T00:00:00+00:00",
         "arm_seconds": 30,
         "maximum_submissions": 1,
@@ -388,6 +389,35 @@ def test_static_dashboard_has_no_automatic_requests_or_saved_credentials():
     assert 'value="ARM_' not in html
     assert "credentials:'omit'" in html and "redirect:'error'" in html
     assert "只在此視窗暫時使用" in html
+    assert "確認後 120 秒內，僅允許一次受控平倉" in html
+
+
+@pytest.mark.parametrize("value", (None, False, "120", 119, 121, -1))
+def test_exit_duration_must_be_explicit_exact_and_cannot_be_defaulted(value):
+    challenge = _challenge()
+    challenge.update(
+        controlled_exit_requested=True,
+        controlled_exit_seconds=value,
+        controlled_exit_phrase="CLOSE_OKX_LIVE_MICRO_POSITION:" + "c" * 32,
+    )
+    with pytest.raises(HTTPException):
+        subject._challenge(json.dumps(challenge).encode())
+
+
+def test_exit_duration_projection_matches_separate_confirmation_and_missing_duration_refuses():
+    challenge = _challenge()
+    challenge.update(
+        controlled_exit_requested=True,
+        controlled_exit_seconds=120,
+        controlled_exit_phrase="CLOSE_OKX_LIVE_MICRO_POSITION:" + "c" * 32,
+    )
+    assert (
+        subject._challenge(json.dumps(challenge).encode())["controlled_exit_seconds"]
+        == 120
+    )
+    del challenge["controlled_exit_seconds"]
+    with pytest.raises(HTTPException):
+        subject._challenge(json.dumps(challenge).encode())
 
 
 @pytest.mark.parametrize(

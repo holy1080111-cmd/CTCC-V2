@@ -78,6 +78,7 @@ padding:18px 0}dl{display:grid;grid-template-columns:140px 1fr;gap:10px}dd{margi
 <label for="clearPhrase">解除當次停止狀態</label><p id="clearExpected" class="phrase mono"></p>
 <input id="clearPhrase" autocomplete="off" spellcheck="false">
 <div id="exitConfirmation" hidden><label for="exitPhrase">獨立受控平倉</label>
+<p id="exitScope">確認後 120 秒內，僅允許一次受控平倉；到期不會自動延長或重送。</p>
 <p id="exitExpected" class="phrase mono"></p><input id="exitPhrase" autocomplete="off" spellcheck="false"></div>
 <button id="approve" disabled>確認上述條件並執行一次</button>
 <p class="muted">確認句不會自動填入。等待、拒絕或不確定結果均不會自動補送。</p></section>
@@ -135,6 +136,7 @@ function render(value){
   el('expires').textContent=c.challenge_expires_at+' · 最多一筆，Arm '+c.arm_seconds+' 秒';
   el('armExpected').textContent=c.arm_phrase;el('clearExpected').textContent=c.clear_stop_phrase;
   el('exitExpected').textContent=c.controlled_exit_phrase;
+  el('exitScope').textContent='確認後 '+c.controlled_exit_seconds+' 秒內，僅允許一次受控平倉；到期不會自動延長或重送。';
   el('exitConfirmation').hidden=!c.controlled_exit_requested;}
  el('result').textContent=job?label(job.status)+(job.result?
   '。保護：'+(job.result.protection_verified===true?'已確認':'未確認')+

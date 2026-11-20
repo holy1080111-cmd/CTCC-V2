@@ -25,6 +25,11 @@ then awaits the current human response in the SAME task. HTTP approval only
 signals the nonce/phrases; it never receives an account source, factory, risk
 result, candidate or execution capability. The optional exit selection requests
 an additional distinct exact confirmation. It does not authorize an exit alone.
+The source challenge must explicitly declare its separate controlled-exit
+duration:120 seconds when requested,0 otherwise. Before approval the page says
+the permission lasts120 seconds after confirmation and permits only one close.
+The UI refuses missing, changed or inferred durations; it does not mint the
+permission or derive its deadline from the entry Arm.
 
 The challenge shows the original trade scope, existing leverage≤3 and exact
 caps. Source Decimal strings (including a bounded1E-20 representation) are

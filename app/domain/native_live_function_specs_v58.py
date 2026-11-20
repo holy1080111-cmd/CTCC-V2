@@ -52,6 +52,10 @@ def live_function_metadata_v58(control_type_oid):
                 0,
                 None,
                 None,
+                ["e", "u", "a"][:count] if count else None,
+                True,
+                True,
+                True,
             )
             for name, count, result in (
                 ("native_live_control_fence_v1", 2, control_type_oid),

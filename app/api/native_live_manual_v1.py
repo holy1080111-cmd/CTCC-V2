@@ -135,6 +135,7 @@ def _challenge(raw):
         "caps",
         "existing_leverage",
         "controlled_exit_requested",
+        "controlled_exit_seconds",
         "challenge_expires_at",
         "arm_seconds",
         "maximum_submissions",
@@ -151,6 +152,9 @@ def _challenge(raw):
         and type(projected["existing_leverage"]) is int
         and 1 <= projected["existing_leverage"] <= 3
         and type(projected["controlled_exit_requested"]) is bool
+        and type(projected["controlled_exit_seconds"]) is int
+        and projected["controlled_exit_seconds"]
+        == (120 if projected["controlled_exit_requested"] else 0)
         and type(projected["account_label"]) is str
         and re.fullmatch(r"…[0-9]{4}", projected["account_label"]) is not None
     )
