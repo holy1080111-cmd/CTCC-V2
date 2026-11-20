@@ -10,6 +10,7 @@ import pytest
 
 from app.domain import g12_custody_catalog_0057_v1 as catalog
 from app.domain import native_closed_report_catalog_v55 as helpers
+from app.domain import native_database_profile_v1 as profiles
 from scripts import current0057_native_g12_acl_v1 as profile
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -388,6 +389,34 @@ def test_catalog_is_exact0057_and_observation_never_authorizes():
     assert observed["database_head"] == "0057" and observed["admission"] == "DENY"
     assert observed["startup_admission"] is observed["execution_authority"] is False
     assert len(observed["catalog_sha256"]) == 64
+
+
+def test_explicit58_observes_real_head_and_preserves_only_same_g12_definitions():
+    original = _fixture()
+    previous = catalog.observe_catalog_0057(original, owner=101, writer=201)
+    current = copy.deepcopy(original)
+    current["head"] = ["0058"]
+    observed = catalog.observe_catalog_0057(
+        current, owner=101, writer=201, profile=profiles.DB0058
+    )
+    assert observed["database_head"] == "0058"
+    assert observed["schema"] == "ctcc.g12_custody0058.observation.v1"
+    assert observed["definitions_sha256"] == previous["definitions_sha256"]
+    assert observed["catalog_sha256"] != previous["catalog_sha256"]
+    assert observed["execution_authority"] is observed["startup_admission"] is False
+    assert current["head"] == ["0058"] and original["head"] == ["0057"]
+    with pytest.raises(catalog.G12Catalog0057Error):
+        catalog.observe_catalog_0057(current, owner=101, writer=201)
+    with pytest.raises(catalog.G12Catalog0057Error):
+        catalog.observe_catalog_0057(
+            original, owner=101, writer=201, profile=profiles.DB0058
+        )
+
+
+@pytest.mark.parametrize("profile", ["0058", object(), None, profiles.DB0056])
+def test_g12_closed_profile_cannot_be_selected_by_string_or_other_family(profile):
+    with pytest.raises(catalog.G12Catalog0057Error):
+        catalog.observe_catalog_0057(_fixture(), owner=101, writer=201, profile=profile)
 
 
 @pytest.mark.parametrize(

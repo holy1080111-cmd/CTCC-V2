@@ -45,8 +45,8 @@ async def synthetic_sources():
         values.update(
             session_factory=factories[0], database_head=head, writer_role_oid=55
         )
-        if head in {"0056", "0057"}:
-            profile = profiles.DB0056 if head == "0056" else profiles.DB0057
+        if head in {"0056", "0057", "0058"}:
+            profile = profiles.from_head(head)
             observation = role_data.RestrictedNativeRoles0056ObservationV1(
                 "a" * 64,
                 "b" * 64,
@@ -78,7 +78,7 @@ async def synthetic_sources():
             await engine.dispose()
 
 
-@pytest.mark.parametrize("head", ["0055", "0056", "0057"])
+@pytest.mark.parametrize("head", ["0055", "0056", "0057", "0058"])
 async def test_private_catalog_dispatch_uses_replayed_issued_head_role_and_exact_acl(
     monkeypatch, synthetic_sources, head
 ):
@@ -102,7 +102,7 @@ async def test_private_catalog_dispatch_uses_replayed_issued_head_role_and_exact
     current = AsyncMock(
         return_value=(
             NativeIssuerCatalogIdentity(
-                head, 55, "c" * 64, "a" * 64 if head == "0057" else None
+                head, 55, "c" * 64, "a" * 64 if head in {"0057", "0058"} else None
             ),
             (),
         )
@@ -132,7 +132,7 @@ async def test_private_catalog_dispatch_uses_replayed_issued_head_role_and_exact
             connection,
             ("writer", "custody", "frame"),
             55,
-            profile=profiles.DB0056 if head == "0056" else profiles.DB0057,
+            profile=profiles.from_head(head),
             read_only=False,
         )
 
@@ -234,6 +234,12 @@ def test_successor_transcript_binds_physical_head_role_and_actual_catalog():
     state["custody_issued_writer_pin"] = ("0057", 56)
     state["custody_catalog_pin"] = ("0057", 56, "c" * 64)
     assert publisher._custody_transcript_sha256(state) != before
+
+
+def test_physical58_transcript_cannot_reuse_physical57_metadata():
+    before = publisher._custody_transcript_sha256(_transcript_state("0057"))
+    current = publisher._custody_transcript_sha256(_transcript_state("0058"))
+    assert before != current
 
 
 @pytest.mark.parametrize(

@@ -6,6 +6,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.domain import g12_custody_catalog_0057_v1 as g12
+from app.domain import native_database_profile_v1 as profiles
 from app.domain.source_primitives import canonical, sha
 from scripts import current0055_native_account_source_acl_v1 as account
 from scripts import current0055_native_lifecycle_acl_v1 as lifecycle
@@ -73,6 +74,7 @@ async def observe_current0057_g12_writer_profile_v1(
     frame_reader: str,
     expected_writer_oid: int,
     read_only: bool = True,
+    profile=profiles.DB0057,
 ) -> dict:
     """Read exact effective 44-grant ACL and G12 guards in one held transaction.
 
@@ -80,6 +82,8 @@ async def observe_current0057_g12_writer_profile_v1(
     native graph and startup pins require a separate explicit 0057 admission.
     """
     try:
+        head = profiles.head(profile)
+        _need(head in {"0057", "0058"})
         previous, delta = _plans(writer, custody, frame_reader)
         names = (writer, custody, frame_reader)
         _need(type(connection) is AsyncConnection and connection.in_transaction())
@@ -91,7 +95,7 @@ async def observe_current0057_g12_writer_profile_v1(
         _need(type(read_only) is bool)
         first = tuple((await connection.execute(_HEAD_SQL)).one())
         _need(
-            first[:5] == (["0057"], expected_writer_oid, writer, True, "none")
+            first[:5] == ([head], expected_writer_oid, writer, True, "none")
             and type(first[5]) is str
             and first[5].isascii()
             and first[5].isdecimal()
@@ -156,7 +160,10 @@ async def observe_current0057_g12_writer_profile_v1(
         )
         value = await connection.scalar(text(g12.CATALOG_SQL))
         observation = g12.observe_catalog_0057(
-            value, owner=owner, writer=expected_writer_oid
+            value,
+            owner=owner,
+            writer=expected_writer_oid,
+            **({} if profile is profiles.DB0057 else {"profile": profile}),
         )
         repeated = await connection.scalar(text(g12.CATALOG_SQL))
         _need(canonical(repeated) == canonical(value))
@@ -167,12 +174,12 @@ async def observe_current0057_g12_writer_profile_v1(
             for item in combined
         ]
         return {
-            "schema": "ctcc.current0057.g12_writer_profile.observation.v1",
-            "database_head": "0057",
+            "schema": f"ctcc.current{head}.g12_writer_profile.observation.v1",
+            "database_head": head,
             "writer_oid": expected_writer_oid,
             "g12_catalog_sha256": observation["catalog_sha256"],
             "acl_shape_sha256": sha(
-                canonical({"database_head": "0057", "grant_plan": plan})
+                canonical({"database_head": head, "grant_plan": plan})
             ),
             "grant_statements": 44,
             "g12_grant_statements": 2,

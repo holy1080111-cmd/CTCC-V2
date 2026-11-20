@@ -6,6 +6,7 @@ import hashlib
 import re
 
 from app.domain import native_closed_report_catalog_v55 as table_helpers
+from app.domain import native_database_profile_v1 as profiles
 from app.domain import native_terminal_catalog_v55 as function_helpers
 from app.domain.source_primitives import canonical
 
@@ -428,9 +429,11 @@ def _ri(rows):
     _need(len(constraints) == 1)
 
 
-def observe_catalog_0057(value, *, owner, writer):
+def observe_catalog_0057(value, *, owner, writer, profile=profiles.DB0057):
     """Validate actual metadata; hashes and expected values never grant authority."""
     try:
+        head = profiles.head(profile)
+        _need(head in {"0057", "0058"})
         _need(
             type(owner) is type(writer) is int
             and 0 < owner < 2**32
@@ -440,7 +443,7 @@ def observe_catalog_0057(value, *, owner, writer):
         _need(
             type(value) is dict
             and set(value) == {"head", "functions", "tables", "ri"}
-            and value["head"] == ["0057"]
+            and value["head"] == [head]
         )
         _functions(value["functions"], owner)
         rows = value["tables"]
@@ -530,8 +533,8 @@ def observe_catalog_0057(value, *, owner, writer):
             },
         }
         return {
-            "schema": "ctcc.g12_custody0057.observation.v1",
-            "database_head": "0057",
+            "schema": f"ctcc.g12_custody{head}.observation.v1",
+            "database_head": head,
             "catalog_sha256": hashlib.sha256(canonical(value)).hexdigest(),
             "definitions_sha256": hashlib.sha256(canonical(definitions)).hexdigest(),
             "publication_body_sha256": PUBLICATION_BODY_SHA256,

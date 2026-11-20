@@ -149,7 +149,7 @@ def _issued_writer_pin(issued):
     if (
         type(issued) is not candidate.account.IssuedAccountForG11V1
         or type(issued.database_head) is not str
-        or issued.database_head not in {"0055", "0056", "0057"}
+        or issued.database_head not in {"0055", "0056", "0057", "0058"}
         or type(issued.writer_role_oid) is not int
         or not 0 < issued.writer_role_oid < 2**32
         or issued.execution_authority is not False
@@ -159,11 +159,7 @@ def _issued_writer_pin(issued):
         if issued.database_factories is not None or issued.database_roles is not None:
             _deny("native_g12_genuine_issued_writer_required")
     else:
-        profile = (
-            _database_profiles.DB0056
-            if issued.database_head == "0056"
-            else _database_profiles.DB0057
-        )
+        profile = _database_profiles.NativeDatabaseProfileV1(issued.database_head)
         factories, roles = issued.database_factories, issued.database_roles
         if (
             type(factories)
@@ -202,7 +198,7 @@ async def _verify_custody_writer_catalog_v2(repository, binding, session, *, key
             _deny("native_g12_issued_writer_catalog_changed")
         digest = observed["catalog_sha256"]
     else:
-        # This actual SQL dispatcher chooses only the closed 0056/0057 physical
+        # This actual SQL dispatcher chooses only the closed 0056/0057/0058 physical
         # profile. Its observations retain native_baseline_admission=false.
         actual, _ = await _issuer_transaction.read_actual_native_issuer_transaction(
             session
@@ -210,11 +206,7 @@ async def _verify_custody_writer_catalog_v2(repository, binding, session, *, key
         _custody_context(repository, binding, key=key)
         if actual.head != expected_head or actual.role_oid != expected_oid:
             _deny("native_g12_issued_writer_catalog_changed")
-        profile = (
-            _database_profiles.DB0056
-            if expected_head == "0056"
-            else _database_profiles.DB0057
-        )
+        profile = _database_profiles.NativeDatabaseProfileV1(expected_head)
         factories, roles = issued.database_factories, issued.database_roles
         _, engine, names, _ = _issuer_transaction.locked._factory_pins(factories)
         if session.bind is not engine:
@@ -228,7 +220,7 @@ async def _verify_custody_writer_catalog_v2(repository, binding, session, *, key
         )
         _custody_context(repository, binding, key=key)
         if (
-            expected_head == "0057"
+            expected_head in {"0057", "0058"}
             and actual.native_definitions_sha256
             != roles.observation.inherited_native_definitions_sha256
         ):
@@ -400,7 +392,7 @@ def _custody_transcript_sha256(state):
         or len(issued) != 2
         or type(catalog) is not tuple
         or len(catalog) != 3
-        or issued[0] not in {"0055", "0056", "0057"}
+        or issued[0] not in {"0055", "0056", "0057", "0058"}
         or type(issued[1]) is not int
         or not 0 < issued[1] < 2**32
         or type(catalog[2]) is not str
@@ -409,11 +401,11 @@ def _custody_transcript_sha256(state):
         or catalog[:2] != issued
     ):
         _deny("native_g12_issued_writer_catalog_changed")
-    if issued[0] == "0057":
+    if issued[0] in {"0057", "0058"}:
         return sha(
             canonical(
                 {
-                    "schema_version": "ctcc.native_g12_custody0057.v1",
+                    "schema_version": f"ctcc.native_g12_custody{issued[0]}.v1",
                     "database_head": issued[0],
                     "writer_role_oid": issued[1],
                     "catalog_sha256": catalog[2],
