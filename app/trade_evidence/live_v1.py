@@ -42,6 +42,17 @@ class LiveEvidenceSnapshotV1(EvidenceSnapshot):
     ]
 
 
+class LiveFamilyEvidenceSnapshotV1(shared.NativeFamilyEvidenceSnapshotV3):
+    """Live history-family DATA with its exact qualification/history schema."""
+
+    schema_version: Literal["ctcc_trade_evidence_live_family_v1"] = (
+        "ctcc_trade_evidence_live_family_v1"
+    )
+    quote: Annotated[
+        LiveExecutableQuoteV1, WrapValidator(_replay_live_evidence_quote_v1)
+    ]
+
+
 def prepare_live_evidence_v1(
     market,
     analysis,

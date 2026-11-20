@@ -136,8 +136,16 @@ def _profile(profile):
     if type(profile) is not NativeEvidenceProfileV1:
         raise service.EvidenceError("native_evidence_profile_required")
     if profile is NativeEvidenceProfileV1.DEMO:
-        return ExecutableQuoteV2, inspect_executable_quote_v2, NativeEvidenceSnapshotV2
-    from app.trade_evidence.live_v1 import LiveEvidenceSnapshotV1
+        return (
+            ExecutableQuoteV2,
+            inspect_executable_quote_v2,
+            NativeEvidenceSnapshotV2,
+            NativeFamilyEvidenceSnapshotV3,
+        )
+    from app.trade_evidence.live_v1 import (
+        LiveEvidenceSnapshotV1,
+        LiveFamilyEvidenceSnapshotV1,
+    )
     from app.trade_qualification.executable_quote_live_v1 import (
         LiveExecutableQuoteV1,
         inspect_live_executable_quote_v1,
@@ -147,6 +155,7 @@ def _profile(profile):
         LiveExecutableQuoteV1,
         inspect_live_executable_quote_v1,
         LiveEvidenceSnapshotV1,
+        LiveFamilyEvidenceSnapshotV1,
     )
 
 
@@ -247,7 +256,9 @@ def _prepare_native_evidence_profile(
     candle_limit=80,
     _profile_choice=NativeEvidenceProfileV1.DEMO,
 ):
-    quote_type, inspect_quote, base_snapshot_type = _profile(_profile_choice)
+    quote_type, inspect_quote, base_snapshot_type, family_snapshot_type = _profile(
+        _profile_choice
+    )
     if (
         type(qualification)
         not in (
@@ -264,8 +275,6 @@ def _prepare_native_evidence_profile(
     family = (
         type(qualification) is _owned_family_v3.OwnedFamilyEntryQualificationResultV2
     )
-    if family and _profile_choice is NativeEvidenceProfileV1.LIVE:
-        raise service.EvidenceError("live_exact_family_profile_required")
     expected_type = (
         _owned_family_v3.OwnedFamilyEntryQualificationResultV2
         if family
@@ -342,7 +351,7 @@ def _prepare_native_evidence_profile(
         "candle_limit": candle_limit,
         "zone_tick_size": zone_tick_size,
     }
-    snapshot_type = NativeFamilyEvidenceSnapshotV3 if family else base_snapshot_type
+    snapshot_type = family_snapshot_type if family else base_snapshot_type
     initial = snapshot_type(**values)
     doc = initial.model_dump(mode="json", round_trip=True)
     values["candidate_sha256"] = sha(
@@ -382,12 +391,10 @@ def prepare_native_evidence_v2(
 def _validate_native_evidence_profile(
     snapshot, *, _profile_choice=NativeEvidenceProfileV1.DEMO
 ):
-    quote_type, inspect_quote, base_snapshot_type = _profile(_profile_choice)
-    allowed = (
-        (NativeEvidenceSnapshotV2, NativeFamilyEvidenceSnapshotV3)
-        if _profile_choice is NativeEvidenceProfileV1.DEMO
-        else (base_snapshot_type,)
+    quote_type, inspect_quote, base_snapshot_type, family_snapshot_type = _profile(
+        _profile_choice
     )
+    allowed = (base_snapshot_type, family_snapshot_type)
     if (
         type(snapshot) not in allowed
         or set(snapshot.__dict__) != set(type(snapshot).model_fields)
@@ -395,7 +402,7 @@ def _validate_native_evidence_profile(
         or type(snapshot.qualification)
         is not (
             _owned_family_v3.OwnedFamilyEntryQualificationResultV2
-            if type(snapshot) is NativeFamilyEvidenceSnapshotV3
+            if type(snapshot) is family_snapshot_type
             else EntryQualificationResult
         )
         or type(snapshot.quote) is not quote_type
@@ -432,7 +439,7 @@ def _validate_native_evidence_profile(
     }
     selector = (
         _owned_family_v3._select_owned_family_protection_v2
-        if type(snapshot) is NativeFamilyEvidenceSnapshotV3
+        if type(snapshot) is family_snapshot_type
         else select_structural_protection
     )
     protection = selector(
