@@ -218,6 +218,42 @@ def _negative_public_journal_view(directory, events, mutation):
         )
     elif mutation == "unknown_kind":
         parts[chunk_indices[0]][0]["kind"] = "unknown_future_wire_event"
+    elif mutation in {"foreign_ohlc_stage", "foreign_account_stage"}:
+        # Insert a distinct, fully rehashed negative-test marker while keeping
+        # every original request/raw fragment and the genuine plan untouched.
+        # Its kind is known to the new journal, but foreign to this V4 plan.
+        packet = next(raw for event, raw in parts if event["kind"] == "packet")
+        candles = source.canonical(
+            source.decode(packet, source.runtime.MAX_RAW)["candles"]
+        )
+        observed = next(
+            event["metadata"]["observed"]
+            for event, _raw in parts
+            if event["kind"] == "ws_closed"
+        )
+        marker = copy.deepcopy(parts[0][0])
+        if mutation == "foreign_ohlc_stage":
+            marker.update(
+                kind="ohlc_stage_complete",
+                metadata={"completed": observed, "candles_sha256": source.sha(candles)},
+            )
+            marker_raw = candles
+        else:
+            marker.update(
+                kind="account_stage_ready",
+                metadata={
+                    "completed": observed,
+                    "source_revision_sha256": "c" * 64,
+                    "ohlc_prefix_sha256": source.sha(source.canonical(parts[0][0])),
+                },
+            )
+            marker_raw = None
+        before_clock = next(
+            index
+            for index, (event, _raw) in enumerate(parts)
+            if event["kind"] == "clock_after"
+        )
+        parts.insert(before_clock, [marker, marker_raw])
     elif mutation == "malformed_complete_body":
         last = chunk_indices[-1]
         assert parts[last][1]
@@ -1243,12 +1279,30 @@ async def test_actual_body_terminal_scanner_refuses_all_incomplete_negative_view
             "missing_response_closed",
             "unknown_kind",
             "malformed_complete_body",
+            "foreign_ohlc_stage",
+            "foreign_account_stage",
         ]
         rejected = []
         for mutation in cases:
             view, changed_events = _negative_public_journal_view(
                 directory, events, mutation
             )
+            if mutation.startswith("foreign_"):
+                expected = (
+                    "runtime_global_ohlc_stage_invalid"
+                    if mutation == "foreign_ohlc_stage"
+                    else "runtime_global_account_stage_invalid"
+                )
+                # Specific semantic refusal proves the actual journal parser
+                # accepted the reconstructed chain/inventory first. It must
+                # reject these known kinds because the plan remains V4.
+                with pytest.raises(ValueError, match=expected):
+                    source.public_custody.journal.replay_runtime_attempt(
+                        view,
+                        expected_plan_sha256=source.sha(
+                            view.read("plan.json", source.runtime.MAX_RAW)
+                        ),
+                    )
             with pytest.raises((ValueError, KeyError)):
                 source._secret_public_journal(
                     view, changed_events, state["terminal_tokens"]
@@ -1257,7 +1311,7 @@ async def test_actual_body_terminal_scanner_refuses_all_incomplete_negative_view
             assert native.held["public_state"]["bundle_raw"] == original
             assert source.sha(original) == original_pin
         assert rejected == cases
-        # The actual unmodified owner still consumes normally after all nine
+        # The actual unmodified owner still consumes normally after all eleven
         # forged audit views refused. The views themselves never gain authority.
         result = source.consume_postpublication_source_operands_v1(owner)
         assert not result.execution_authority and not result.account_complete
