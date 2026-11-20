@@ -25,7 +25,7 @@ _ROWS = (
     ),
     (
         "app/exchange/okx/native_demo_write_v2.py",
-        "a93695a738930f0c9dad5fa44d02ca9988930c89d0c40463c3b86180fc9834df",
+        "98acec610fbafbcc7b2c7424464cac59756b5569bd8e29b3e0fc916c8d2726f8",
     ),
     (
         "app/exchange/okx/native_demo_transport_v2.py",
