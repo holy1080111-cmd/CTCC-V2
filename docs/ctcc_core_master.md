@@ -1,5 +1,9 @@
 # CTCC 核心總規格：123 專案整合
 
+2026-11-21 工具交付範圍見 [最新工具施工紀錄](tool_completion_scope_2026_11_21.md)。
+依使用者決定，先完成可操作工具；Gate3 與真實交易案例延後，不記 PASS。
+來源、完整帳戶、原候選重檢、風控、持久訂單意圖及當次 Live 人工授權維持必要。
+
 2026-10-22 最新施工與驗證限制見 [來源與驗證紀錄](final_completion_validation.md)。
 canonical 開發分支由 `016a358` 保留施工歷史後建立，未覆蓋原部署。
 每筆 structural risk 0.5%、portfolio stop risk 1%、300 USDT bucket 與

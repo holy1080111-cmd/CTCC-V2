@@ -1,5 +1,10 @@
 # Frozen implementation sequence
 
+The [2026-11-21 tool delivery scope](tool_completion_scope_2026_11_21.md)
+records the latest user decision: complete the usable tool first; Gate3 and
+actual trading examples are deferred, never passed. Historical phase evidence
+below keeps its original source and scope.
+
 Final-completion work, including the 2026-09-23 continuation, is tracked in
 [source and validation state](final_completion_validation.md). The source has
 been preserved and isolated; engineering changes are undergoing a new exact
