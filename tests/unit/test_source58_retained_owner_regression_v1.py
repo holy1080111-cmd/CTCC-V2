@@ -54,7 +54,7 @@ def _actual_owner_cases():
 
 def test_actual_owner_cases_all_run_once_on_source58_component3():
     expected = _actual_owner_cases()
-    assert len(expected) == len(set(expected)) == 12
+    assert len(expected) == len(set(expected)) == 21
     assert set(full.CANONICAL_OWNER_CASES) == set(expected)
     assert len(NEW_CASES) == 6 and set(NEW_CASES) <= set(expected)
     assert set(expected).isdisjoint(full.SUCCESSOR_CASES)
@@ -96,6 +96,42 @@ def test_source58_mandatory_report_rejects_each_new_owner_fault_omission(
         full.base.shared.verify_pytest_report(
             path, required_cases=full.CANONICAL_OWNER_CASES
         )
+
+
+def test_source58_preserves_the_existing_genuine_cli_once_on_historical_owner1():
+    case = (
+        "tests.integration.test_gate3_fitted_candidate_custody_pg",
+        "test_actual0056_non_superuser_owner_upgrades_0055_once_with_fresh_readback",
+    )
+    assert full.REQUIRED_CASES.count(case) == 1
+    node = case[0].replace(".", "/") + ".py::" + case[1]
+    assert [
+        index
+        for index in range(5)
+        if full.collection.selected_for("postgres", index, node)
+    ] == [1]
+    assert len(full.OWNER0056_V2_CASES) == len(set(full.OWNER0056_V2_CASES)) == 9
+    assert all(case not in full.base.REQUIRED_CASES for case in full.OWNER0056_V2_CASES)
+
+
+@pytest.mark.parametrize(
+    "missing", (*full.OWNER0056_V2_CASES, full.OWNER0056_EXISTING_CLI_CASE)
+)
+def test_source58_mandatory_report_rejects_each_new_owner55_case_omission(
+    tmp_path, missing
+):
+    root = ET.Element("testsuites")
+    required = (*full.CANONICAL_OWNER_CASES, full.OWNER0056_EXISTING_CLI_CASE)
+    cases = [case for case in required if case != missing]
+    suite = ET.SubElement(
+        root, "testsuite", tests=str(len(cases)), failures="0", errors="0", skipped="0"
+    )
+    for module, name in cases:
+        ET.SubElement(suite, "testcase", classname=module, name=name)
+    path = tmp_path / "declared-synthetic-owner55-required-report.xml"
+    path.write_bytes(ET.tostring(root))
+    with pytest.raises(ValueError, match="pytest_required_execution_not_verified"):
+        full.base.shared.verify_pytest_report(path, required_cases=required)
 
 
 def _workflow_contract(workflow):

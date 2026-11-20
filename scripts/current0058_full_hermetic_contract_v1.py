@@ -93,6 +93,32 @@ OWNER_UPGRADE_CASES = tuple(
         ),
     )
 )
+OWNER0056_V2_CASES = tuple(
+    ("tests.integration.test_native_owner_upgrade_0056_v2_pg", name)
+    for name in (
+        "test_actual0055_v2_rehearsal_rollback_then_commit_preserves_all_rows_and42_grants",
+        *(
+            "test_actual0055_v2_rehearsal_or_final_exception_rolls_back_catalog_rows_and_acl["
+            + phase
+            + "]"
+            for phase in ("1", "2")
+        ),
+        *(
+            "test_actual0055_v2_null_bitmap_detects_json_only_zero_delta_and_restores_original["
+            + phase
+            + "]"
+            for phase in ("1", "2")
+        ),
+        "test_actual0055_v2_original_metadata_drift_is_not_hidden_by_correct_new_fitted_schema",
+        "test_actual0055_v2_wrong_reviewed_role_oid_refuses_without_ddl",
+        "test_actual0055_v2_commit_response_loss_is_unknown_and_never_reapplies_or_erases_head",
+        "test_actual0055_v2_marker_view_refuses_before_its_select_callback",
+    )
+)
+OWNER0056_EXISTING_CLI_CASE = (
+    "tests.integration.test_gate3_fitted_candidate_custody_pg",
+    "test_actual0056_non_superuser_owner_upgrades_0055_once_with_fresh_readback",
+)
 OWNER0057_NULL_CASES = tuple(
     (
         "tests.integration.test_native_owner_upgrade_0057_pg",
@@ -103,6 +129,7 @@ OWNER0057_NULL_CASES = tuple(
     for changed in ("False", "True")
 )
 CANONICAL_OWNER_CASES = (
+    *OWNER0056_V2_CASES,
     *(
         case
         for case in base.SUCCESSOR_CASES
@@ -313,7 +340,9 @@ REQUIRED_CASES = (
     *BINDING_CASES,
     *ORIGINAL_OCO_CASES,
     *OWNER_UPGRADE_CASES,
+    *OWNER0056_V2_CASES,
     *OWNER0057_NULL_CASES,
+    OWNER0056_EXISTING_CLI_CASE,
     *ORIGINAL_OCO_REPORT_CASES,
     *LIVE_OPERATOR_CASES,
     *LIVE_LIFECYCLE_CASES,

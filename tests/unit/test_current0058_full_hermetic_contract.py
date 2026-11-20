@@ -248,7 +248,7 @@ def test_five_pg_owners_preserve_every_whole_module_and_historical_producer():
     assert set.union(*(set(paths) for paths in owners)) == (
         legacy.POSTGRES_TEST_PATHS
         | full.collection.SUCCESSOR_PATHS
-        | full.collection.RETAINED0017_OWNER_PATHS
+        | full.collection.OWNER_PATHS
     )
     for index, paths in enumerate(owners):
         assert not paths.intersection(set().union(*owners[:index]))
