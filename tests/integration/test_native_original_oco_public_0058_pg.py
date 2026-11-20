@@ -82,6 +82,7 @@ async def test_actual0058_public_original_oco_closure_and_new_postflat_journal_p
         await journal.replay_and_append_after_flat(original, current, closed)
         != closed.write_xid
     )
+    await journal.journal_data_readback("reconciled_flat")
     assert await _guards(owner) == before
     assert (
         await observe_restricted_native_roles_0056_witness_v1(
@@ -107,4 +108,5 @@ async def test_actual0058_public_changed_or_incomplete_oco_remains_durably_held(
     original, current, hold = await journal.seed_hold(recorded)
     rejected = await journal.close(original, current, hold, mutation=mutation)
     assert await journal.readback_held() != rejected.write_xid
+    await journal.journal_data_readback("uncertain")
     assert await _guards(owner) == before

@@ -24,12 +24,20 @@ The four positive cases cover long/short and net/long-short position modes:
    through the installed submission-binding trigger and independently reopen
    the full canonical hash chain with the production DATA decoder. The original
    closure timestamp, intent, event and single hold/closure identities remain.
+   An attempted raw row with a different closure link must be rejected by the
+   actual submission-binding trigger before the valid journal is appended.
 
 The three negative cases change protection, report a partial child fill or
 report ambiguous children. Rehashed assessment JSON cannot pass the installed
 predicate. A real nested update is rejected by the actual reservation trigger;
 a different committed session must still observe revision-3 uncertainty,
 no terminal transition and disarmed Control.
+
+Both paths execute the actual native local-journal SELECT and strict DATA
+projection on DB0058, including an independently scoped empty result for an
+unrelated synthetic UID. This narrow SQL/projection check does not replace a
+signed identity selector or claim the full HTTP service executed. Protection
+remains explicitly `NOT_RECHECKED` in this local listing.
 
 `tests/unit/test_public_protective_0058_fixture_v1.py` separately validates the
 four predeclared fixture variants and the writer-serializer/production-reader

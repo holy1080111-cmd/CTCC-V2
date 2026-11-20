@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from urllib.parse import urlencode
 
 from sqlalchemy import func, select, text
+from sqlalchemy.exc import DBAPIError
 
 from app.database.models.account_capture_journal import DemoAccountCaptureEvent
 from app.database.models.account_issued_revision import (
@@ -752,8 +753,6 @@ class PublicJournal0058:
             )
             if mutation is not None:
                 assert allowed is False
-                from sqlalchemy.exc import DBAPIError
-
                 async with session.begin_nested() as savepoint:
                     try:
                         await session.execute(
@@ -847,6 +846,49 @@ class PublicJournal0058:
             )
             return await session.scalar(text("SELECT pg_current_xact_id()::text"))
 
+    async def journal_data_readback(self, expected_state):
+        """Actual query/projection smoke only; no signed selector is replaced."""
+        from app.demo_automation import native_journal_readout_v1 as readout
+
+        async with self.selected.writer_factory() as session, session.begin():
+            await _settings(session)
+            head = await session.scalar(
+                text("SELECT version_num FROM public.alembic_version")
+            )
+            assert head == "0058"
+            views = []
+            for uid in (self.target.request.scope.account_id, "999999999999999"):
+                raw = dict(
+                    (await session.execute(readout._QUERY, {"uid": uid, "limit": 100}))
+                    .mappings()
+                    .one()
+                )
+                view = readout._readout(raw, uid=uid, head=head, limit=100)
+                assert (
+                    view.execution_authority
+                    is view.order_retry_authority
+                    is view.account_complete
+                    is False
+                )
+                views.append(view)
+            actual, foreign = views
+            assert actual.total_native == len(actual.entries) == 1
+            assert actual.unresolved_native == (expected_state != "reconciled_flat")
+            assert actual.unresolved_other == 0 and actual.truncated is False
+            row = actual.entries[0]
+            assert (row.reservation_id, row.local_state) == (
+                self.target.reservation_id,
+                expected_state,
+            )
+            assert row.protection_status == "NOT_RECHECKED"
+            assert (
+                foreign.total_native
+                == foreign.unresolved_native
+                == foreign.unresolved_other
+                == 0
+            )
+            assert foreign.entries == () and foreign.truncated is False
+
     async def replay_and_append_after_flat(self, original, terminal, closed):
         # A NEW invocation/read envelope is declared after the committed flat
         # witness. Original entry/exit source clocks and raw facts stay fixed.
@@ -871,6 +913,21 @@ class PublicJournal0058:
                 )
                 is True
             )
+            # The new raw branch must require the exact committed closure.
+            # Rehashed DATA with a foreign link must still fail the real
+            # submission binding trigger, leaving all real rows intact.
+            async with session.begin_nested() as savepoint:
+                try:
+                    await self.append(
+                        session,
+                        {"version": "ctcc.native_read_manifest.v1"},
+                        closure="0" * 64,
+                    )
+                except DBAPIError as error:
+                    assert "submission_outcome_binding_denied" in str(error)
+                else:
+                    raise AssertionError("foreign closure link appended postflat DATA")
+                await savepoint.rollback()
             manifest, _ = await self.manifest(
                 session, current, actual, label="postflat", closure=closed.closure
             )
