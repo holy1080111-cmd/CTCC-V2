@@ -205,6 +205,29 @@ async def test_actual0058_original_oco_report_spool_replays_without_own_close_in
         **values,
     )
     async with selected.writer_factory() as session, session.begin():
+        # Execute the actual PostgreSQL ARE engine, including the historic
+        # >255 bound edge. The1..300 digit policy itself stays unchanged.
+        for raw, numerator, denominator in (
+            ("0", True, False),
+            ("-1", True, False),
+            ("+1", False, False),
+            ("9" * 255, True, True),
+            ("9" * 256, True, True),
+            ("9" * 300, True, True),
+            ("-" + "9" * 300, True, False),
+            ("9" * 301, False, False),
+        ):
+            numeric = (
+                await session.execute(
+                    text("SELECT :raw ~ :numerator, :raw ~ :denominator"),
+                    {
+                        "raw": raw,
+                        "numerator": schema.METRIC_NUMERATOR_REGEX,
+                        "denominator": schema.METRIC_DENOMINATOR_REGEX,
+                    },
+                )
+            ).one()
+            assert tuple(numeric) == (numerator, denominator)
         allowed = await session.scalar(
             text(
                 "SELECT public.qualification_native_report_eligible_v55(:oid,:rid,:report,:policy)"

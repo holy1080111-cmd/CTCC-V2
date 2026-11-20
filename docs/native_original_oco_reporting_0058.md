@@ -34,7 +34,12 @@ fail closed. Restart does not fabricate proof of an old process's transport
 cleanup. A new DATA recovery can only record its own observed read retirement.
 
 The additive58 SPEC replaces the installed report eligibility function under
-the same name/signature and 44-grant profile. Its original55 tail is unchanged.
+the same name/signature and 44-grant profile. The frozen55 source/body remains
+unchanged. On physical58 only, both report branches spell the same1..300-digit
+metric language using split finite repetitions, because PostgreSQL ARE bounds
+cannot exceed255 ([PostgreSQL17 documentation](https://www.postgresql.org/docs/17/functions-matching.html)).
+Removing the additive branch and reversing only that equivalent spelling
+reconstructs the exact55 function; the restore SQL remains its exact prior body.
 The new58 submission trigger positively binds the two new acknowledged DATA
 versions to the existing original-OCO closure and pre-flat forensic receipt.
 Legacy55/56/57 report observations continue to expect their exact prior body.

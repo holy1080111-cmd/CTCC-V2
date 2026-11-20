@@ -24,6 +24,10 @@ def test_report_sql_addition_strips_to_exact55_and_preserves_false_authority():
         report.ELIGIBLE_SQL.replace(report._BRANCH, "", 1)
         .replace(report._EXTRA_DECLARATIONS, "", 1)
         .replace("CREATE OR REPLACE FUNCTION", "CREATE FUNCTION", 1)
+        .replace(report.METRIC_NUMERATOR_REGEX, report.LEGACY_METRIC_NUMERATOR_REGEX, 1)
+        .replace(
+            report.METRIC_DENOMINATOR_REGEX, report.LEGACY_METRIC_DENOMINATOR_REGEX, 1
+        )
         == old_report.ELIGIBLE_SQL
     )
     assert report.ELIGIBLE_BODY_SHA256 != old_report.body_sha(

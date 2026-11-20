@@ -1,8 +1,9 @@
 """Additive original-OCO reporting SPEC; importing installs no SQL.
 
 The existing55 report function/signature/grants remain the dispatch boundary.
-Only physical58 receives this explicit new branch; removing it reconstructs
-the exact55 function. There is no fabricated own-close intent or preflight.
+Only physical58 receives the explicit new branch and equivalent compilable
+numeric spelling; reversing both reconstructs the exact55 function. There is
+no fabricated own-close intent or preflight.
 """
 
 from hashlib import sha256
@@ -23,6 +24,26 @@ _policy.update(
 REPORT_POLICY_JSON = canonical(_policy).decode()
 REPORT_POLICY_SHA256 = sha256(REPORT_POLICY_JSON.encode()).hexdigest()
 del _policy
+
+# PostgreSQL ARE repetition bounds stop at255. These equivalent bounded
+# spellings preserve the existing1..300 digit language on physical58. The
+# frozen55 source and restore SQL retain their original exact bytes.
+LEGACY_METRIC_NUMERATOR_REGEX = r"^-?[0-9]{1,300}$"
+LEGACY_METRIC_DENOMINATOR_REGEX = r"^[1-9][0-9]{0,299}$"
+METRIC_NUMERATOR_REGEX = r"^-?[0-9]{1,255}[0-9]{0,45}$"
+METRIC_DENOMINATOR_REGEX = r"^[1-9][0-9]{0,254}[0-9]{0,45}$"
+
+
+def _compiled_numeric_spelling(sql):
+    for original, compiled in (
+        (LEGACY_METRIC_NUMERATOR_REGEX, METRIC_NUMERATOR_REGEX),
+        (LEGACY_METRIC_DENOMINATOR_REGEX, METRIC_DENOMINATOR_REGEX),
+    ):
+        if sql.count(original) != 1:
+            raise ValueError("protective_report58_numeric_ancestor_changed")
+        sql = sql.replace(original, compiled, 1)
+    return sql
+
 
 _COMMON_START = (
     "     OR data->>'version' IS DISTINCT FROM 'ctcc.native_closed_trade_forensics.v1'"
@@ -235,14 +256,21 @@ _CLEANUP = r"""
          IS DISTINCT FROM ARRAY['custody','frame_reader'] THEN RETURN false; END IF;
 """
 _BRANCH = (
-    _HEADER + _CLEANUP + _common_checks() + _common_math() + _CHAIN + "\n  END IF;\n"
+    _HEADER
+    + _CLEANUP
+    + _common_checks()
+    + _compiled_numeric_spelling(_common_math())
+    + _CHAIN
+    + "\n  END IF;\n"
 )
 _BEGIN = "\nBEGIN\n"
 if ancestor.ELIGIBLE_SQL.count(_BEGIN) != 1:
     raise ValueError("protective_report58_ancestor_begin_changed")
-ELIGIBLE_SQL = ancestor.ELIGIBLE_SQL.replace(
-    "CREATE FUNCTION", "CREATE OR REPLACE FUNCTION", 1
-).replace(_BEGIN, _EXTRA_DECLARATIONS + _BEGIN + _BRANCH, 1)
+ELIGIBLE_SQL = _compiled_numeric_spelling(
+    ancestor.ELIGIBLE_SQL.replace(
+        "CREATE FUNCTION", "CREATE OR REPLACE FUNCTION", 1
+    ).replace(_BEGIN, _EXTRA_DECLARATIONS + _BEGIN + _BRANCH, 1)
+)
 ELIGIBLE_BODY_SHA256 = sha256(ELIGIBLE_SQL.split("$ctcc$")[1].encode()).hexdigest()
 
 
@@ -251,6 +279,8 @@ def statements():
         ELIGIBLE_SQL.replace(_BRANCH, "", 1)
         .replace(_EXTRA_DECLARATIONS, "", 1)
         .replace("CREATE OR REPLACE FUNCTION", "CREATE FUNCTION", 1)
+        .replace(METRIC_NUMERATOR_REGEX, LEGACY_METRIC_NUMERATOR_REGEX, 1)
+        .replace(METRIC_DENOMINATOR_REGEX, LEGACY_METRIC_DENOMINATOR_REGEX, 1)
         != ancestor.ELIGIBLE_SQL
     ):
         raise ValueError("protective_report58_original55_changed")

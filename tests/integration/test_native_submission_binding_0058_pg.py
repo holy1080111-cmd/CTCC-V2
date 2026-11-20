@@ -64,7 +64,16 @@ async def _run(database, case, *, accepted, restored=False):
     engine, _ = database
     async with engine.connect() as connection, connection.begin():
         sql = schema.ANCESTOR_SQL if restored else schema.CURRENT_SQL
-        await lower.install(connection, sql)
+        # The product must target public explicitly. This disposable fixture
+        # redirects ONLY that reviewed DDL header through the lower TEMP lab;
+        # it never installs/replaces the public function or changes its body.
+        public_header = (
+            "CREATE OR REPLACE FUNCTION public.qualification_submission_binding("
+        )
+        plain_header = "CREATE OR REPLACE FUNCTION qualification_submission_binding("
+        assert sql.count(public_header) + sql.count(plain_header) == 1
+        temporary_source = sql.replace(public_header, plain_header, 1)
+        await lower.install(connection, temporary_source)
         await connection.execute(
             text(
                 "ALTER TABLE pg_temp.qualification_reservations ADD COLUMN state_revision bigint NOT NULL DEFAULT 4"
