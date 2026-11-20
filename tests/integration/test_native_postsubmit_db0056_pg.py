@@ -34,9 +34,15 @@ async def _postsubmit0056_lab():
 async def test_actual0056_stopped_postsubmit_transactions_preserve_control_and_catalog(
     monkeypatch, _postsubmit0056_lab
 ):
-    owner_engine, owner_factory, selected, _ = _postsubmit0056_lab
+    await _assert_stopped_postsubmit_transactions(monkeypatch, _postsubmit0056_lab)
+
+
+async def _assert_stopped_postsubmit_transactions(monkeypatch, lab, *, profile=None):
+    owner_engine, owner_factory, selected, _ = lab
     witness = await observe_restricted_native_roles_0056_witness_v1(
-        selected, source=_SOURCE_ROOT
+        selected,
+        source=_SOURCE_ROOT,
+        **({"profile": profile} if profile is not None else {}),
     )
     scope = LedgerScope(
         environment="demo", account_id="730057", settlement_currency="USDT"

@@ -83,6 +83,7 @@ POSTGRES_INTEGRATION = (
     "test_owned_history_profiles0057_pg.py",
     "test_terminal_readout_profiles0057_pg.py",
     "test_native_owner_upgrade_0057_pg.py",
+    "test_native_postsubmit_profiles0057_pg.py",
     "test_demo_event_history_epoch_repository.py",
     "test_durable_migration_downgrade.py",
     "test_devval_campaign_custody_pg_v1.py",

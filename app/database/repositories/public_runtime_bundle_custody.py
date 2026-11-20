@@ -1064,9 +1064,10 @@ SELECT jsonb_build_object(
 async def _current0055_custody_schema_identity(session, role, *, expected_head):
     """Unchanged actual55 metadata on THIS custody role, not a writer projection.
 
-    DB0056 adds fitted-candidate tables and a schedule-claim trigger; it does
-    not change the selected actual55 relations/functions or the DB0046 bundle
-    relation. This carrier predicate does not attest the full DB0056 catalog.
+    DB0056 adds fitted-candidate tables and DB0057 changes the independent G12
+    claim function. Neither changes these selected actual55 relations/functions
+    or the DB0046 bundle relation. This is only the original custody carrier;
+    full native admission separately checks the exact physical version graph.
     """
     from app.domain import collector_current_0055_catalog_v1 as current55
 
@@ -1076,7 +1077,7 @@ async def _current0055_custody_schema_identity(session, role, *, expected_head):
             diagnostic_category="current55_schema_identity",
         ) from None
 
-    if expected_head not in ("0055", "0056"):
+    if expected_head not in ("0055", "0056", "0057"):
         deny()
     baseline = current55._required_baseline()
     if (
@@ -1307,6 +1308,7 @@ class RuntimeBundleCustodyRepository:
                 "0054",
                 "0055",
                 "0056",
+                "0057",
             }:
                 raise RuntimeBundleCustodyError(
                     "runtime_bundle_custody_unavailable",
@@ -1370,14 +1372,14 @@ class RuntimeBundleCustodyRepository:
                     session,
                     (
                         _INCOMING_CUSTODY_FK_SQL_CURRENT0054
-                        if migration_head in {"0054", "0055", "0056"}
+                        if migration_head in {"0054", "0055", "0056", "0057"}
                         else _INCOMING_CUSTODY_FK_SQL
                     ),
                     category="trigger_query",
                 )
             ).all()
         )
-        if migration_head in {"0055", "0056"}:
+        if migration_head in {"0055", "0056", "0057"}:
             current55_identity = await _current0055_custody_schema_identity(
                 session, role, expected_head=migration_head
             )

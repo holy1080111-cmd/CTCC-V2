@@ -692,6 +692,56 @@ async def _require_issued_database_head(repository, binding, session):
         _deny("native_ledger_issued_database_changed")
 
 
+async def require_event_journal_write_v2(repository, binding, session, scope):
+    """Check the original issued writer and real56/57 journal in its own txn."""
+    from sqlalchemy import func, select
+
+    from app.database.repositories import qualification_ledger as journal
+    from app.domain import native_filled_flat_closure_schema_v55 as closure
+
+    record = _actual_session(repository, binding, session)
+    _, issued = _record(repository, binding)
+    if scope != record["request"].scope:
+        _deny("native_ledger_original_scope_required")
+    if issued.database_head == "0055":
+        await journal._require_event_journal_write_schema(session, scope)
+        _actual_session(repository, binding, session)
+        return
+    if issued.database_head not in {"0056", "0057"}:
+        _deny("native_ledger_issued_database_changed")
+    await journal._require_event_journal_session(session)
+    _actual_session(repository, binding, session)
+    await session.execute(
+        select(func.pg_advisory_xact_lock(journal._account_uid_lock_key(scope)))
+    )
+    _actual_session(repository, binding, session)
+    await session.execute(
+        text(
+            "LOCK TABLE public.qualification_account_scopes, "
+            "public.qualification_reservations, "
+            "public.qualification_reservation_transitions "
+            "IN ROW EXCLUSIVE MODE NOWAIT"
+        )
+    )
+    _actual_session(repository, binding, session)
+    await _require_issued_database_head(repository, binding, session)
+    _actual_session(repository, binding, session)
+    rows = await journal._read_event_journal_schema_rows(session)
+    _actual_session(repository, binding, session)
+    journal._check_event_journal_schema_rows(
+        *rows,
+        {
+            **journal._EVENT_GUARD_FUNCTIONS,
+            closure.FUNCTION: (
+                closure.CURRENT_BODY_SHA256,
+                ("search_path=pg_catalog, pg_temp",),
+            ),
+        },
+    )
+    await _require_issued_database_head(repository, binding, session)
+    _actual_session(repository, binding, session)
+
+
 async def read_control_v2(repository, binding, session, scope):
     record = _actual_session(repository, binding, session)
     if scope != record["request"].scope:

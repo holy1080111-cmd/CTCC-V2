@@ -24,6 +24,10 @@ RUNNER_CONTRACT, RUNNER_PATH, SCOPE = (
 SUCCESSOR_CASES = (
     *g12.CASES,
     (
+        "tests.integration.test_native_postsubmit_profiles0057_pg",
+        "test_actual0057_stopped_postsubmit_retains_control_and_exact_journal",
+    ),
+    (
         "tests.integration.test_owned_history_profiles0057_pg",
         "test_actual0057_held_checkpoint_and_source_partition_keep_actual_head_and_locks",
     ),

@@ -361,7 +361,12 @@ async def _transaction(binding):
             _HELD_POSTSUBMIT_0056[session] = (binding, held)
             stack.callback(_HELD_POSTSUBMIT_0056.pop, session)
         # Same UID -> original selected Control -> scope lock order as reserve.
-        await ledger._require_event_journal_write_schema(session, source.scope)
+        if held is None:
+            await ledger._require_event_journal_write_schema(session, source.scope)
+        else:
+            await checkpoint.require_held_event_journal_write_0056_v1(
+                repository, session, source.scope, held
+            )
         _source(binding)
         if held is None:
             control_state, event = await DemoControlRepositoryV2.read_in_transaction(

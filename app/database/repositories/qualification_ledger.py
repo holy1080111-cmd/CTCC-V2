@@ -1867,7 +1867,11 @@ class QualificationLedgerRepository:
                 await native_runtime.configure_transaction(
                     self, _native_binding, session
                 )
-            await _require_event_journal_write_schema(session, request.scope)
+                await native_runtime.require_event_journal_write_v2(
+                    self, _native_binding, session, request.scope
+                )
+            else:
+                await _require_event_journal_write_schema(session, request.scope)
             if is_native:
                 (
                     row,
@@ -2044,7 +2048,11 @@ class QualificationLedgerRepository:
                 await native_runtime.configure_transaction(
                     self, _native_binding, session
                 )
-            await _require_event_journal_write_schema(session, scope)
+                await native_runtime.require_event_journal_write_v2(
+                    self, _native_binding, session, scope
+                )
+            else:
+                await _require_event_journal_write_schema(session, scope)
             if _native_binding is not None:
                 (
                     row,

@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import object_session
 
@@ -197,6 +197,68 @@ def check_held_qualification_checkpoint_0056_v1(
     ):
         _deny("ledger56_checkpoint_original_scope_required")
     witness.check()
+
+
+async def require_held_event_journal_write_0056_v1(repository, session, scope, witness):
+    """Fence unchanged journal guards under the original actual56/57 witness.
+
+    This private path cannot admit an old55 catalog or a caller-supplied head.
+    The authentic checkpoint retains the exact role graph and Control lock for
+    this session. The independent event trigger/index checker still runs.
+    """
+    from app.database.repositories import qualification_ledger as journal
+    from app.domain import native_filled_flat_closure_schema_v55 as closure
+
+    def check():
+        if (
+            type(witness) is not _HeldQualificationCheckpoint0056V1
+            or _ACTIVE_HELD_CHECKPOINTS_0056.get(id(witness)) is not witness
+            or witness.session is not session
+            or type(repository) is not QualificationLedgerRepository
+            or repository.session_factory is not witness.selected.writer_factory
+            or type(scope) is not ledger.LedgerScope
+            or (scope.environment, scope.account_id)
+            != (
+                witness.control.control.state.scope.environment,
+                witness.control.control.state.scope.account_id,
+            )
+            or witness.profile not in (profiles.DB0056, profiles.DB0057)
+        ):
+            _deny("ledger56_event_journal_original_checkpoint_required")
+        witness.check()
+
+    check()
+    await journal._require_event_journal_session(session)
+    check()
+    await session.execute(
+        select(func.pg_advisory_xact_lock(journal._account_uid_lock_key(scope)))
+    )
+    check()
+    await session.execute(
+        text(
+            "LOCK TABLE public.qualification_account_scopes, "
+            "public.qualification_reservations, "
+            "public.qualification_reservation_transitions "
+            "IN ROW EXCLUSIVE MODE NOWAIT"
+        )
+    )
+    check()
+    await witness.recheck_catalog()
+    check()
+    rows = await journal._read_event_journal_schema_rows(session)
+    check()
+    journal._check_event_journal_schema_rows(
+        *rows,
+        {
+            **journal._EVENT_GUARD_FUNCTIONS,
+            closure.FUNCTION: (
+                closure.CURRENT_BODY_SHA256,
+                ("search_path=pg_catalog, pg_temp",),
+            ),
+        },
+    )
+    await witness.recheck_catalog()
+    check()
 
 
 async def validate_held_positive_checkpoint_0056_v1(

@@ -1002,9 +1002,12 @@ def test_actual56_uses_unchanged55_custody_carrier_with_distinct_head(monkeypatc
     actual56 = asyncio.run(
         _run_catalog(_declared_native_0054_ri_catalog(), migration_head="0056")
     )
-    assert observed == ["0055", "0056"]
-    assert len(actual55) == len(actual56) == 64
-    assert actual55 != actual56
+    actual57 = asyncio.run(
+        _run_catalog(_declared_native_0054_ri_catalog(), migration_head="0057")
+    )
+    assert observed == ["0055", "0056", "0057"]
+    assert len(actual55) == len(actual56) == len(actual57) == 64
+    assert len({actual55, actual56, actual57}) == 3
 
 
 def test_actual56_still_rejects_changed_native_custody_fk(monkeypatch):
@@ -1023,12 +1026,13 @@ def test_actual56_carrier_refuses_unapproved_expected_head():
     with pytest.raises(custody.RuntimeBundleCustodyError):
         asyncio.run(
             custody._current0055_custody_schema_identity(
-                object(), object(), expected_head="0057"
+                object(), object(), expected_head="0058"
             )
         )
 
 
-def test_actual56_carrier_reads_real_head_and_unchanged55_descriptors():
+@pytest.mark.parametrize("head", ["0056", "0057"])
+def test_actual56_carrier_reads_real_head_and_unchanged55_descriptors(head):
     expected_functions = current55._source_functions()
     expected_functions["collector_issued_account_revision_guard_v1"] = (
         current55._sha(current55._body(current55.operator.ISSUER_GUARD_SQL, "$ctcc$")),
@@ -1037,7 +1041,7 @@ def test_actual56_carrier_reads_real_head_and_unchanged55_descriptors():
         False,
     )
     value = {
-        "head": ["0056"],
+        "head": [head],
         "tables": [
             {
                 "name": name,
@@ -1090,7 +1094,7 @@ def test_actual56_carrier_reads_real_head_and_unchanged55_descriptors():
 
     observed = asyncio.run(
         custody._current0055_custody_schema_identity(
-            Session(), SimpleNamespace(owner_oid=24), expected_head="0056"
+            Session(), SimpleNamespace(owner_oid=24), expected_head=head
         )
     )
     assert observed[0] == current55.PG17_NATIVE_BASELINE_SHA256
