@@ -237,6 +237,7 @@ def test_topology_uses_actual58_inventory_and_old57_prefix_stays_distinct():
 
 def test_five_pg_owners_preserve_every_whole_module_and_historical_producer():
     from scripts import verify_linux_shard as legacy
+    from scripts import verify_windows_regression as windows
 
     owners = [full.collection.postgres_paths(index) for index in range(5)]
     assert all(owners)
@@ -250,6 +251,7 @@ def test_five_pg_owners_preserve_every_whole_module_and_historical_producer():
     assert owners[2] == full.collection.SUCCESSOR_PATHS
     assert owners[3] <= legacy.postgres_paths(0)
     assert owners[4] <= legacy.postgres_paths(1)
+    assert {Path(path).name for path in owners[2]} <= set(windows.POSTGRES_INTEGRATION)
 
 
 @pytest.mark.parametrize("index", [3, 4])
