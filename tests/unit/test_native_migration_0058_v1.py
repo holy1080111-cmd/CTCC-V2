@@ -9,6 +9,7 @@ from app.database.models import native_live_ledger_v1 as live_models
 from app.database.models.submission_reporting import QualificationSubmissionOutcome
 from app.domain import native_live_ledger_schema_v1 as live
 from app.domain import native_protective_hold_schema_v58 as hold
+from app.domain import native_submission_binding_schema_v58 as submission
 
 subject = import_module("migrations.versions.0058_protected_hold_and_live_intent")
 
@@ -21,6 +22,10 @@ def test_actual58_is_additive_after57_and_never_grants_or_arms(monkeypatch):
     assert statements[0] == subject._LOCK
     assert all(statement in statements for statement in hold.statements())
     assert hold.CURRENT_SQL in statements
+    assert submission.CURRENT_SQL in statements
+    assert statements.index(hold.CURRENT_SQL) < statements.index(submission.CURRENT_SQL)
+    assert any(submission.ANCESTOR_BODY_SHA256 in statement for statement in statements)
+    assert any(submission.CURRENT_BODY_SHA256 in statement for statement in statements)
     assert statements[-len(live.UPGRADE_SQL) :] == list(live.UPGRADE_SQL)
     assert not any(
         statement.lstrip().upper().startswith("GRANT ") for statement in statements
@@ -43,6 +48,8 @@ def test_downgrade_checks_retained_custody_before_removing_only_new_objects(
         if "protected58_preserve_history_and_revoke_grants" in value
     )
     assert refusal < statements.index(subject.previous.CURRENT_SQL)
+    assert refusal < statements.index(submission.ANCESTOR_SQL)
+    assert any(submission.CURRENT_BODY_SHA256 in statement for statement in statements)
     assert statements[-len(live.DOWNGRADE_SQL) :] == list(live.DOWNGRADE_SQL)
     assert not any(
         value.lstrip().upper().startswith(("DELETE ", "TRUNCATE "))

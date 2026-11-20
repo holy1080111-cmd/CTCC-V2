@@ -12,6 +12,7 @@ from alembic import op
 from app.domain import native_filled_flat_closure_schema_v55 as previous
 from app.domain import native_live_ledger_schema_v1 as live
 from app.domain import native_protective_hold_schema_v58 as hold
+from app.domain import native_submission_binding_schema_v58 as submission
 
 revision = "0058"
 down_revision = "0057"
@@ -44,13 +45,41 @@ def _require_guard(pin):
  """)
 
 
+def _require_submission_guard(pin):
+    op.execute(f"""
+ DO $check$ BEGIN
+ IF NOT EXISTS (
+  SELECT 1 FROM pg_catalog.pg_proc p
+  JOIN pg_catalog.pg_class c ON c.oid='public.qualification_submission_outcomes'::regclass
+  JOIN pg_catalog.pg_language l ON l.oid=p.prolang
+  JOIN pg_catalog.pg_trigger t ON t.tgrelid=c.oid AND t.tgfoid=p.oid
+  WHERE p.oid=pg_catalog.to_regprocedure('public.qualification_submission_binding()')
+   AND p.proowner=c.relowner AND l.lanname='plpgsql'
+   AND p.prorettype='pg_catalog.trigger'::regtype AND p.pronargs=0
+   AND NOT p.proretset AND NOT p.prosecdef AND NOT p.proisstrict AND NOT p.proleakproof
+   AND p.prokind='f' AND p.provolatile='v' AND p.proparallel='u' AND p.prosupport=0
+   AND p.proconfig IS NULL
+   AND t.tgname='qualification_submission_binding_guard' AND t.tgenabled='O'
+   AND t.tgtype=7 AND NOT t.tgisinternal AND t.tgnargs=0 AND t.tgconstraint=0
+   AND t.tgqual IS NULL AND t.tgoldtable IS NULL AND t.tgnewtable IS NULL
+   AND t.tgattr::text='' AND pg_catalog.octet_length(t.tgargs)=0
+   AND pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(p.prosrc,'UTF8')),'hex')='{pin}'
+ ) THEN RAISE EXCEPTION 'protected58_submission_guard_changed'; END IF;
+ END $check$;
+ """)
+
+
 def upgrade():
     op.execute(_LOCK)
     _require_guard(previous.CURRENT_BODY_SHA256)
+    _require_submission_guard(submission.ANCESTOR_BODY_SHA256)
     for statement in hold.statements():
         op.execute(statement)
     op.execute(hold.CURRENT_SQL)
     _require_guard(hold.CURRENT_BODY_SHA256)
+    for statement in submission.statements():
+        op.execute(statement)
+    _require_submission_guard(submission.CURRENT_BODY_SHA256)
     for statement in live.UPGRADE_SQL:
         op.execute(statement)
 
@@ -63,6 +92,7 @@ def downgrade():
         + " IN ACCESS EXCLUSIVE MODE NOWAIT"
     )
     _require_guard(hold.CURRENT_BODY_SHA256)
+    _require_submission_guard(submission.CURRENT_BODY_SHA256)
     op.execute("""
  DO $check$ BEGIN
  IF EXISTS(SELECT 1 FROM public.qualification_submission_outcomes
@@ -86,6 +116,9 @@ def downgrade():
  """)
     op.execute(previous.CURRENT_SQL)
     _require_guard(previous.CURRENT_BODY_SHA256)
+    for statement in submission.restore_statements():
+        op.execute(statement)
+    _require_submission_guard(submission.ANCESTOR_BODY_SHA256)
     for statement in hold.restore_statements():
         op.execute(statement)
     # Dependency order is explicit; a remaining function/reference blocks
