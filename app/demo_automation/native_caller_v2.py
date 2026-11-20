@@ -21,6 +21,7 @@ from app.demo_automation.native_private_root_v2 import (
 )
 from app.demo_automation.native_requests_v2 import (
     CONFIGURE_LEVERAGE_CONFIRMATION_V1,
+    PROTECTED_ENTRY_CONFIRMATION_V1,
     NativeDemoActionResultV2,
     NativeDemoArmExecuteRequestV2,
     NativeDemoClearStopRequestV2,
@@ -28,6 +29,8 @@ from app.demo_automation.native_requests_v2 import (
     NativeDemoConfigureLeverageResultV1,
     NativeDemoCounterInitializationRequestV2,
     NativeDemoFilledCompleteResultV3,
+    NativeDemoProtectedEntryRequestV1,
+    NativeDemoProtectedEntryResultV1,
     NativeDemoZeroCompleteResultV3,
 )
 from app.domain.demo_automation import ARM_PHRASE, EXECUTE_PHRASE
@@ -84,6 +87,7 @@ def _freeze_request_v2(request):
         kind
         in (
             NativeDemoArmExecuteRequestV2,
+            NativeDemoProtectedEntryRequestV1,
             NativeDemoClearStopRequestV2,
             NativeDemoCounterInitializationRequestV2,
             NativeDemoConfigureLeverageRequestV1,
@@ -102,8 +106,13 @@ def _freeze_request_v2(request):
         and (extra is None or type(extra) is dict and len(extra) == 0),
         "native_demo_request_invalid",
     )
-    if kind in (NativeDemoArmExecuteRequestV2, NativeDemoConfigureLeverageRequestV1):
+    if kind in (
+        NativeDemoArmExecuteRequestV2,
+        NativeDemoProtectedEntryRequestV1,
+        NativeDemoConfigureLeverageRequestV1,
+    ):
         configure = kind is NativeDemoConfigureLeverageRequestV1
+        normal = kind is NativeDemoProtectedEntryRequestV1
         leverage_field = "leverage_ceiling" if configure else "leverage"
         expected = {"instrument_id", "strategy", "contracts", leverage_field}
         expected.update(
@@ -111,6 +120,8 @@ def _freeze_request_v2(request):
             if configure
             else {"arm_confirmation", "execute_confirmation"}
         )
+        if normal:
+            expected.add("hold_confirmation")
         _need(set(raw) == expected, "native_demo_request_invalid")
         instrument, strategy, quantity, leverage = (
             raw[name]
@@ -185,8 +196,19 @@ def _freeze_request_v2(request):
             and raw["execute_confirmation"] == EXECUTE_PHRASE,
             "native_demo_explicit_confirmation_required",
         )
+        if normal:
+            _need(
+                type(raw["hold_confirmation"]) is str
+                and raw["hold_confirmation"] == PROTECTED_ENTRY_CONFIRMATION_V1,
+                "native_demo_explicit_confirmation_required",
+            )
         return _NativeDemoActionPlanV2(
-            "arm_execute", instrument, strategy, contracts, leverage, None
+            "arm_execute",
+            instrument,
+            strategy,
+            contracts,
+            leverage,
+            PROTECTED_ENTRY_CONFIRMATION_V1 if normal else None,
         )
     _need(
         set(raw) == {"confirmation"} and type(raw["confirmation"]) is str,
@@ -295,7 +317,7 @@ def _check_pending_owned_arm_0056(state, request, plan, owner):
     _check_request_v2(request, plan)
     _need(
         state["action"] == "arm_execute"
-        and state["database_head"] in ("0056", "0057")
+        and state["database_head"] in ("0056", "0057", "0058")
         and state.get("pending_arm_0056") is request
         and state.get("arm_plan_0056") is plan
         and state.get("controller") is owner
@@ -416,7 +438,7 @@ async def _cold_history(service, state, instrument_id):
             )
         _ready(service, state)
         if genesis is None:
-            if head in ("0056", "0057"):
+            if head in ("0056", "0057", "0058"):
                 await _bootstrap_cold_history_0056(
                     service, state, selection, lease, client
                 )
@@ -454,7 +476,7 @@ async def _bootstrap_cold_history_0056(service, state, selection, lease, client)
 
     _need(
         selectors._runtime_selection_database_head_v2(selection, history_only=True)
-        in ("0056", "0057")
+        in ("0056", "0057", "0058")
     )
     profile = selectors._selection_database_profile_0056(selection)
     factories, roles = selection.factories, selection.source_roles_0056
@@ -695,6 +717,10 @@ async def perform_native_demo_action_v2(service, request, *, operator_token):
             "selection": None,
             "submitted_or_unknown": False,
             "action": action,
+            "normal_protected_entry": type(request)
+            is NativeDemoProtectedEntryRequestV1,
+            "frozen_native_plan": selected,
+            "original_native_request": request,
         }
         _ACTIVE[service] = state
         failure = None
@@ -734,10 +760,18 @@ async def perform_native_demo_action_v2(service, request, *, operator_token):
                     head == state["database_head"],
                     "native_demo_database_profile_changed",
                 )
+                if state["normal_protected_entry"]:
+                    from app.database.repositories import (
+                        native_protective_hold_v1 as holding,
+                    )
+
+                    await holding.assert_selected_protective_schema_before_arm_v1(
+                        selection
+                    )
                 prepare_started = utc_from_ns(native_stamp()["utc_ns"])
                 owner = await (
                     facade.prepare_selected_demo_control_owner_0056(selection)
-                    if head in ("0056", "0057")
+                    if head in ("0056", "0057", "0058")
                     else facade.prepare_selected_demo_control_owner_v3(selection)
                 )
                 state["controller"] = owner
@@ -761,7 +795,7 @@ async def perform_native_demo_action_v2(service, request, *, operator_token):
                         prepare_started
                         + timedelta(seconds=demo_control.MAX_ARM_SECONDS),
                     )
-                    if head in ("0056", "0057"):
+                    if head in ("0056", "0057", "0058"):
                         state["pending_arm_0056"] = request
                         state["arm_plan_0056"] = selected
                         try:
@@ -824,6 +858,25 @@ async def perform_native_demo_action_v2(service, request, *, operator_token):
                         )
                     )
                     if result.classification == "filled_and_protected_hold_retained":
+                        if state["normal_protected_entry"]:
+                            from app.trade_qualification import (
+                                native_protected_hold_lifecycle_v1 as holding,
+                            )
+
+                            held = await holding.complete_owned_protected_hold_v1(
+                                result, state, key=_SETTLEMENT_KEY_V1
+                            )
+                            completed = holding.take_owned_protected_hold_completion_v1(
+                                held, state, key=_SETTLEMENT_KEY_V1
+                            )
+                            _need(completed.controller is state["controller"])
+                            state["controller"], state["selection"] = None, None
+                            return NativeDemoProtectedEntryResultV1(
+                                invocation_id=invocation_id,
+                                reservation_id=held.reservation_id,
+                                hold_outcome_id=held.hold_outcome_id,
+                                cleanup_outcome_id=held.cleanup_outcome_id,
+                            )
                         from app.trade_qualification import (
                             native_postsubmit_reconciliation_v1 as post,
                         )

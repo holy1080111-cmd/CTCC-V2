@@ -1262,7 +1262,10 @@ def _replay_native_forensics_entry_v1(result, *, key):
 
 def _take_native_filled_result_for_close_v1(result, *, key):
     state, source, actual = _filled_result_record_for_close_v1(result, key=key)
-    _need(state.get("filled_result_taken_for_close") is not True)
+    _need(
+        state.get("filled_result_taken_for_close") is not True
+        and state.get("normal_hold_taken") is not True
+    )
     state["filled_result_taken_for_close"] = True
     view = NativeFilledResultForCloseV1(
         state["root_handle"],
@@ -3179,7 +3182,20 @@ def _native_recovery_request_id_v1(request):
 
 def _recovery_committed_pages_v1(state, result):
     """Only actual registered, committed evidence can release fresh local custody."""
-    if result is not state.get("result") or result.risk_hold_retained is not False:
+    if result is not state.get("result"):
+        return None
+    protected = state.get("verified_normal_protected_recovery")
+    if protected is not None:
+        _need(
+            type(protected) is tuple and len(protected) == 4 and protected[0] is result
+        )
+        pages = protected[2]
+        _need(
+            pages
+            and pages == state["durable_observations"] == tuple(state["observations"])
+        )
+        return pages
+    if result.risk_hold_retained is not False:
         return None
     if result is state.get("recovered_filled_flat_result"):
         closure = state["verified_filled_flat_closure"]
@@ -3345,6 +3361,17 @@ async def _dispose_completed_recovery_v1(service, caller, attempt, result):
             and _repository._RECOVERY_CLOSE_HISTORIES_V1.get(binding)
             is state.get("recovery_close_history")
         )
+        if (
+            state.get("verified_normal_protected_recovery") is not None
+            and result.risk_hold_retained is False
+        ):
+            from app.trade_qualification import (
+                native_protected_hold_lifecycle_v1 as holding,
+            )
+
+            holding.finalize_normal_hold_ram_marker_after_flat_v1(
+                state, result, key=_SOURCE_KEY_V1
+            )
         selection.close()
         _need(selection not in _selector._SELECTIONS)
         # No await after exact retirement. The closed selection can never be
@@ -3938,6 +3965,10 @@ def _replay_persistence_source_v1(binding, *, key):
     from app.database.repositories import native_postsubmit_v1 as repository
 
     _need(key is repository._SOURCE_KEY_V1 and type(binding) is object)
+    from app.trade_qualification import native_protected_hold_lifecycle_v1 as holding
+
+    if holding.has_owned_hold_persistence_v1(binding):
+        return holding._replay_owned_hold_persistence_v1(binding, key=key)
     if _ZERO_PERSISTENCE_V2.get(binding) is not None:
         state = _zero_persistence_clock_v2(_ZERO_PERSISTENCE_V2[binding])
         return state, state["source"]
@@ -4023,6 +4054,26 @@ async def _run(state):
             state["target"] = await repository.read_native_target_v1(state["binding"])
             _source(state)
             if state["kind"] == "recovery":
+                from app.database.repositories import (
+                    native_protective_hold_v1 as holding,
+                )
+
+                state["phase"] = "durable_original_protected_history"
+                protected = (
+                    await holding.read_owned_protected_history_v1(state["binding"])
+                    if holding.protected_schema_selected_v1(state["binding"])
+                    else None
+                )
+                if protected is not None:
+                    from app.trade_qualification import (
+                        native_protected_hold_recovery_v1 as protected_read,
+                    )
+
+                    result = await protected_read.reconcile_owned_protected_history_v1(
+                        state
+                    )
+                    state["result"] = result
+                    return result
                 state["phase"] = "durable_unique_close_history_readback"
                 history = await repository.read_native_recovery_close_history_v1(
                     state["binding"]

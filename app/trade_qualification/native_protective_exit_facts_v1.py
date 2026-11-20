@@ -43,6 +43,59 @@ def original_protection(target, original):
     return order, inner, rows[0]
 
 
+def assess_open_original_protection_v1(target, original, observations):
+    """NEW current full account, with explicit selector probes retained too."""
+    _expected, inner, old = original_protection(target, original)
+    _need(type(observations) is tuple and len(observations) > 2)
+    _need(
+        tuple(role for role, _ in observations[:2])
+        == ("protected_selector_config", "protected_selector_algo")
+    )
+    chronology._chronology(target, observations)
+    config = _one(
+        observations, "protected_selector_config", "/api/v5/account/config", {}
+    )
+    _need(
+        config.get("uid") == target.request.scope.account_id
+        and config.get("mainUid") == target.main_uid
+        and config.get("acctLv") == "2"
+        and config.get("posMode") == inner["execution_binding"]["position_mode"]
+    )
+    probe = _one(
+        observations,
+        "protected_selector_algo",
+        "/api/v5/trade/order-algo",
+        {"algoId": old["algoId"]},
+    )
+    current = observations[2:]
+    actual = facts.assess_native_reconciliation_v1(target, current)
+    _need(actual.filled_and_protected is True)
+    active = facts.chain(
+        current,
+        "algo_oco",
+        "/api/v5/trade/orders-algo-pending",
+        {"ordType": "oco"},
+        "algoId",
+    )
+    _need(len(active) == 1 and probe == active[0] and probe.get("state") == "live")
+    return NativeProtectiveExitAssessmentV1(
+        canonical(
+            {
+                "version": "ctcc.native_original_protected_open_data.v1",
+                "reservation_id": target.reservation_id,
+                "classification": "original_position_protected_hold_retained",
+                "current_assessment_json": actual.receipt_json.decode(),
+                "selector_config_sha256": sha(observations[0][1].raw_body),
+                "selector_algo_sha256": sha(observations[1][1].raw_body),
+                "risk_hold_retained": True,
+                "release_authority": False,
+                "execution_authority": False,
+                "order_retry_authority": False,
+            }
+        )
+    )
+
+
 def _one(observations, role, path, query):
     rows = facts.one(observations, role, path, query)
     _need(len(rows) == 1)
@@ -104,6 +157,8 @@ def assess_original_protective_exit_v1(target, original, observations):
     chronology._chronology(target, observations)
     _need(original[-1][1].eof_at < observations[0][1].started_at)
     required_roles = {
+        "protected_selector_config",
+        "protected_selector_algo",
         "config_before",
         "config_after",
         "protection_before",
@@ -128,15 +183,31 @@ def assess_original_protective_exit_v1(target, original, observations):
         *("algo_" + kind for kind in facts.read.ALGO_TYPES),
     }
     _need({role for role, _ in observations} == required_roles)
-    facts._source_clocks(
-        tuple(
-            (role, page)
-            for role, page in observations
-            if role in {"balance", "positions", "account_risk"}
-        )
+    _need(
+        tuple(role for role, _ in observations[:2])
+        == ("protected_selector_config", "protected_selector_algo")
     )
+    clock_rows = []
+    for role, page in observations:
+        normalized = (
+            "fills_recent"
+            if role.endswith("fills_recent")
+            else "fills_history"
+            if role.endswith("fills_history")
+            else "order_before"
+            if role.endswith("order_before")
+            else "order_after"
+            if role.endswith("order_after")
+            else role
+        )
+        clock_rows.append((normalized, page))
+    facts._source_clocks(tuple(clock_rows))
     config = _one(observations, "config_before", "/api/v5/account/config", {})
     _need(config == _one(observations, "config_after", "/api/v5/account/config", {}))
+    _need(
+        config
+        == _one(observations, "protected_selector_config", "/api/v5/account/config", {})
+    )
     _need(
         config.get("uid") == target.request.scope.account_id
         and config.get("mainUid") == target.main_uid
@@ -146,6 +217,15 @@ def assess_original_protective_exit_v1(target, original, observations):
     algo_query = {"algoId": old_algo["algoId"]}
     algo = _one(
         observations, "protection_before", "/api/v5/trade/order-algo", algo_query
+    )
+    _need(
+        algo
+        == _one(
+            observations,
+            "protected_selector_algo",
+            "/api/v5/trade/order-algo",
+            algo_query,
+        )
     )
     _need(
         algo
@@ -275,7 +355,19 @@ def assess_original_protective_exit_v1(target, original, observations):
         and int(child["uTime"]) >= exit_time
     )
     _need(trigger_time is not None)
+    _need(
+        facts.source_time(
+            algo.get("uTime"),
+            next(page for role, page in observations if role == "protection_after"),
+        )
+        >= trigger_time
+    )
     _need(not facts._balance_and_risk(observations, target.request))
+    balance = _one(observations, "balance", "/api/v5/account/balance", {})
+    risk = _one(
+        observations, "account_risk", "/api/v5/account/account-position-risk", {}
+    )
+    _need(int(balance["uTime"]) >= exit_time and int(risk["ts"]) >= exit_time)
     leverage_rows = facts.one(
         observations,
         "leverage",

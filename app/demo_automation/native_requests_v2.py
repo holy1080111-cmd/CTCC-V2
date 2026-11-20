@@ -23,6 +23,7 @@ NativeDemoStrategyV2 = Literal[
 ]
 
 CONFIGURE_LEVERAGE_CONFIRMATION_V1 = "CONFIGURE OKX DEMO LEVERAGE WHILE FLAT"
+PROTECTED_ENTRY_CONFIRMATION_V1 = "HOLD OKX DEMO POSITION WITH ORIGINAL TP SL"
 
 
 class NativeDemoArmExecuteRequestV2(BaseModel):
@@ -56,6 +57,31 @@ class NativeDemoConfigureLeverageRequestV1(BaseModel):
         if Decimal(self.contracts) <= 0:
             raise ValueError("native_demo_contracts_must_be_positive")
         return self
+
+
+class NativeDemoProtectedEntryRequestV1(NativeDemoArmExecuteRequestV2):
+    """Explicit normal one-shot entry; never authorizes a later entry or close."""
+
+    hold_confirmation: Literal[PROTECTED_ENTRY_CONFIRMATION_V1]
+
+
+class NativeDemoProtectedEntryResultV1(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+    invocation_id: str
+    action: Literal["entry_hold"] = "entry_hold"
+    status: Literal["protected_hold"] = "protected_hold"
+    classification: Literal["original_position_protected_hold_retained"] = (
+        "original_position_protected_hold_retained"
+    )
+    reservation_id: str = Field(pattern=r"^[a-f0-9]{64}$")
+    hold_outcome_id: str = Field(pattern=r"^[a-f0-9]{64}$")
+    cleanup_outcome_id: str = Field(pattern=r"^[a-f0-9]{64}$")
+    risk_hold_retained: Literal[True] = True
+    entry_authority_revoked: Literal[True] = True
+    execution_complete: Literal[False] = False
+    metrics_complete: Literal[False] = False
+    execution_authority: Literal[False] = False
+    order_retry_authority: Literal[False] = False
 
 
 class NativeDemoConfigureLeverageResultV1(BaseModel):

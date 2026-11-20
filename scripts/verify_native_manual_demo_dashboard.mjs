@@ -165,6 +165,31 @@ try {
     assert.equal(view.get("armExecute").disabled,true);
     assert.match(view.get("resultMessage").textContent,/重新讀取/);
   });
+  await check("normal_entry_retains_protection_and_generic_reconcile_never_unlocks", async () => {
+    const view = board(); await view.authenticate(); await view.refresh(); view.order(); view.arm();
+    await view.fire("entryHold");
+    assert.equal(view.calls.length,1,"Normal holding needs the third exact phrase");
+    view.get("holdPhrase").value = config.phrases.hold;
+    const reservation = "c".repeat(64);
+    view.queue.push(response({invocation_id:"fixture",action:"entry_hold",status:"protected_hold",classification:"original_position_protected_hold_retained",reservation_id:reservation,hold_outcome_id:"a".repeat(64),cleanup_outcome_id:"b".repeat(64),risk_hold_retained:true,entry_authority_revoked:true,execution_complete:false,execution_authority:false,order_retry_authority:false}));
+    await view.fire("entryHold");
+    assert.deepEqual(view.calls[1].body,{instrument_id:config.symbols[0],strategy:config.strategies[0],contracts:"1",leverage:3,arm_confirmation:config.phrases.arm,execute_confirmation:config.phrases.execute,hold_confirmation:config.phrases.hold});
+    assert.equal(view.calls[1].path,"/api/demo-automation/native/entry-hold");
+    assert.equal(view.get("reservation").value,reservation);
+    await view.refresh();
+    for (const id of ["armExecute","entryHold","clearStop","initializeCounter","configureLeverage"]) assert.equal(view.get(id).disabled,true);
+    assert.equal(view.get("reconcile").disabled,false);
+    const readback = {invocation_id:"fixture",status:"reconciliation_data",reservation_id:reservation,outcome_id:"d".repeat(64),receipt_sha256:"e".repeat(64),execution_authority:false,order_retry_authority:false,execution_complete:false};
+    view.queue.push(response({...readback,classification:"unrelated_data",risk_hold_retained:false,fresh_resource_cleanup_confirmed:true}));
+    await view.fire("reconcile"); await view.refresh();
+    assert.equal(view.get("entryHold").disabled,true);
+    view.queue.push(response({...readback,classification:"original_oco_full_exit_flat",risk_hold_retained:false,fresh_resource_cleanup_confirmed:true}));
+    await view.fire("reconcile");
+    assert.equal(view.get("entryHold").disabled,true,"A new manual status is still required");
+    await view.refresh(); assert.equal(view.get("entryHold").disabled,false);
+    assert.equal(view.calls.filter(call => call.path.endsWith("/entry-hold")).length,1);
+    assert.ok(html.includes("成交後立即受控平倉"));
+  });
   await check("malformed_200_and_transport_loss_latch_exposure", async () => {
     for (const reply of [response({passed:true}),response({},200,"text/html"),new Error("fixture_network_loss")]) {
       const view = board(); await view.authenticate(); await view.refresh(); view.order(); view.arm();

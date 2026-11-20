@@ -91,6 +91,11 @@ def protective_terminal(target):
         sequence.append((role, path, query, rows))
     protection = next(item for item in sequence if item[0] == "protection_before")
     sequence.insert(len(sequence) - 1, ("protection_after", *protection[1:]))
+    configuration = next(item for item in sequence if item[0] == "config_before")
+    sequence[0:0] = [
+        ("protected_selector_config", *configuration[1:]),
+        ("protected_selector_algo", *protection[1:]),
+    ]
     result = []
     for index, (role, path, query, rows) in enumerate(sequence):
         started, mono = (

@@ -8007,6 +8007,181 @@ def _source_bootstrap_marker_v6():
     return None
 
 
+_NORMAL_HOLD_SOURCE_KEY_V1 = object()
+
+
+def retire_native_protected_hold_ram_v1(completion, *, key):
+    """Retire exact DISARMED closed entry resources; durable risk stays held.
+
+    No flat/zero/owned-close completion is constructed or accepted. The new
+    protected-hold producer has already committed and independently reopened
+    its lineage and physical-close receipt. All mutations below are RAM-only,
+    with no await, SQL write, exchange call, lease renewal or risk resolution.
+    """
+    from app.demo_automation import native_server_selectors_v2 as selector
+    from app.exchange.okx import native_demo_settlement_v1 as passive
+    from app.exchange.okx import native_demo_write_v2 as write
+    from app.trade_qualification import native_ledger_runtime_v2 as ledger
+    from app.trade_qualification import native_postpublication_recheck_v2 as r7
+    from app.trade_qualification import native_postsubmit_reconciliation_v1 as post
+    from app.trade_qualification import native_protected_hold_lifecycle_v1 as holding
+
+    _REQUIRE_SOURCE_KERNEL_V6()
+    if key is not holding._SOURCE_KEY_V1:
+        _deny("controlled_account_normal_hold_retirement_required")
+    saved = holding._take_normal_hold_retirement_for_source_v1(
+        completion, key=_NORMAL_HOLD_SOURCE_KEY_V1
+    )
+    state, response = saved["state"], saved["source"]
+    transport_binding = response.transport_facts.transport_binding
+    generation = state["source"].source_generation
+    reading = _RECONCILIATION_READ_V6.get(generation)
+    transport = _TRANSPORT_V6.get(transport_binding)
+    ledger_state = response.transport_state
+    ledger._NATIVE_GUARD()
+    # This legacy-named helper validates only actual spent/unlocked native
+    # ledger ownership and original request bytes. It grants no flat closure.
+    request = ledger._unknown_flat_record_v1(ledger_state)
+    gate = write._native_reconciliation_record_v1(
+        state["root_handle"], key=post._SOURCE_KEY_V1
+    )
+    caller = saved["caller"]
+    selected = caller["selection"]
+    selected_record = selector._record(selected)
+    owner_record = owner55._HANDLES.get(caller["controller"])
+    if (
+        type(reading) is not dict
+        or type(transport) is not dict
+        or reading["source_state"] is not transport["state"]
+        or reading["transport"] is not transport_binding
+        or reading["control_owner"] is not transport["owner"]
+        or transport["owner"] is not state["source"].control_owner
+        or _RECONCILIATION_TRANSPORT_V6.get(transport_binding) is not generation
+        or gate["state"] is not ledger_state
+        or write._CLIENT_GATES.get(gate["client"]) is not gate["gate"]
+        or ledger_state["consumed"].reservation_id != completion.reservation_id
+        or request.origin.original_event_key
+        != state["target"].request.origin.original_event_key
+        or post._UNKNOWN.get(state["binding"]) is not state
+        or type(owner_record) is not dict
+        or owner_record.get("owner") is not transport["owner"]
+        or owner_record.get("identity_selection") is not selected
+        or owner55._OWNERS.get(caller["controller"]) is not None
+        or owner_record["observation"].state.arm_request_id is not None
+        or owner_record["observation"].state.arm_expires_at is not None
+        or selected_record["factories"] is not caller["factories"]
+        or not passive._socket_closed(gate)
+        or not passive._sdk_closed(gate)
+    ):
+        _deny("controlled_account_normal_hold_original_graph_changed")
+    fresh = transport["state"]
+    original = fresh["original_state"]
+    # Reopen original complete source bytes before their already-closed RAM
+    # copies are retired. These helpers inspect source custody, not flatness.
+    if any(
+        mapping.get(id(item)) is not None and mapping.get(id(item)) is not item
+        for item in (original, fresh)
+        for mapping in (_STATES_V6, _UNKNOWN_V6)
+    ) or any(
+        mapping.get(id(owner_record)) is not None
+        and mapping.get(id(owner_record)) is not owner_record
+        for mapping in (owner55._ACTIVE, owner55._UNKNOWN)
+    ):
+        _deny("controlled_account_normal_hold_retained_owner_conflict")
+    contracts = tuple(
+        _flat_original_close_contract_v6(item) for item in (original, fresh)
+    )
+    journals = vars(reading["client"]).get("_native_reconciliation_read_journals_v1")
+    if (
+        type(journals) is not list
+        or len(journals) != len(state["observations"])
+        or any(
+            _closed_reconciliation_get_v6(item, reading["read_lease_binding_id"])
+            is None
+            for item in journals
+        )
+    ):
+        _deny("controlled_account_normal_hold_closed_gets_changed")
+    if any(
+        value.get("control") is owner_record
+        and value is not original
+        and value is not fresh
+        for mapping in (_STATES_V6, _UNKNOWN_V6)
+        for value in mapping.values()
+    ):
+        _deny("controlled_account_normal_hold_other_source_still_active")
+    ledger_binding = ledger_state["binding"]
+    marker = (
+        request.origin.original_event_key,
+        request.issuer_sha256,
+        "protected_hold_retained_ram_retired_v1",
+        sha(ledger_state["request_json"].encode()),
+        (request.scope.environment, request.scope.account_id),
+        None,
+    )
+    post_binding = state["binding"]
+    receipt = canonical(
+        {
+            "schema_version": "ctcc.native_protected_hold_ram_retired.v1",
+            "reservation_id": completion.reservation_id,
+            "hold_outcome_id": completion.hold_outcome_id,
+            "cleanup_outcome_id": completion.cleanup_outcome_id,
+            "source_contracts": [list(item[1:]) for item in contracts],
+            "risk_hold_retained": True,
+            "execution_authority": False,
+            "order_retry_authority": False,
+        }
+    )
+    # The genuine R7 release closes only source/publication ownership. It does
+    # not mutate the reservation, intent, event, financial claims or artifacts.
+    r7._release(ledger_state["r7"])
+    if ledger_state["r7"].get("closed") is not True:
+        _deny("controlled_account_normal_hold_r7_retirement_unconfirmed")
+    for item in (original, fresh):
+        _RETIRE_SOURCE_V6(item, uncertain=False)
+        if _STATES_V6.get(id(item)) is item or any(
+            value is item or (type(value) is tuple and value and value[0] is item)
+            for mapping in (
+                _CURRENT_V6,
+                _COVERAGE_V6,
+                _HISTORY_USES_V6,
+                _ISSUERS_V6,
+                _ISSUED_V6,
+                _HELD_V6,
+            )
+            for value in mapping.values()
+        ):
+            _deny("controlled_account_normal_hold_source_still_active")
+        _UNKNOWN_V6.pop(id(item), None)
+    holding._remember_normal_hold_ram_marker_v1(
+        saved, (ledger_binding, marker), key=_NORMAL_HOLD_SOURCE_KEY_V1
+    )
+    _TRANSPORT_V6.pop(transport_binding)
+    _RECONCILIATION_READ_V6.pop(generation)
+    _RECONCILIATION_TRANSPORT_V6.pop(transport_binding)
+    for intent, actual in tuple(ledger._INTENTS.items()):
+        if actual is ledger_state:
+            ledger._INTENTS.pop(intent)
+    ledger._UNKNOWN[ledger_binding] = marker
+    ledger_state.clear()
+    ledger_state.update(
+        closed=True,
+        transport_spent=True,
+        transport_unknown_hold=True,
+        protected_hold_retained=True,
+    )
+    write._CLIENT_GATES.pop(gate["client"])
+    write._GATES.pop(gate["gate"])
+    post._UNKNOWN.pop(post_binding)
+    owner55._HANDLES.pop(caller["controller"])
+    owner55._ACTIVE.pop(id(owner_record), None)
+    owner55._UNKNOWN.pop(id(owner_record), None)
+    selected.close()
+    state.clear()
+    state.update(closed=True, protected_hold_retained=True, ram_retired=True)
+    return receipt
+
+
 def _install_source_kernel_v6():
     import sys
 
@@ -8098,6 +8273,7 @@ def _install_source_kernel_v6():
         "_replay_native_zero_final_source_retirement_v2",
         "_scan_native_zero_final_retained_data_v2",
         "compact_native_zero_final_source_retirement_v2",
+        "retire_native_protected_hold_ram_v1",
         "prepare_native_filled_flat_source_cleanup_v1",
         "finish_native_filled_flat_source_cleanup_v1",
         "_replay_native_filled_flat_source_cleanup_completion_v1",

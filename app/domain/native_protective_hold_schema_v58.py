@@ -151,7 +151,7 @@ _END = r"""
      OR exit_row->>'state' IS DISTINCT FROM 'filled'
      OR public.qualification_native_number_v55(exit_row->'sz')<>size
      OR public.qualification_native_number_v55(exit_row->'accFillSz')<>size
-     OR (expected->>'posSide'='net' AND (exit_row->>'reduceOnly'<>'true' OR algo->>'reduceOnly'<>'true')) THEN RETURN false; END IF;
+     OR (expected->>'posSide'='net' AND (exit_row->>'reduceOnly' IS DISTINCT FROM 'true' OR algo->>'reduceOnly' IS DISTINCT FROM 'true')) THEN RETURN false; END IF;
   expected_query := jsonb_build_object('instId',expected->>'instId','clOrdId',expected->>'clOrdId');
   FOREACH role_name IN ARRAY ARRAY['entry_order_before','entry_order_after'] LOOP
     order_row := public.qualification_native_rows_v55(pages,role_name,'/api/v5/trade/order',expected_query,NULL);
@@ -170,11 +170,12 @@ _END = r"""
          OR row_value->>'posSide' IS DISTINCT FROM expected->>'posSide'
          OR row_value->>'side' IS DISTINCT FROM (CASE prefix WHEN 'entry' THEN expected->>'side' ELSE opposite END)
          OR row_value->>'feeCcy' IS DISTINCT FROM r.settlement_currency
-         OR row_value->>'tradeId' !~ '^[1-9][0-9]{0,39}$' OR row_value->>'billId' !~ '^[1-9][0-9]{0,39}$' THEN RETURN false; END IF;
+         OR NOT coalesce(row_value->>'tradeId' ~ '^[1-9][0-9]{0,39}$',false) OR NOT coalesce(row_value->>'billId' ~ '^[1-9][0-9]{0,39}$',false) THEN RETURN false; END IF;
       amount := public.qualification_native_number_v55(row_value->'fillSz');
       price := public.qualification_native_number_v55(row_value->'fillPx');
       fee := public.qualification_native_number_v55(row_value->'fee');
       IF amount<=0 OR price<=0 THEN RETURN false; END IF;
+      IF public.qualification_native_clock_v55(row_value->'ts')<public.qualification_native_clock_v55(row_value->'fillTime') THEN RETURN false; END IF;
       total := total+amount; weighted := weighted+amount*price;
       first_fill := least(first_fill,public.qualification_native_clock_v55(row_value->'fillTime'));
       last_fill := greatest(last_fill,public.qualification_native_clock_v55(row_value->'fillTime'));
@@ -191,6 +192,7 @@ _END = r"""
     ELSE exit_fills := merged; window_end := last_fill::text; END IF;
   END LOOP;
   IF public.qualification_native_clock_v55(algo->'triggerTime')<window_begin::numeric
+     OR public.qualification_native_clock_v55(algo->'uTime')<public.qualification_native_clock_v55(algo->'triggerTime')
      OR public.qualification_native_clock_v55(exit_row->'cTime')<public.qualification_native_clock_v55(algo->'triggerTime')
      OR public.qualification_native_clock_v55(exit_row->'uTime')<window_end::numeric
      OR public.qualification_native_number_v55(algo->'actualPx')<>public.qualification_native_number_v55(exit_row->'avgPx') THEN RETURN false; END IF;
@@ -207,6 +209,10 @@ _END = r"""
      OR jsonb_array_length(risk)<>1 OR jsonb_typeof(risk->0->'posData') IS DISTINCT FROM 'array'
      OR EXISTS(SELECT 1 FROM jsonb_array_elements(risk->0->'posData') x WHERE public.qualification_native_number_v55(x->'pos')<>0)
      OR public.qualification_native_rows_v55(pages,'pending_orders','/api/v5/trade/orders-pending','{}','ordId')<>'[]'::jsonb THEN RETURN false; END IF;
+  IF jsonb_typeof(risk->0->'balData') IS DISTINCT FROM 'array' OR jsonb_array_length(risk->0->'balData')<>1
+     OR risk->0->'balData'->0->>'ccy' IS DISTINCT FROM r.settlement_currency
+     OR public.qualification_native_number_v55(risk->0->'balData'->0->'eq')<=0
+     OR public.qualification_native_clock_v55(risk->0->'ts')<last_fill THEN RETURN false; END IF;
   FOREACH algo_kind IN ARRAY ARRAY['conditional','oco','chase','trigger','move_order_stop','iceberg','twap','smart_iceberg'] LOOP
     IF public.qualification_native_rows_v55(pages,'algo_'||algo_kind,'/api/v5/trade/orders-algo-pending',jsonb_build_object('ordType',algo_kind),'algoId')<>'[]'::jsonb THEN RETURN false; END IF;
   END LOOP;
@@ -218,6 +224,7 @@ _END = r"""
      OR public.qualification_native_number_v55(other->0->'details'->0->'liab')<>0
      OR public.qualification_native_number_v55(other->0->'details'->0->'borrowFroz')<>0 THEN RETURN false; END IF;
   IF public.qualification_native_clock_v55(risk->0->'ts')<public.qualification_native_clock_v55(other->0->'uTime') THEN RETURN false; END IF;
+  IF public.qualification_native_clock_v55(other->0->'uTime')<last_fill THEN RETURN false; END IF;
   other := public.qualification_native_rows_v55(pages,'leverage','/api/v5/account/leverage-info',jsonb_build_object('instId',expected->>'instId','mgnMode','isolated'),NULL);
   SELECT coalesce(jsonb_agg(value),'[]'::jsonb) INTO other FROM jsonb_array_elements(other) WHERE value->>'instId'=expected->>'instId' AND value->>'mgnMode'='isolated' AND value->>'posSide'=expected->>'posSide';
   IF jsonb_array_length(other)<>1 OR public.qualification_native_number_v55(other->0->'lever')<>public.qualification_native_number_v55(to_jsonb(request->'risk_inputs'->>'requested_leverage')) THEN RETURN false; END IF;
@@ -227,8 +234,9 @@ _END = r"""
   IF EXISTS(SELECT 1 FROM jsonb_array_elements(bill_rows) x GROUP BY x->>'billId' HAVING count(DISTINCT x)>1) THEN RETURN false; END IF;
   FOR row_value IN SELECT DISTINCT value FROM jsonb_array_elements(bill_rows) LOOP
     IF row_value->>'instId' IS DISTINCT FROM expected->>'instId' OR row_value->>'ccy' IS DISTINCT FROM r.settlement_currency
-       OR row_value->>'type' NOT IN ('2','8') OR public.qualification_native_clock_v55(row_value->'ts') NOT BETWEEN window_begin::numeric AND window_end::numeric
-       OR (row_value->>'type'='2' AND row_value->>'ordId' NOT IN (old_order->>'ordId',child_id)) THEN RETURN false; END IF;
+       OR NOT coalesce(row_value->>'type' IN ('2','8'),false) OR public.qualification_native_clock_v55(row_value->'ts') NOT BETWEEN window_begin::numeric AND window_end::numeric
+       OR (row_value->>'type'='2' AND NOT coalesce(row_value->>'ordId' IN (old_order->>'ordId',child_id),false))
+       OR (row_value->>'type'='8' AND public.qualification_native_clock_v55(row_value->'ts')>last_fill) THEN RETURN false; END IF;
     fee := public.qualification_native_number_v55(row_value->'balChg');
   END LOOP;
   RETURN true;

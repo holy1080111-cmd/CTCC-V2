@@ -74,6 +74,21 @@ async def test_physical_gate_requires_shared_stop_readback_after_tls(
         calls.append("shared-stop")
         raise DemoAutomationSafetyError("synthetic_shared_stop")
 
+    async def negative_shared_stop(actual, *, session: object, key):
+        assert purpose == "close"
+        assert actual is record["state"]
+        assert session is record["session"] and key is write._CLOSE_INTENT_KEY_V1
+        assert record["tls_ready"] is False
+        calls.append("shared-stop")
+        raise DemoAutomationSafetyError("synthetic_shared_stop")
+
+    def close_hook(_record, name):
+        return (
+            negative_shared_stop
+            if name == "_lock_shared_owned_native_close_control_v1"
+            else locked_readback
+        )
+
     monkeypatch.setattr(caller, "_lock_shared_native_write_control_v2", shared_stop)
     monkeypatch.setattr(ledger, "_lock_native_intent_for_transport_v2", locked_readback)
     monkeypatch.setattr(
@@ -83,7 +98,7 @@ async def test_physical_gate_requires_shared_stop_readback_after_tls(
         write._PhysicalWriteGateV2.tls_ready_after_locked_readback,
         {
             "_checked_gate": lambda actual: record if actual is gate else None,
-            "_close_function_v1": lambda *_args: locked_readback,
+            "_close_function_v1": close_hook,
         },
     )
     with pytest.raises(DemoAutomationSafetyError, match="synthetic_shared_stop"):

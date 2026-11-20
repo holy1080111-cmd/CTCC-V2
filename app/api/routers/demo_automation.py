@@ -10,6 +10,8 @@ from app.demo_automation.native_requests_v2 import (
     NativeDemoConfigureLeverageResultV1,
     NativeDemoCounterInitializationRequestV2,
     NativeDemoFilledCompleteResultV3,
+    NativeDemoProtectedEntryRequestV1,
+    NativeDemoProtectedEntryResultV1,
     NativeDemoRecoveryRequestV1,
     NativeDemoRecoveryResultV1,
     NativeDemoZeroCompleteResultV3,
@@ -178,6 +180,18 @@ async def native_arm_execute(
     | NativeDemoFilledCompleteResultV3
     | NativeDemoZeroCompleteResultV3
 ):
+    return await _perform_native_request(request, operator_token)
+
+
+@router.post(
+    "/native/entry-hold",
+    response_model=NativeDemoProtectedEntryResultV1 | NativeDemoZeroCompleteResultV3,
+)
+async def native_entry_hold(
+    request: NativeDemoProtectedEntryRequestV1,
+    operator_token: str | None = Header(default=None, alias="X-CTCC-Token"),
+    _: None = Depends(require_ctcc_token),
+) -> NativeDemoProtectedEntryResultV1 | NativeDemoZeroCompleteResultV3:
     return await _perform_native_request(request, operator_token)
 
 

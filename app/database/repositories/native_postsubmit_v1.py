@@ -479,6 +479,7 @@ async def _target_locked(binding, source, repository, session, scope_row, metada
             in {
                 "post_submit_native_zero_fok_flat_v1",
                 "post_submit_native_filled_flat_v1",
+                "post_submit_native_original_oco_flat_v58",
             }
         )
         if transitions[3].reason_code == "post_submit_native_filled_flat_v1":
@@ -488,6 +489,20 @@ async def _target_locked(binding, source, repository, session, scope_row, metada
                 evidence["version"] == "ctcc.native_owned_filled_flat_closure.v1"
                 and type(evidence.get("outcome_id")) is str
                 and type(evidence.get("terminal_data_outcome_id")) is str
+            )
+        elif transitions[3].reason_code == "post_submit_native_original_oco_flat_v58":
+            from app.database.repositories import (
+                native_protective_hold_v1 as protective,
+            )
+
+            need(protective.protected_schema_selected_v1(binding))
+            await protective._require_installed_schema(binding, session)
+            evidence = decode(transitions[3].evidence_json.encode(), 140000)
+            need(
+                evidence["version"] == protective.schema.TERMINAL_VERSION
+                and type(evidence.get("outcome_id")) is str
+                and evidence.get("closure_body_sha256")
+                == protective.schema.CURRENT_BODY_SHA256
             )
     reserved, reserved_control, reserved_event = control_bound.replay_reserved_evidence(
         transitions[0].evidence_json, request
@@ -1124,6 +1139,20 @@ async def retain_native_readback_v1(binding):
             closure = state.get("verified_flat_closure") or state.get(
                 "verified_filled_flat_closure"
             )
+            if closure is None:
+                from app.database.repositories import (
+                    native_protective_hold_v1 as protective,
+                )
+
+                need(protective.protected_schema_selected_v1(binding))
+                await protective._require_installed_schema(binding, parts[3])
+                closure = state.get("verified_protective_flat_closure")
+                need(
+                    type(closure) is tuple
+                    and len(closure) == 4
+                    and type(state.get("normal_protected_history"))
+                    is protective.NativeProtectedHistoryV1
+                )
             need(state["kind"] == "recovery" and closure is not None)
             manifest["recovery_closed_outcome_id"] = closure[0]
         manifest_id = await _append(binding, parts, manifest, kind="reconciliation")

@@ -10,6 +10,10 @@ from app import main
 from app.api import native_manual_demo_http_0056_v1 as manual
 from app.api import security
 from app.api.routers import demo_automation as demo
+from app.demo_automation.native_requests_v2 import (
+    PROTECTED_ENTRY_CONFIRMATION_V1,
+    NativeDemoProtectedEntryRequestV1,
+)
 from app.domain.demo_automation import ARM_PHRASE, EXECUTE_PHRASE
 
 TOKEN = "synthetic-local-manual-demo-0056-only-000000"
@@ -104,6 +108,60 @@ async def test_same_authenticated_native_request_reaches_original_caller(monkeyp
     assert response.status_code == 200
     assert response.json()["execution_complete"] is False
     action.assert_awaited_once()
+    assert action.await_args.kwargs == {"operator_token": TOKEN}
+
+
+@pytest.mark.asyncio
+async def test_synthetic_http_normal_holding_uses_distinct_model_and_returns_reconcile_id(
+    monkeypatch,
+):
+    instance = app(monkeypatch)
+    instance.state.native_manual_demo_database_head = (
+        "0058"  # Declared ASGI fixture only.
+    )
+    action = AsyncMock(
+        return_value={
+            "invocation_id": "synthetic-http-only",
+            "action": "entry_hold",
+            "status": "protected_hold",
+            "classification": "original_position_protected_hold_retained",
+            "reservation_id": "a" * 64,
+            "hold_outcome_id": "b" * 64,
+            "cleanup_outcome_id": "c" * 64,
+        }
+    )
+    monkeypatch.setattr(demo.safe_demo_automation, "perform_native_action_v2", action)
+    body = {
+        "instrument_id": "BTC-USDT-SWAP",
+        "strategy": "trend_pullback",
+        "contracts": "1",
+        "leverage": 3,
+        "arm_confirmation": ARM_PHRASE,
+        "execute_confirmation": EXECUTE_PHRASE,
+        "hold_confirmation": PROTECTED_ENTRY_CONFIRMATION_V1,
+    }
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=instance), base_url="http://test"
+    ) as client:
+        denied = await client.post(
+            "/api/demo-automation/native/entry-hold",
+            headers={"X-CTCC-Token": TOKEN},
+            json={**body, "hold_confirmation": True},
+        )
+        assert denied.status_code == 422
+        action.assert_not_awaited()
+        response = await client.post(
+            "/api/demo-automation/native/entry-hold",
+            headers={"X-CTCC-Token": TOKEN},
+            json=body,
+        )
+    assert response.status_code == 200 and response.json()["reservation_id"] == "a" * 64
+    assert (
+        response.json()["risk_hold_retained"] is True
+        and response.json()["entry_authority_revoked"] is True
+    )
+    assert response.json()["execution_complete"] is False
+    assert type(action.await_args.args[0]) is NativeDemoProtectedEntryRequestV1
     assert action.await_args.kwargs == {"operator_token": TOKEN}
 
 

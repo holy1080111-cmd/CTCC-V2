@@ -14,6 +14,7 @@ from fastapi.responses import HTMLResponse
 from app.config.settings import get_settings
 from app.demo_automation.native_requests_v2 import (
     CONFIGURE_LEVERAGE_CONFIRMATION_V1,
+    PROTECTED_ENTRY_CONFIRMATION_V1,
     NativeDemoStrategyV2,
 )
 from app.domain.demo_automation import ARM_PHRASE, EMERGENCY_STOP_PHRASE, EXECUTE_PHRASE
@@ -56,15 +57,17 @@ _SCRIPT = r"""
   let busy = false;
   let safetyBusy = false;
   let uncertain = false;
-  const positive = ['clearStop', 'initializeCounter', 'configureLeverage', 'armExecute'];
+  let protectedHold = false;
+  const positive = ['clearStop', 'initializeCounter', 'configureLeverage', 'armExecute', 'entryHold'];
   const token = () => el('token').value.trim();
   const exact = (id, phrase) => el(id).value === phrase;
   const ready = () => status && status.recovered === true && status.armed === false;
   function update() {
     const auth = token().length >= 32;
-    for (const id of positive) el(id).disabled = !auth || !ready() || busy || uncertain;
+    for (const id of positive) el(id).disabled = !auth || !ready() || busy || uncertain || protectedHold;
     el('armExecute').disabled = el('armExecute').disabled || !config.execution_enabled || status.emergency_stop !== false || status.locked !== false;
     el('configureLeverage').disabled = el('configureLeverage').disabled || !config.execution_enabled || status.emergency_stop !== false || status.locked !== false;
+    el('entryHold').disabled = el('entryHold').disabled || !config.execution_enabled || status.emergency_stop !== false || status.locked !== false;
     el('reconcile').disabled = !auth || busy || !/^[a-f0-9]{64}$/.test(el('reservation').value);
     el('stop').disabled = !auth || safetyBusy;
     el('emergencyStop').disabled = !auth || safetyBusy;
@@ -146,6 +149,13 @@ _SCRIPT = r"""
   function accepted(action, value, body) {
     const digest = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
     const invocation = typeof value.invocation_id === 'string' && value.invocation_id.length > 0 && value.invocation_id.length <= 128;
+    if (action === 'entry-hold') {
+      if (invocation && value.action === 'entry_hold' && value.status === 'protected_hold' && value.classification === 'original_position_protected_hold_retained' && digest(value.reservation_id) && digest(value.hold_outcome_id) && digest(value.cleanup_outcome_id) && value.risk_hold_retained === true && value.entry_authority_revoked === true && value.execution_complete === false && value.execution_authority === false && value.order_retry_authority === false) {
+        protectedHold = true; el('reservation').value = value.reservation_id; return;
+      }
+      if (invocation && value.action === 'arm_execute' && value.status === 'zero_fill_flat_settled' && value.classification === 'terminal_zero_fill_flat_settled' && digest(value.closure_outcome_id) && digest(value.cleanup_outcome_id) && value.execution_complete === true && value.risk_hold_retained === false) return;
+      latch(); throw Error('持倉或保護結果尚未確認。新增曝險已鎖定，請使用對帳編號核對；請勿重送。');
+    }
     if (action === 'arm-execute') {
       const zero = value.status === 'zero_fill_flat_settled' && value.classification === 'terminal_zero_fill_flat_settled';
       const filled = value.status === 'filled_flat_settled' && value.classification === 'own_entry_and_close_filled_flat_settled' && digest(value.forensics_outcome_id);
@@ -156,14 +166,17 @@ _SCRIPT = r"""
     if (action === 'configure-leverage') {
       if (invocation && value.action === 'configure_leverage' && ['settled','no_change'].includes(value.classification) && digest(value.configuration_outcome_id) && digest(value.receipt_sha256) && value.execution_authority === false && value.order_retry_authority === false) return;
     } else if (action === 'reconcile') {
-      if (invocation && value.status === 'reconciliation_data' && value.reservation_id === body.reservation_id && digest(value.outcome_id) && digest(value.receipt_sha256) && typeof value.risk_hold_retained === 'boolean' && value.execution_authority === false && value.order_retry_authority === false && value.execution_complete === false) return;
+      if (invocation && value.status === 'reconciliation_data' && value.reservation_id === body.reservation_id && digest(value.outcome_id) && digest(value.receipt_sha256) && typeof value.risk_hold_retained === 'boolean' && value.execution_authority === false && value.order_retry_authority === false && value.execution_complete === false) {
+        if (protectedHold && value.risk_hold_retained === false && value.fresh_resource_cleanup_confirmed === true && ['original_oco_full_exit_flat','original_oco_full_exit_flat_previously_reconciled'].includes(value.classification)) protectedHold = false;
+        return;
+      }
     } else if (invocation && value.action === (action === 'clear-stop' ? 'clear_stop' : 'initialize_policy_counter') && value.status === 'operator_command_recorded_disarmed' && value.execution_complete === false) return;
     latch();
     throw Error('伺服器回覆與操作不符，結果不確定；請對帳。');
   }
   async function action(name, makeBody) {
     if (busy || (uncertain && name !== 'reconcile')) return;
-    if (name !== 'reconcile' && (!ready() || (['arm-execute','configure-leverage'].includes(name) && (!config.execution_enabled || status.emergency_stop !== false || status.locked !== false)))) {
+    if (name !== 'reconcile' && (protectedHold || !ready() || (['arm-execute','entry-hold','configure-leverage'].includes(name) && (!config.execution_enabled || status.emergency_stop !== false || status.locked !== false)))) {
       el('resultMessage').textContent = '請先重新讀取已恢復且未 Arm 的狀態，並完成必要設定。'; return;
     }
     let body;
@@ -175,7 +188,7 @@ _SCRIPT = r"""
       const value = await request('/api/demo-automation/native/' + name, 'POST', body);
       show('result', value);
       accepted(name, value, body);
-      el('resultMessage').textContent = name === 'reconcile' ? '已取得對帳回覆。此頁不會據此自動解除不確定鎖定或重送。' : '已收到伺服器確認回覆。繼續操作前請重新讀取狀態。';
+      el('resultMessage').textContent = protectedHold ? '已保留原 TP／SL 保護持倉，進場權限已撤銷。請保留對帳編號，使用對帳追蹤；不會自動平倉或加單。' : name === 'reconcile' ? '已取得對帳回覆。此頁不會據此自動解除不確定鎖定或重送。' : '已收到伺服器確認回覆。繼續操作前請重新讀取狀態。';
       forgetStatus();
     } catch (error) { el('resultMessage').textContent = error.message; }
     finally { busy = false; update(); }
@@ -219,6 +232,11 @@ _SCRIPT = r"""
     const order = baseOrder();
     if (!exact('armPhrase',config.phrases.arm) || !exact('executePhrase',config.phrases.execute)) throw Error('請完整輸入兩項 Arm 與執行確認文字。');
     return {...order,arm_confirmation:clearPhrase('armPhrase',config.phrases.arm),execute_confirmation:clearPhrase('executePhrase',config.phrases.execute)};
+  }));
+  el('entryHold').addEventListener('click',() => action('entry-hold',() => {
+    const order = baseOrder();
+    if (!exact('armPhrase',config.phrases.arm) || !exact('executePhrase',config.phrases.execute) || !exact('holdPhrase',config.phrases.hold)) throw Error('請完整輸入 Arm、執行與保留原 TP／SL 三項確認文字。');
+    return {...order,arm_confirmation:clearPhrase('armPhrase',config.phrases.arm),execute_confirmation:clearPhrase('executePhrase',config.phrases.execute),hold_confirmation:clearPhrase('holdPhrase',config.phrases.hold)};
   }));
   el('reconcile').addEventListener('click',() => action('reconcile',() => {
     if (!/^[a-f0-9]{64}$/.test(el('reservation').value)) throw Error('請輸入完整 64 字元預留 ID。');
@@ -272,6 +290,7 @@ def _configuration(settings):
             "clear": CLEAR_CONFIRMATION_V2,
             "counter": COUNTER_CONFIRMATION_V1,
             "leverage": CONFIGURE_LEVERAGE_CONFIRMATION_V1,
+            "hold": PROTECTED_ENTRY_CONFIRMATION_V1,
         },
     }
 
@@ -309,7 +328,7 @@ def render_manual_demo_dashboard_0056_v1(settings):
 <div class="grid"><section class="card"><h2><span class="step">02</span>恢復與初始化</h2><p class="note">首次使用先初始化風控計數器，再核對並清除停止；已初始化者請保留原紀錄，不需重做。清除停止不會自動 Arm。</p>{_phrase("初始化風控計數器", "counterPhrase", COUNTER_CONFIRMATION_V1)}<button id="initializeCounter" disabled>初始化一次</button><div class="separator"></div>{_phrase("清除停止", "clearPhrase", CLEAR_CONFIRMATION_V2)}<button id="clearStop" disabled>核對並清除停止</button></section>
 <section class="card safety"><h2>安全控制</h2><p class="note">長時間執行中仍可操作。停止不會靜默平倉或取消既有保護。</p><button id="stop" class="secondary" disabled>停止並撤銷本機 Arm</button><div class="separator"></div>{_phrase("緊急停止", "emergencyPhrase", EMERGENCY_STOP_PHRASE)}<button id="emergencyStop" class="danger" disabled>緊急停止</button><p id="safetyMessage" class="note" role="status"></p><details><summary>查看停止回覆</summary><pre id="safetyResult"></pre></details></section>
 <section class="card wide"><h2><span class="step">03</span>商品與風險設定</h2><p class="note">{mode_note} 本機設定的槓桿上限：{config["max_leverage"]}x，合約張數上限：{config["max_contracts"]}。</p><div class="fields"><label>永續合約<select id="instrument">{symbols}</select></label><label>進場策略<select id="strategy">{strategies}</select></label><label>合約張數<input id="contracts" inputmode="decimal" autocomplete="off" placeholder="依商品合約規格填入，例：1"></label><label>槓桿上限<select id="leverage">{leverage}</select></label></div>{_phrase("空倉時設定槓桿", "leveragePhrase", CONFIGURE_LEVERAGE_CONFIRMATION_V1)}<button id="configureLeverage" disabled>核對空倉並設定槓桿</button></section>
-<section class="card"><h2><span class="step">04</span>完整驗證並執行一次</h2><p class="note">系統會重新檢查進場條件、圖表證據、最新行情、帳戶風險與保護。條件不成立即停止；不會改動原交易條件或自動重送。</p>{_phrase("本次 Arm", "armPhrase", ARM_PHRASE)}{_phrase("本次執行", "executePhrase", EXECUTE_PHRASE)}<button id="armExecute" disabled>驗證並執行一次 Demo</button><p id="progress" class="note" role="status">等待手動操作</p></section>
+<section class="card"><h2><span class="step">04</span>正常 Demo 開倉</h2><p class="note">通過完整驗證並成交後，保留原 TP／SL 的交易所保護，等待原保護出場。每次只授權一次進場，成交後撤銷進場權限；不會改價、加單或自動重送。</p>{_phrase("本次 Arm", "armPhrase", ARM_PHRASE)}{_phrase("本次執行", "executePhrase", EXECUTE_PHRASE)}{_phrase("保留原 TP／SL", "holdPhrase", PROTECTED_ENTRY_CONFIRMATION_V1)}<button id="entryHold" disabled>驗證開倉並保留原保護</button><details><summary>工程進出場驗收</summary><p class="note">此流程在成交並核對保護後，立即嘗試受控平倉，用於進出場驗收。</p><button id="armExecute" class="secondary" disabled>進出場驗收：成交後立即受控平倉</button></details><p id="progress" class="note" role="status">等待手動操作</p></section>
 <section class="card"><h2>未決結果對帳</h2><p class="note">使用原預留紀錄中的 ID，重新讀取並核對既有結果。此操作不會重新送單。</p><label>預留 ID<input id="reservation" class="phrase" autocomplete="off" spellcheck="false" maxlength="64" placeholder="請從原操作紀錄複製完整 64 字元 ID"></label><button id="reconcile" disabled>對帳此預留紀錄</button><p class="note">若沒有 ID，保留此頁回覆與本機紀錄，先保持停止狀態。</p></section>
 <section class="card wide"><h2>操作結果</h2><p id="resultMessage" role="status">尚未送出操作。</p><pre id="result" aria-label="操作回覆"></pre></section></div></main><script>{script}</script></body></html>"""
     digest = lambda text: base64.b64encode(

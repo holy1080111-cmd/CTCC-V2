@@ -12,7 +12,7 @@ async def _require_ready(request: Request):
         request.app.state, "native_manual_demo_recovery_confirmed", None
     ) is not True or getattr(
         request.app.state, "native_manual_demo_database_head", None
-    ) not in ("0056", "0057"):
+    ) not in ("0056", "0057", "0058"):
         raise HTTPException(
             status_code=503, detail="native_manual_demo_recovery_unconfirmed"
         )
@@ -47,6 +47,7 @@ _ROUTES = {
     "/api/demo-automation/stop": "POST",
     "/api/demo-automation/emergency-stop": "POST",
     "/api/demo-automation/native/arm-execute": "POST",
+    "/api/demo-automation/native/entry-hold": "POST",
     "/api/demo-automation/native/configure-leverage": "POST",
     "/api/demo-automation/native/clear-stop": "POST",
     "/api/demo-automation/native/initialize-policy-counter": "POST",
