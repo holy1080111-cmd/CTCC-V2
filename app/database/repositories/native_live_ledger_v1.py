@@ -108,12 +108,12 @@ _PROFILE = text("""
  WHERE r.rolname=current_user AND d.datname=current_database()
 """)
 _ACCESS = text("""
- SELECT c.relname::text,p.right FROM pg_catalog.pg_class c
+ SELECT c.relname::text,p.privilege_name FROM pg_catalog.pg_class c
  JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
- CROSS JOIN (VALUES ('SELECT'),('INSERT'),('UPDATE'),('DELETE'),('TRUNCATE'),('REFERENCES'),('TRIGGER'),('MAINTAIN')) p(right)
+ CROSS JOIN (VALUES ('SELECT'),('INSERT'),('UPDATE'),('DELETE'),('TRUNCATE'),('REFERENCES'),('TRIGGER'),('MAINTAIN')) p(privilege_name)
  WHERE n.nspname='public' AND c.relkind IN ('r','p','v','m','f')
- AND pg_catalog.has_table_privilege(current_user,c.oid,p.right)
- ORDER BY c.relname,p.right
+ AND pg_catalog.has_table_privilege(current_user,c.oid,p.privilege_name)
+ ORDER BY c.relname,p.privilege_name
 """)
 _ROUTINES = text("""
  SELECT p.proname::text FROM pg_catalog.pg_proc p
