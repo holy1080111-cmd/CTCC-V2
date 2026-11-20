@@ -300,7 +300,7 @@ def _verify_source_for_signing_v1(owner, *, key_owner):
         )
         history_pages = controlled.extra_history_pages_v1(capture) if recovery else ()
         config_pages = controlled.extra_config_pages_v1(capture) if recovery else ()
-        if recovery and type(capture) is controlled.ControlledCloseRecoveryCaptureV1:
+        if recovery and controlled.is_controlled_capture_data_v1(capture):
             _need(
                 capture.raw_custody_sha256
                 == sha(canonical([item[1] for item in state["raw_captures"]]))
@@ -363,7 +363,7 @@ def _verify_source_for_signing_v1(owner, *, key_owner):
             verify_live_trade_read_page_v1(page, lease=lease)
         observed = (
             controlled.assess_owned_capture_data_v1(state, capture)
-            if recovery and type(capture) is controlled.ControlledCloseRecoveryCaptureV1
+            if recovery and controlled.is_controlled_capture_data_v1(capture)
             else original_oco.assess_recovery_capture_v1(state, capture)
             if recovery
             else assess_live_postsubmit_facts_v1(
@@ -715,6 +715,13 @@ def _proof_document(state, *, capture, facts, economics, failure_code=None):
                 controlled_close_consent_sha256=facts.controlled_close_consent_sha256,
                 controlled_cancel_claim_sha256=facts.controlled_cancel_claim_sha256,
             )
+        elif state.get("recovery_history") is not None:
+            from app.okx_live import controlled_close_recovery_v1 as controlled
+
+            if type(capture) is controlled.ControlledZeroCloseOcoCaptureV1:
+                proof["nonexecuted_controlled_close"] = (
+                    controlled.nonexecution_proof_data_v1(state, capture)
+                )
     if state.get("recovery_history") is not None:
         history = state["recovery_history"]
         proof["recovery_history"] = {

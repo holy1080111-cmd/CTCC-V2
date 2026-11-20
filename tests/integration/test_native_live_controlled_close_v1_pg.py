@@ -179,7 +179,16 @@ async def test_actual58_controlled_restart_optional_lookup_replays_original_hmac
 
 @pytest.mark.parametrize(
     "source_case",
-    ("complete", "client_id_reuse", "partial_close", "protection_still_active"),
+    (
+        "complete",
+        "client_id_reuse",
+        "partial_close",
+        "protection_still_active",
+        "zero_then_oco",
+        "zero_partial",
+        "zero_reuse",
+        "zero_changed_oco",
+    ),
 )
 async def test_actual58_controlled_restart_complete_fresh_source_resolves_or_retains_hold(
     lifecycle_lab,
@@ -193,6 +202,7 @@ async def test_actual58_controlled_restart_complete_fresh_source_resolves_or_ret
     from app.okx_live.reconciliation_facts_v1 import LiveReconciliationHistoryV1
     from tests import native_live_postsubmit_fixtures_v1 as wire
     from tests.unit.test_native_live_controlled_close_recovery_v1 import reraw, scenario
+    from tests.unit.test_native_live_zero_close_oco_recovery_v1 import zero_oco_scenario
 
     lab = lifecycle_lab
     _synthetic_key_file_handoff(monkeypatch, lab)
@@ -200,12 +210,15 @@ async def test_actual58_controlled_restart_complete_fresh_source_resolves_or_ret
     parent, _, protected = await _ready(lab)
     intent_raw, _ = await _call(lab, parent)
     close_raw, _ = await _call(lab, claim_document(parent), claim=True)
-    cancel = claim_document(
-        parent,
-        action="cancel_original_protection",
-        observation=stamp(datetime.now(UTC), monotonic_ns=11_000_000_000),
-    )
-    cancel_raw, _ = await _call(lab, cancel, claim=True)
+    zero_case = source_case.startswith("zero_")
+    cancel_raw = None
+    if not zero_case:
+        cancel = claim_document(
+            parent,
+            action="cancel_original_protection",
+            observation=stamp(datetime.now(UTC), monotonic_ns=11_000_000_000),
+        )
+        cancel_raw, _ = await _call(lab, cancel, claim=True)
     journal_repository = lifecycle_repository.NativeLiveLifecycleRepositoryV1(
         lab[3], lab[4]
     )
@@ -230,7 +243,8 @@ async def test_actual58_controlled_restart_complete_fresh_source_resolves_or_ret
     ) * 1000 + now_delta.microseconds // 1000
     with monkeypatch.context() as construction:
         construction.setattr(wire, "BASE", base)
-        value, capture, args = scenario(
+        source_fixture = zero_oco_scenario if zero_case else scenario
+        value, capture, args = source_fixture(
             original_intent=lab[2],
             retained_records=records,
             retained_journal=journal,
@@ -263,8 +277,41 @@ async def test_actual58_controlled_restart_complete_fresh_source_resolves_or_ret
                 protection=reraw(capture.protection, [row]),
                 protection_after=reraw(capture.protection_after, [row]),
             )
-    assessed = recovery.assess_controlled_close_recovery_v1(value, capture, **args)
-    complete = source_case == "complete"
+        elif source_case == "zero_partial":
+            row = json.loads(capture.zero_order.raw_body)["data"][0]
+            row["accFillSz"] = "0.5"
+            capture = replace(
+                capture,
+                zero_order=reraw(capture.zero_order, [row]),
+                zero_order_after=reraw(capture.zero_order_after, [row]),
+            )
+        elif source_case == "zero_reuse":
+            row = json.loads(capture.archive_pages[0].raw_body)["data"][0]
+            capture = replace(
+                capture,
+                archive_pages=(
+                    reraw(
+                        capture.archive_pages[0],
+                        [{**row, "ordId": str(int(row["ordId"]) + 2)}, row],
+                    ),
+                    capture.archive_pages[1],
+                ),
+            )
+        elif source_case == "zero_changed_oco":
+            row = json.loads(capture.protection.raw_body)["data"][0]
+            row["slTriggerPx"] = "98"
+            capture = replace(
+                capture,
+                protection=reraw(capture.protection, [row]),
+                protection_after=reraw(capture.protection_after, [row]),
+            )
+    assessor = (
+        recovery.assess_zero_effect_original_oco_v1
+        if zero_case
+        else recovery.assess_controlled_close_recovery_v1
+    )
+    assessed = assessor(value, capture, **args)
+    complete = source_case in ("complete", "zero_then_oco")
     assert assessed.outcome == ("RECONCILED_FLAT" if complete else "UNCERTAIN")
     assert assessed.execution_authority is assessed.resolution_authority is False
     # Allow only this declared future synthetic receipt to pass; no source
@@ -300,14 +347,30 @@ async def test_actual58_controlled_restart_complete_fresh_source_resolves_or_ret
         "exit_order_id": assessed.exit_order_id,
         "exit_client_order_id": assessed.exit_client_order_id,
         "exit_source_sha256": assessed.exit_source_sha256,
-        "controlled_close_intent_sha256": sha(intent_raw) if complete else None,
-        "controlled_close_claim_sha256": sha(close_raw) if complete else None,
-        "controlled_cancel_claim_sha256": sha(cancel_raw) if complete else None,
+        "controlled_close_intent_sha256": sha(intent_raw)
+        if complete and not zero_case
+        else None,
+        "controlled_close_claim_sha256": sha(close_raw)
+        if complete and not zero_case
+        else None,
+        "controlled_cancel_claim_sha256": sha(cancel_raw)
+        if complete and cancel_raw is not None
+        else None,
         "controlled_close_consent_sha256": parent["consent_sha256"]
-        if complete
+        if complete and not zero_case
         else None,
         "fixture_purpose": "synthetic_raw_current_lease_data_and_actual_sql_hmac_only",
     }
+    if complete and zero_case:
+        terminal["nonexecuted_controlled_close"] = recovery.nonexecution_proof_data_v1(
+            {
+                "intent": value,
+                "journal": journal,
+                "controlled_close_recovery": records,
+                "capture_barrier": args["barrier"],
+            },
+            capture,
+        )
     _, raw, signature = fixtures._proof(lab, **terminal)
     assert await fixtures._append(lab, raw, signature) == sha(raw)
     assert await _state(lab) == (

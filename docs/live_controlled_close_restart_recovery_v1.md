@@ -38,6 +38,16 @@ and full current-account evidence must show zero positions, ordinary pending
 orders and pending algos. An active protection or any unknown state retains
 the original risk hold. Recovery performs no cleanup write.
 
+There is one explicit nonexecution branch: the exact unique retained close
+must be a stable terminal canceled FOK with zero accumulated fill, empty
+average price and complete empty fills-history. Its source is verified at its
+own measured receipt before any further collection. Only that positive proof
+permits a **new** original OCO entry/algo/child/fill/global-flat capture. Both
+groups and the original close claim are replayed and hashed into the signed
+`original_oco` terminal result. Partial/ambiguous/missing close evidence never
+selects this branch. An existing cancel claim contradicts zero effect and is
+refused. This creates no new close, cancel, Arm or entry permission.
+
 Before signing, the owner independently reopens the complete archive inventory,
 plan, raw pages, both identity observations and custody receipt. Every archive
 and terminal response is independently checked against the private retained raw
@@ -49,7 +59,16 @@ readback control risk resolution. Economics remain unknown, and no old POST
 response/start or new execution authority is invented.
 
 Validation in this slice uses explicitly synthetic Live raw DATA and published
-test-only HMAC material. Five actual TLS/PostgreSQL cases are authored and
+test-only HMAC material. Nine actual TLS/PostgreSQL cases are authored and
 collection-checked, including original HMAC readback, complete flat resolution,
-ambiguous client-ID history, partial fill and active protection. They are not a
+ambiguous client-ID history, partial fill, active protection and original OCO
+after positively proven zero effect. They are not a
 claim of local database execution, provider acceptance or Micro Live acceptance.
+
+The separate native-clock timing test runs the ordered lower GET readers,
+complete private archive/current custody and compiled-source guard with a
+declared 5 ms MockTransport and one allowed instrument. Its DTOs keep
+`synthetic_mock=true`; it neither exercises the private source owner/HMAC signer
+nor claims exchange latency or venue acceptance. No source clock is replaced
+and both mutable terminal freshness and post-capture guard timing retain the
+existing five-second bounds.

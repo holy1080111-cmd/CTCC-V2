@@ -164,6 +164,10 @@ LIVE_CONTROLLED_CLOSE_CASES = tuple(
                 "client_id_reuse",
                 "partial_close",
                 "protection_still_active",
+                "zero_then_oco",
+                "zero_partial",
+                "zero_reuse",
+                "zero_changed_oco",
             )
         ),
         "test_actual58_close_closed_profile_and_immutable_two_action_schema",

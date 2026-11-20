@@ -4,7 +4,7 @@ An expired authenticated claim is historical DATA. It cannot create another
 close/cancel, and no missing ACK or latest client-ID match is turned into one.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from decimal import (
     ROUND_HALF_EVEN,
@@ -233,6 +233,292 @@ class ControlledCloseRecoveryCaptureV1(OriginalLiveLifecycleCaptureV1):
     archive_cutoff: ClockStamp
 
 
+@dataclass(frozen=True, slots=True, repr=False, kw_only=True)
+class ControlledZeroCloseOcoCaptureV1(original.OriginalLiveOcoTerminalCaptureV1):
+    zero_order: object
+    zero_fills: tuple
+    zero_order_after: object
+    zero_validated_at: ClockStamp
+    archive_pages: tuple
+    archive_config_before: object
+    archive_config_after: object
+    archive_custody_sha256: str
+    archive_attempt_id: str
+    archive_cutoff: ClockStamp
+
+
+def is_controlled_capture_data_v1(capture):
+    return type(capture) in (
+        ControlledCloseRecoveryCaptureV1,
+        ControlledZeroCloseOcoCaptureV1,
+    )
+
+
+def _close_lineage_v1(intent, records, journal):
+    rid, _, digest = exact_live_intent_document_v1(intent)
+    _need(type(records) is RetainedControlledCloseV1 and records.close is not None)
+    parent, claim = records.intent, records.close
+    document = decode(parent.document_json, maximum=65536)
+    claim_document = decode(claim.document_json, maximum=32768)
+    _need(
+        parent.reservation_id == rid == document["reservation_id"]
+        and document["original_intent_sha256"] == digest == journal.intent_sha256
+        and claim_document["close_intent_sha256"] == parent.document_sha256
+        and claim_document["action"] == "close"
+        and claim.intent.document_sha256 == parent.document_sha256
+    )
+    entry, algo = original.expected_original_bindings_v1(journal)
+    _need(
+        entry == document["entry_order_id"] and algo == document["protection_algo_id"]
+    )
+    referenced = [
+        decode(raw, maximum=65536)
+        for raw in journal.proofs
+        if sha(raw) == document["protected_proof_sha256"]
+    ]
+    _need(
+        len(referenced) == 1
+        and referenced[0]["outcome"] == "PROTECTED_HOLD"
+        and referenced[0]["entry_order_id"] == entry
+        and referenced[0]["protection_algo_id"] == algo
+    )
+    request = decode(parent.request_json, maximum=8192)
+    _need(
+        request
+        == {
+            "instId": intent.instrument_id,
+            "tdMode": "isolated",
+            "posSide": "net",
+            "side": "sell" if intent.direction == "long" else "buy",
+            "ordType": "fok",
+            "sz": format(intent.contracts, "f"),
+            "px": format(intent.stop_loss, "f"),
+            "clOrdId": document["close_client_order_id"],
+            "reduceOnly": True,
+        }
+    )
+    _need(
+        document["protection_client_id"] == intent.protection_client_id
+        and document["candidate_sha256"] == intent.candidate_sha256
+        and document["report_sha256"] == intent.report_sha256
+        and document["policy_sha256"] == intent.policy_sha256
+    )
+    return document, entry, algo
+
+
+def _verify_zero_effect_v1(
+    intent,
+    records,
+    journal,
+    *,
+    order,
+    fills,
+    after,
+    validated,
+    archive_pages,
+    archive_before,
+    archive_after,
+    cutoff,
+    barrier,
+):
+    """A terminal canceled FOK plus complete empty fills proves no close effect."""
+    checked_live_intent_data_v1(intent)
+    document, entry, _ = _close_lineage_v1(intent, records, journal)
+    _need(records.cancel is None)
+    context = {
+        "barrier": barrier,
+        "validated_at": validated,
+        "origin": order.origin,
+        "binding": order.lease_binding_id,
+    }
+    archived = archive_original_close_v1(
+        intent,
+        records,
+        archive_pages,
+        barrier=barrier,
+        cutoff=cutoff,
+        origin=context["origin"],
+        binding=context["binding"],
+    )
+    identity = archived["ordId"]
+    _need(
+        identity != entry
+        and order.selector
+        == after.selector
+        == select_live_trade_read_v1(
+            "order", instrument_id=intent.instrument_id, order_id=identity
+        )
+    )
+    row = original._one(order, context)
+    _need(row == original._one(after, context))
+    _need(type(fills) is tuple and len(fills) == 1)
+    page = fills[0]
+    _need(
+        page.selector
+        == select_live_trade_read_v1(
+            "fills_history", instrument_id=intent.instrument_id, order_id=identity
+        )
+    )
+    _need(facts._payload(page, **context) == [])
+    for name in (
+        "ordId",
+        "clOrdId",
+        "instId",
+        "instType",
+        "side",
+        "posSide",
+        "tdMode",
+        "ordType",
+        "state",
+        "sz",
+        "accFillSz",
+        "avgPx",
+        "lever",
+        "px",
+        "reduceOnly",
+        "cTime",
+    ):
+        _need(type(row.get(name)) is str and row[name] == archived.get(name))
+    _need(
+        all(
+            row.get(name) == value
+            for name, value in {
+                "ordId": identity,
+                "clOrdId": document["close_client_order_id"],
+                "instId": intent.instrument_id,
+                "instType": "SWAP",
+                "side": "sell" if intent.direction == "long" else "buy",
+                "posSide": "net",
+                "tdMode": "isolated",
+                "ordType": "fok",
+                "state": "canceled",
+                "reduceOnly": "true",
+                "avgPx": "",
+                "algoId": "",
+                "algoClOrdId": "",
+            }.items()
+        )
+    )
+    _need(
+        facts._decimal(row, "sz", positive=True) == intent.contracts
+        and facts._decimal(row, "accFillSz", nonnegative=True) == 0
+        and facts._decimal(row, "px", positive=True) == intent.stop_loss
+        and facts._decimal(row, "lever", positive=True) == intent.leverage
+        and _ms(records.close.recorded_at)
+        <= original._time(row, "cTime")
+        <= _ms(records.close.deadline)
+        and original._time(row, "cTime") <= original._time(row, "uTime")
+    )
+    sequence = (archive_before, *archive_pages, archive_after, order, page, after)
+    for left, right in pairwise(sequence):
+        validate_stamps((left.stamps[-1].model_dump(), right.stamps[0].model_dump()))
+    validate_stamps(
+        (barrier.model_dump(), cutoff.model_dump(), sequence[0].stamps[0].model_dump())
+    )
+    configs = [
+        original._one(value, {**context, "validated_at": value.stamps[-1]})
+        for value in (archive_before, archive_after)
+    ]
+    _need(
+        configs[0] == configs[1]
+        and configs[0].get("uid") == intent.account_uid
+        and configs[0].get("mainUid") == intent.main_uid
+        and configs[0].get("posMode") == "net_mode"
+    )
+    return sha(
+        canonical(
+            [
+                records.intent.document_sha256,
+                records.close.document_sha256,
+                identity,
+                [item.receipt_sha256 for item in sequence],
+                validated.model_dump(),
+            ]
+        )
+    )
+
+
+def _original_oco_view_v1(capture):
+    _need(type(capture) is ControlledZeroCloseOcoCaptureV1)
+    # The exact original Live DTOs, origins, raw bytes and measured stamps are
+    # retained unchanged; this DATA wrapper creates no source/submit authority.
+    return original.OriginalLiveOcoTerminalCaptureV1(
+        capture.order,
+        capture.fills,
+        capture.protection,
+        capture.config_before,
+        capture.config_after,
+        capture.current_pages,
+        capture.current_custody_sha256,
+        capture.raw_custody_sha256,
+        capture.validated_at,
+        capture.tick_size,
+        capture.contract_value,
+        capture.contract_multiplier,
+        capture.contract_value_currency,
+        entry_order_after=capture.entry_order_after,
+        exit_order=capture.exit_order,
+        exit_order_after=capture.exit_order_after,
+        exit_fills=capture.exit_fills,
+        protection_after=capture.protection_after,
+    )
+
+
+def assess_zero_effect_original_oco_v1(
+    intent, capture, *, history, barrier, records, journal
+):
+    rid = digest = None
+    try:
+        intent = checked_live_intent_data_v1(intent)
+        rid, _, digest = exact_live_intent_document_v1(intent)
+        _need(type(capture) is ControlledZeroCloseOcoCaptureV1)
+        nonexecution = _verify_zero_effect_v1(
+            intent,
+            records,
+            journal,
+            order=capture.zero_order,
+            fills=capture.zero_fills,
+            after=capture.zero_order_after,
+            validated=capture.zero_validated_at,
+            archive_pages=capture.archive_pages,
+            archive_before=capture.archive_config_before,
+            archive_after=capture.archive_config_after,
+            cutoff=capture.archive_cutoff,
+            barrier=barrier,
+        )
+        entry, algo = original.expected_original_bindings_v1(journal)
+        assessed = original.assess_original_live_oco_terminal_v1(
+            intent,
+            _original_oco_view_v1(capture),
+            history=history,
+            barrier=capture.zero_validated_at,
+            expected_algo_id=algo,
+            expected_entry_order_id=entry,
+        )
+        _need(
+            assessed.outcome == "RECONCILED_FLAT"
+            and assessed.exit_lineage_verified is True
+        )
+        _need(
+            capture.exit_order.selector.order_id != capture.zero_order.selector.order_id
+        )
+        bank = sha(
+            canonical(
+                [
+                    nonexecution,
+                    assessed.raw_bank_sha256,
+                    capture.archive_custody_sha256,
+                    capture.archive_attempt_id,
+                ]
+            )
+        )
+        return replace(assessed, raw_bank_sha256=bank, exit_source_sha256=bank)
+    except Exception:  # noqa: BLE001 -- a failed zero proof never selects another path.
+        return facts.LiveReconciliationFactsV1(
+            "UNCERTAIN", ("live_zero_close_original_oco_incomplete",), rid, digest
+        )
+
+
 def archive_original_close_v1(
     intent, records, pages, *, barrier, cutoff, origin, binding
 ):
@@ -371,57 +657,10 @@ def assess_controlled_close_recovery_v1(
                 and set(capture.archive_attempt_id) <= set("0123456789abcdef")
             )
             parent, claim = records.intent, records.close
-            document = decode(parent.document_json, maximum=65536)
-            claim_document = decode(claim.document_json, maximum=32768)
-            _need(
-                parent.reservation_id == rid == document["reservation_id"]
-                and document["original_intent_sha256"]
-                == digest
-                == journal.intent_sha256
-                and claim_document["close_intent_sha256"] == parent.document_sha256
-                and claim_document["action"] == "close"
-                and claim.intent.document_sha256 == parent.document_sha256
+            document, original_entry, original_algo = _close_lineage_v1(
+                intent, records, journal
             )
-            original_entry, original_algo = original.expected_original_bindings_v1(
-                journal
-            )
-            _need(
-                original_entry == document["entry_order_id"]
-                and original_algo == document["protection_algo_id"]
-            )
-            referenced = [
-                decode(raw, maximum=65536)
-                for raw in journal.proofs
-                if sha(raw) == document["protected_proof_sha256"]
-            ]
-            _need(
-                len(referenced) == 1
-                and referenced[0]["outcome"] == "PROTECTED_HOLD"
-                and referenced[0]["entry_order_id"] == original_entry
-                and referenced[0]["protection_algo_id"] == original_algo
-            )
-            request = decode(parent.request_json, maximum=8192)
             opposite = "sell" if intent.direction == "long" else "buy"
-            _need(
-                request
-                == {
-                    "instId": intent.instrument_id,
-                    "tdMode": "isolated",
-                    "posSide": "net",
-                    "side": opposite,
-                    "ordType": "fok",
-                    "sz": format(intent.contracts, "f"),
-                    "px": format(intent.stop_loss, "f"),
-                    "clOrdId": document["close_client_order_id"],
-                    "reduceOnly": True,
-                }
-            )
-            _need(
-                document["protection_client_id"] == intent.protection_client_id
-                and document["candidate_sha256"] == intent.candidate_sha256
-                and document["report_sha256"] == intent.report_sha256
-                and document["policy_sha256"] == intent.policy_sha256
-            )
             _need(
                 type(capture.tick_size) is Decimal
                 and capture.tick_size.is_finite()
@@ -862,6 +1101,65 @@ async def capture_controlled_close_recovery_v1(owner, *, key):
             after = ids[-1]
         _need(False)
 
+    if (
+        close.get("state") == "canceled"
+        and facts._decimal(close, "accFillSz", nonnegative=True) == 0
+    ):
+        zero = await read("order", order_id=close_id)
+        zero_fills = await fills(close_id)
+        zero_after = await read("order", order_id=close_id)
+        zero_validated = _stamp()
+        # No generic failure fallback: prove this exact close had zero effect
+        # before any original OCO collection is selected.
+        _verify_zero_effect_v1(
+            intent,
+            records,
+            state["journal"],
+            order=zero,
+            fills=zero_fills,
+            after=zero_after,
+            validated=zero_validated,
+            archive_pages=archive,
+            archive_before=archive_before,
+            archive_after=archive_after,
+            cutoff=cutoff,
+            barrier=state["capture_barrier"],
+        )
+        oco = await original.capture_owned_original_oco_terminal_v1(
+            owner, key=original._CAPTURE_KEY
+        )
+        _need(type(oco) is original.OriginalLiveOcoTerminalCaptureV1)
+        return ControlledZeroCloseOcoCaptureV1(
+            oco.order,
+            oco.fills,
+            oco.protection,
+            oco.config_before,
+            oco.config_after,
+            oco.current_pages,
+            oco.current_custody_sha256,
+            oco.raw_custody_sha256,
+            oco.validated_at,
+            oco.tick_size,
+            oco.contract_value,
+            oco.contract_multiplier,
+            oco.contract_value_currency,
+            entry_order_after=oco.entry_order_after,
+            exit_order=oco.exit_order,
+            exit_order_after=oco.exit_order_after,
+            exit_fills=oco.exit_fills,
+            protection_after=oco.protection_after,
+            zero_order=zero,
+            zero_fills=zero_fills,
+            zero_order_after=zero_after,
+            zero_validated_at=zero_validated,
+            archive_pages=archive,
+            archive_config_before=archive_before,
+            archive_config_after=archive_after,
+            archive_custody_sha256=receipt["custody_sha256"],
+            archive_attempt_id=attempt,
+            archive_cutoff=cutoff,
+        )
+
     entry = await read("order", order_id=document["entry_order_id"])
     entry_fills = await fills(document["entry_order_id"])
     protection = await read("algo", algo_id=document["protection_algo_id"])
@@ -911,6 +1209,17 @@ async def capture_controlled_close_recovery_v1(owner, *, key):
 
 
 def extra_trade_pages_v1(capture):
+    if type(capture) is ControlledZeroCloseOcoCaptureV1:
+        return (
+            capture.entry_order_after,
+            capture.exit_order,
+            *capture.exit_fills,
+            capture.exit_order_after,
+            capture.protection_after,
+            capture.zero_order,
+            *capture.zero_fills,
+            capture.zero_order_after,
+        )
     return (
         ()
         if type(capture) is not ControlledCloseRecoveryCaptureV1
@@ -931,10 +1240,7 @@ def verify_owned_archive_custody_v1(owner, capture, *, key):
     _need(key is lifecycle._SOURCE_LEASE_KEY_V1)
     state, _ = recovery._scope(owner)
     _need(state["phase"] == "source_verified")
-    _need(
-        type(capture) is ControlledCloseRecoveryCaptureV1
-        and state["capture"] is capture
-    )
+    _need(is_controlled_capture_data_v1(capture) and state["capture"] is capture)
     attempt, receipt_raw, selected = state["controlled_archive_custody"]
     receipt = decode(receipt_raw, maximum=8192)
     _need(
@@ -963,22 +1269,27 @@ def verify_owned_archive_custody_v1(owner, capture, *, key):
 
 
 def extra_history_pages_v1(capture):
-    return (
-        ()
-        if type(capture) is not ControlledCloseRecoveryCaptureV1
-        else capture.archive_pages
-    )
+    return () if not is_controlled_capture_data_v1(capture) else capture.archive_pages
 
 
 def extra_config_pages_v1(capture):
     return (
         ()
-        if type(capture) is not ControlledCloseRecoveryCaptureV1
+        if not is_controlled_capture_data_v1(capture)
         else (capture.archive_config_before, capture.archive_config_after)
     )
 
 
 def assess_owned_capture_data_v1(state, capture):
+    if type(capture) is ControlledZeroCloseOcoCaptureV1:
+        return assess_zero_effect_original_oco_v1(
+            state["intent"],
+            capture,
+            history=state["recovery_history"],
+            barrier=state["capture_barrier"],
+            records=state["controlled_close_recovery"],
+            journal=state["journal"],
+        )
     return assess_controlled_close_recovery_v1(
         state["intent"],
         capture,
@@ -987,3 +1298,29 @@ def assess_owned_capture_data_v1(state, capture):
         records=state["controlled_close_recovery"],
         journal=state["journal"],
     )
+
+
+def nonexecution_proof_data_v1(state, capture):
+    _need(type(capture) is ControlledZeroCloseOcoCaptureV1)
+    records = state["controlled_close_recovery"]
+    return {
+        "semantics": "authenticated_terminal_zero_effect_before_original_oco",
+        "close_intent_sha256": records.intent.document_sha256,
+        "close_claim_sha256": records.close.document_sha256,
+        "close_order_id": capture.zero_order.selector.order_id,
+        "zero_effect_source_sha256": _verify_zero_effect_v1(
+            state["intent"],
+            records,
+            state["journal"],
+            order=capture.zero_order,
+            fills=capture.zero_fills,
+            after=capture.zero_order_after,
+            validated=capture.zero_validated_at,
+            archive_pages=capture.archive_pages,
+            archive_before=capture.archive_config_before,
+            archive_after=capture.archive_config_after,
+            cutoff=capture.archive_cutoff,
+            barrier=state["capture_barrier"],
+        ),
+        "execution_authority": False,
+    }
