@@ -34,6 +34,8 @@ class WorkerFixture:
         self.native_phases, self.native_arrivals = [], []
         self.session = object.__new__(q.OwnedLiveOperatorSessionV1)
         self.source = object.__new__(q.source.OwnedLiveSourceV1)
+        self.source_owners = [self.source]
+        self.guard_count = 32
         self.financial = object.__new__(q.financial.OwnedLiveFinancialEpochV1)
         self.factory, self.pins, self.runtime = object(), object(), object()
         args = engine_inputs(market)
@@ -74,6 +76,7 @@ class WorkerFixture:
             "report_id": "fixed-live-report",
             "caps": (Decimal("0.25"), Decimal("0.25"), Decimal(25), Decimal(25)),
             "active": False,
+            "public_owners": [],
             "last": self.stamp(),
         }
         self.view = {
@@ -95,6 +98,7 @@ class WorkerFixture:
             "writer_factory": self.factory,
             "writer_pins": self.pins,
             "evidence_root": self.evidence_root,
+            "public_root": tmp_path / "public",
         }
         self._install()
 
@@ -118,9 +122,28 @@ class WorkerFixture:
     async def refresh(self, session, barrier):
         assert session is self.session
         self.operations.append("fresh-account")
+        previous = self.source
+        self.source = object.__new__(q.source.OwnedLiveSourceV1)
+        self.source_owners.append(self.source)
+        self.view = self.view | {
+            "previous_source_owner": previous,
+            "source_revision_sha256": sha(str(len(self.source_owners)).encode()),
+            "plan": Data(max_current_age_ns=5_000_000_000, publication_barrier=barrier),
+        }
+        q.source._SOURCES[self.source] = self.view
+        self.state["source_owner"] = self.source
+        self.state["identity"] = {
+            name: self.view[name]
+            for name in (
+                "uid",
+                "main_uid",
+                "credential_session_sha256",
+                "source_revision_sha256",
+            )
+        }
         at = utc_from_ns(self.stamp().utc_ns)
         f = q.financial.LiveFinancialWindowFactsV1(
-            "c" * 64,
+            self.view["source_revision_sha256"],
             "123456",
             "123455",
             "b" * 64,
@@ -145,6 +168,7 @@ class WorkerFixture:
             b"{}",
         )
         self.view["current_completed"] = self.stamp()
+        self.native_phases.append(("account_completed", observed_native_stamp()))
         q.financial._OWNED[self.financial] = {
             "task": asyncio.current_task(),
             "source": self.source,
@@ -196,8 +220,7 @@ class WorkerFixture:
             row, sha(row)
         )
 
-    async def public(self, session, stage):
-        assert session is self.session
+    def _public_fixture(self, stage):
         self.operations.append(stage)
         patch = self.stack.enter_context(self.patch.context())
         fixture = self.stack.enter_context(
@@ -226,27 +249,12 @@ class WorkerFixture:
         harness.public, harness.socket.recv = observe_request, observe_ws
         self.banks[parent.path], self.banks[raw.path] = parent, raw
         self.roots[parent.path], self.roots[raw.path] = (1, 1), (2, 2)
-        changes = {
-            "invocation": self.state["invocation"],
-            "expires_at": self.state["deadline"],
-            "expires_monotonic_ns": self.state["expiry_monotonic_ns"],
-        }
-        if stage == "post_g12":
-            changes.update(
-                candidate_sha256=self.state["snapshot"].candidate_sha256,
-                publication_barrier=self.state["publication"].publication_barrier,
-                publication_receipt_sha256=sha(self.state["publication_json"]),
-            )
-        opaque, _ = request(stage, **changes)
-        owner = await q.public.capture_owned_live_public_v1(opaque, key=key)
-        self.native_phases.append((stage + "_captured", observed_native_stamp()))
-        result = q.public._replay_owned_live_public_v1(owner, key=key)
         original_coordinator = q.public._coordinator
         patch.setattr(
             q.public,
             "_coordinator",
             lambda candidate: (
-                (lambda *_a, **_k: None)
+                q._consume_live_public_request_v1
                 if candidate is q._PUBLIC_SOURCE_KEY_V1
                 else original_coordinator(candidate)
             ),
@@ -262,6 +270,34 @@ class WorkerFixture:
             "_native_recheck_root_identity",
             lambda path: self.roots[path],
         )
+        from app.trade_qualification import global_public_staged_v2 as staged
+
+        patch.setattr(staged, "native_stamp", self.clock.stamp)
+        return parent, key, request
+
+    def staged_root(self, _base, name):
+        assert name == self.state["report_id"] + "_post_g12"
+        parent, _key, _request = self._public_fixture("post_g12")
+        return parent.path
+
+    async def public(self, session, stage):
+        assert session is self.session
+        _parent, key, request = self._public_fixture(stage)
+        changes = {
+            "invocation": self.state["invocation"],
+            "expires_at": self.state["deadline"],
+            "expires_monotonic_ns": self.state["expiry_monotonic_ns"],
+        }
+        if stage == "post_g12":
+            changes.update(
+                candidate_sha256=self.state["snapshot"].candidate_sha256,
+                publication_barrier=self.state["publication"].publication_barrier,
+                publication_receipt_sha256=sha(self.state["publication_json"]),
+            )
+        opaque, _ = request(stage, **changes)
+        owner = await q.public.capture_owned_live_public_v1(opaque, key=key)
+        self.native_phases.append((stage + "_captured", observed_native_stamp()))
+        result = q.public._replay_owned_live_public_v1(owner, key=key)
         # Every subsequent independent source's market clock is coherent. Its
         # risk stamps are freshly derived, with the original epoch unchanged.
         declared = _declared_finite_options(result, engine_inputs(self.market))
@@ -283,6 +319,7 @@ class WorkerFixture:
         p.setattr(q, "_refresh", self.refresh)
         p.setattr(q, "_control", self.control)
         p.setattr(q, "_public", self.public)
+        p.setattr(q, "_private_child", self.staged_root)
         p.setattr(q.evidence, "native_stamp", lambda: self.stamp().model_dump())
         original_publish = q.evidence.storage.publish_evidence
         p.setattr(
@@ -293,6 +330,7 @@ class WorkerFixture:
             ),
         )
         p.setattr(q.source, "_replay_owned_live_source_v1", lambda *_a, **_k: self.view)
+        p.setattr(q.source, "_retained_source_identity_v1", lambda *_a, **_k: None)
         p.setattr(
             q.entry_proof.inputs,
             "account_raw_inventory_v1",
@@ -362,7 +400,7 @@ class WorkerFixture:
                 owner, key=q.physical._QUALIFICATION_SOURCE_KEY_V1
             )
             started = perf_counter()
-            for _ in range(32):
+            for _ in range(outer.guard_count):
                 q._qualified(owner, spent=True)
                 q.entry_proof.require_native_final_clock_v1(
                     owner, key=q.physical._QUALIFICATION_SOURCE_KEY_V1
@@ -378,8 +416,12 @@ class WorkerFixture:
             owner.close()
         self.stack.close()
         q._OWNED.pop(self.session, None)
-        q.source._SOURCES.pop(self.source, None)
+        for owner in self.source_owners:
+            q.source._SOURCES.pop(owner, None)
         q.financial._OWNED.pop(self.financial, None)
+        q.entry_original.retire_original_math_v2(
+            self.session, key=q._ENTRY_ORIGINAL_MATH_KEY_V2
+        )
         proof = q.entry_proof._PENDING.pop(self.session, None)
         if proof is not None:
             q.entry_proof._PROOFS.pop(proof, None)

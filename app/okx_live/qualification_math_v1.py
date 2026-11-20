@@ -164,6 +164,9 @@ def _source(value):
     summary, events, packet = transport.replay_public_runtime(
         files, expected_plan_sha256=value.plan_sha256
     )
+    plan = decode(files.read("plan.json", journal.MAX_RAW), journal.MAX_RAW)
+    staged = plan["schema_version"] == journal.GLOBAL_STAGED_PLAN
+    _need(staged or plan["schema_version"] == journal.GLOBAL_INITIAL_PLAN)
     _need(
         summary["disposition"] == "captured"
         and packet.packet_json == value.packet.packet_json
@@ -192,13 +195,49 @@ def _source(value):
         and receipt["raw_file_count"] == len(value.raw_files)
         and receipt["raw_total_bytes"] == sum(len(item.raw) for item in value.raw_files)
         and receipt["expires_at"] == value.expires_at.isoformat()
-        and receipt["policy_sha256"] == public.POLICY_SHA256
+        and receipt["policy_sha256"]
+        == (public.STAGED_POLICY_SHA256 if staged else public.POLICY_SHA256)
     )
     now = data._utc(value.evaluated_at)
     _need(
         utc_from_ns(receipt["readback_completed"]["utc_ns"]) <= now < value.expires_at
     )
     barrier = receipt["publication_barrier"]
+    if staged:
+        _need(
+            value.stage == "post_g12"
+            and receipt["schema_version"]
+            == "ctcc.native_live.production_public_staged_envelope.v2"
+            and plan["stage"] == "post_g12_staged_public"
+            and plan["original_publication"]
+            == {
+                "report_id": value.report_id,
+                "candidate_sha256": value.candidate_sha256,
+                "receipt_sha256": value.publication_receipt_sha256,
+                "barrier": barrier,
+                "policy_sha256": public.STAGED_POLICY_SHA256,
+            }
+        )
+        ohlc = [
+            event["metadata"]
+            for event in events
+            if event["kind"] == "ohlc_stage_complete"
+        ]
+        account = [
+            event["metadata"]
+            for event in events
+            if event["kind"] == "account_stage_ready"
+        ]
+        _need(len(ohlc) == len(account) == 1)
+        _need(
+            receipt["ohlc_completed"] == ohlc[0]["completed"]
+            and receipt["ohlc_prefix_sha256"] == account[0]["ohlc_prefix_sha256"]
+            and receipt["account_completed"] == account[0]["completed"]
+            and receipt["account_source_revision_sha256"]
+            == account[0]["source_revision_sha256"]
+        )
+    else:
+        _need(receipt["schema_version"] == public._SCHEMA)
     _need(value.stage in {"initial", "post_g12"})
     if value.stage == "initial":
         _need(
@@ -321,6 +360,28 @@ def recheck_live_qualification_math_v1(
     """Replay the frozen original first; a better fresh quote cannot repair it."""
     _need(type(original) is LiveQualificationMathV1 and original.original is None)
     prior = verify_live_qualification_math_v1(original)
+    return _recheck_verified_original_data_v2(
+        source,
+        original=prior,
+        consumed_event_keys=consumed_event_keys,
+        publication_candidate_sha256=publication_candidate_sha256,
+        risk_inputs=risk_inputs,
+    )
+
+
+def _recheck_verified_original_data_v2(
+    source, *, original, consumed_event_keys, publication_candidate_sha256, risk_inputs
+):
+    """Same CURRENT mathematics; DATA alone never proves original ownership.
+
+    The public replay API first recomputes the original above. The private
+    original-frame coordinator may instead prove its exact pre-G12 full replay
+    through its source-owned one-use original-math proof. Neither this helper
+    nor its returned DATA can reserve risk, Arm or submit an order.
+    """
+    prior = original
+    _need(type(prior) is LiveQualificationMathV1 and prior.original is None)
+    _need(type(source) is public.LivePublicEvaluationV1)
     _need(prior.market_math_complete, "live_original_candidate_did_not_pass")
     _need(
         type(publication_candidate_sha256) is str

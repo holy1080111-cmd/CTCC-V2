@@ -45,6 +45,7 @@ from app.domain.source_primitives import (
 )
 from app.exchange.okx import native_live_write_v1 as physical
 from app.okx_live import entry_math_closure_v1 as entry_math_closure
+from app.okx_live import entry_original_math_v2 as entry_original
 from app.okx_live import entry_owned_seal_v1 as entry_proof
 from app.okx_live import final_recheck_v1 as final_recheck
 from app.okx_live import native_runtime_v1 as runtime
@@ -64,6 +65,8 @@ _ENTRY_PROOF_KEY_V1 = object()
 _SESSION_KEY = object()
 _OWNED = WeakKeyDictionary()
 _PUBLIC_REQUESTS = WeakKeyDictionary()
+_STAGED_ACCOUNT_REQUESTS_V2 = WeakKeyDictionary()
+_ENTRY_ORIGINAL_MATH_KEY_V2 = object()
 _CLOSE_PUBLIC_REQUESTS = WeakKeyDictionary()
 _CONTROL_REQUESTS = WeakKeyDictionary()
 _QUALIFIED = WeakKeyDictionary()
@@ -474,6 +477,114 @@ async def _public(session, stage):
         _PUBLIC_REQUESTS.pop(request, None)
 
 
+@asynccontextmanager
+async def _post_g12_public_stage_v2(session):
+    """Own immutable post-publication OHLC before the final account capture."""
+    state = _session(session, current=True)
+    _publication(state)
+    cfg = runtime._replay_live_runtime_v1(state["runtime"], key=runtime._KEY)
+    root = _private_child(cfg["public_root"], state["report_id"] + "_post_g12")
+    params = public.LivePublicCaptureParametersV1(
+        root,
+        state["report_id"],
+        state["instrument_id"],
+        state["invocation"],
+        "post_g12",
+        state["deadline"],
+        state["expiry_monotonic_ns"],
+        state["snapshot"].candidate_sha256,
+        state["publication"].publication_barrier,
+        sha(state["publication_json"]),
+        public.STAGED_POLICY_SHA256,
+    )
+    request = object.__new__(_PublicRequest)
+    _PUBLIC_REQUESTS[request] = session, params
+    stage = None
+    try:
+        async with public.begin_owned_live_post_g12_public_v2(
+            request, key=_PUBLIC_SOURCE_KEY_V1
+        ) as stage:
+            data = public.replay_owned_live_public_ohlc_stage_v2(
+                stage, key=_PUBLIC_SOURCE_KEY_V1
+            )
+            _need(type(data) is public.LivePublicOHLCStageDataV2)
+            _need(
+                data.invocation is state["invocation"]
+                and data.report_id == state["report_id"]
+                and data.instrument_id == state["instrument_id"]
+                and data.candidate_sha256 == state["snapshot"].candidate_sha256
+                and data.publication_barrier == state["publication"].publication_barrier
+                and data.publication_receipt_sha256 == sha(state["publication_json"])
+                and data.execution_authority is data.public_complete is False
+            )
+            _STAGED_ACCOUNT_REQUESTS_V2[stage] = (
+                session,
+                state["source_owner"],
+                data,
+                tuple(
+                    state["identity"][name]
+                    for name in ("uid", "main_uid", "credential_session_sha256")
+                ),
+            )
+            yield stage, data
+    finally:
+        _PUBLIC_REQUESTS.pop(request, None)
+        if stage is not None:
+            _STAGED_ACCOUNT_REQUESTS_V2.pop(stage, None)
+
+
+def _consume_live_staged_account_ready_v2(stage, *, key):
+    """One original stage + genuinely NEW account; no caller completeness flag."""
+    _NATIVE_GUARD()
+    _need(key is public._ACCOUNT_READY_KEY_V2)
+    record = _STAGED_ACCOUNT_REQUESTS_V2.pop(stage, None)
+    _need(type(record) is tuple and len(record) == 4)
+    session, old_source, data, identity = record
+    state = _session(session, current=True)
+    owner = state["source_owner"]
+    _need(owner is not old_source and type(owner) is source.OwnedLiveSourceV1)
+    actual = source._SOURCES.get(owner)
+    _need(type(actual) is dict and actual.get("previous_source_owner") is old_source)
+    _need(actual["lease"] is source._SOURCES[old_source]["lease"])
+    view = source._replay_owned_live_source_v1(owner, key=source._SOURCE_KEY)
+    _need(
+        tuple(view[name] for name in ("uid", "main_uid", "credential_session_sha256"))
+        == identity
+    )
+    _need(view["plan"].publication_barrier == data.completed)
+    _need(
+        view["source_revision_sha256"]
+        != source._SOURCES[old_source]["source_revision_sha256"]
+    )
+    _need(
+        data.invocation is state["invocation"]
+        and state["control"] == _decode_control(state["control_readback"])
+    )
+    control = state["control"]
+    _need(
+        control["environment"] == "live"
+        and control["account_uid"] == view["uid"]
+        and control["main_uid"] == view["main_uid"]
+        and control["credential_session_sha256"] == view["credential_session_sha256"]
+        and control["source_revision_sha256"] == view["source_revision_sha256"]
+        and control["policy_sha256"] == state["policy_sha256"]
+        and control["process_sha256"] == state["process_sha256"]
+        and control["arm_id"] == state["arm_id"]
+        and control["arm_expires_at"] == state["deadline"]
+        and control["armed"] is True
+        and control["emergency_stop"] is False
+    )
+    completed = view["current_completed"]
+    validate_stamps((data.completed.model_dump(), completed.model_dump()))
+    _need(
+        completed.utc_ns > data.completed.utc_ns
+        and completed.monotonic_ns > data.completed.monotonic_ns
+    )
+    return public.LiveStagedAccountReadyV2(
+        state["invocation"], owner, completed, view["source_revision_sha256"]
+    )
+
+
 async def _capture_owned_live_close_public_v1(owner, physical_handle, *, key):
     """One NEW anonymous-public capture under the distinct close consent."""
     _NATIVE_GUARD()
@@ -640,7 +751,10 @@ def _qualified(owner, *, spent, current=True):
 
 def _require_native_entry_public_owner_v1(owner, public_owner, *, key):
     """The raw ENTRY reader accepts only this original private R7 proof."""
-    entry_proof.require_original_public_owner_v1(owner, public_owner, key=key)
+    if type(owner) is entry_original._OriginalMathProofV2:
+        entry_original.require_public_bank_scope_v2(owner, public_owner, key=key)
+    else:
+        entry_proof.require_original_public_owner_v1(owner, public_owner, key=key)
 
 
 def _replay_owned_live_qualification_v1(owner, *, key):
@@ -1149,6 +1263,9 @@ async def run_owned_live_operator_once_v1(session):
         )
         state["initial_math"] = initial
         state["original_candidate_json"] = _candidate(state, initial)
+        entry_original.prepare_original_math_v2(
+            session, key=_ENTRY_ORIGINAL_MATH_KEY_V2
+        )
         market, analysis = _market_analysis(initial)
         protection = math._selection(
             initial.detection,
@@ -1176,30 +1293,40 @@ async def run_owned_live_operator_once_v1(session):
             publication.receipt.model_dump(mode="json")
         )
         _publication(state)
+        entry_original.bind_original_publication_v2(
+            session, key=_ENTRY_ORIGINAL_MATH_KEY_V2
+        )
         _session(session, current=True)
-        fresh_facts = await _refresh(session, publication.publication_barrier)
-        fresh_instrument = adapter.live_instrument_data_v1(
-            state["identity"],
-            instrument_id=state["instrument_id"],
-            direction=state["direction"],
-            settings=get_settings(),
-        )
-        _need(
-            _instrument_identity(fresh_instrument)
-            == _instrument_identity(current_instrument)
-        )
-        await _control(session, "refresh")
-        current_local = await _local(session)
-        current_owner, current_public = await _public(session, "post_g12")
+        async with _post_g12_public_stage_v2(session) as (stage, ohlc):
+            fresh_facts = await _refresh(session, ohlc.completed)
+            fresh_instrument = adapter.live_instrument_data_v1(
+                state["identity"],
+                instrument_id=state["instrument_id"],
+                direction=state["direction"],
+                settings=get_settings(),
+            )
+            _need(
+                _instrument_identity(fresh_instrument)
+                == _instrument_identity(current_instrument)
+            )
+            await _control(session, "refresh")
+            current_local = await _local(session)
+            current_owner = await public.complete_owned_live_post_g12_public_v2(
+                stage, key=_PUBLIC_SOURCE_KEY_V1
+            )
+            state["public_owners"].append(current_owner)
+            current_public = public._replay_owned_live_public_v1(
+                current_owner, key=_PUBLIC_SOURCE_KEY_V1
+            )
         current_inputs, current_keys = _risk_inputs(
             state, fresh_facts, fresh_instrument, current_public, current_local
         )
-        current = math.recheck_live_qualification_math_v1(
+        current = entry_original.recheck_original_math_v2(
+            session,
             current_public,
-            original=initial,
             consumed_event_keys=current_keys,
-            publication_candidate_sha256=snapshot.candidate_sha256,
             risk_inputs=current_inputs,
+            key=_ENTRY_ORIGINAL_MATH_KEY_V2,
         )
         _need(current.pre_evidence_complete, "native_live_post_g12_cancelled")
         state.update(
@@ -1273,6 +1400,7 @@ async def run_owned_live_operator_once_v1(session):
         # separate owned lifecycle must read actual exchange state and resolve.
         return qualified, handle
     except BaseException:
+        entry_original.retire_original_math_v2(session, key=_ENTRY_ORIGINAL_MATH_KEY_V2)
         entry_proof.retire_pending_entry_v1(session, key=_ENTRY_PROOF_KEY_V1)
         state["active"] = False
         state["inhibit_code"] = "native_live_invocation_failed_do_not_retry"
@@ -1514,6 +1642,9 @@ async def _open_live_operator_body_v1(
             yield session
         finally:
             state["active"] = False
+            entry_original.retire_original_math_v2(
+                session, key=_ENTRY_ORIGINAL_MATH_KEY_V2
+            )
             _CHALLENGES.pop(challenge_id, None)
             if not state["approval_future"].done():
                 state["approval_future"].cancel()
@@ -1576,6 +1707,7 @@ _OPEN_ENTRY_SOURCE_V1 = open_live_operator_session_v1.__wrapped__
 _RUNTIME_BODY_SOURCE_V1 = runtime.configured_live_runtime_v1.__wrapped__
 _SOURCE_BODY_SOURCE_V1 = source.acquire_owned_live_source_v1.__wrapped__
 _ENTRY_RUN_BODY_SOURCE_V1 = run_owned_live_operator_once_v1
+_PUBLIC_STAGE_BODY_SOURCE_V2 = _post_g12_public_stage_v2.__wrapped__
 
 
 from app.trade_qualification.native_continuation_guard_v1 import (
@@ -1604,7 +1736,9 @@ _install(
         evidence.service,
         evidence.storage,
         entry_proof,
+        entry_original,
         entry_proof.inputs,
+        entry_proof.inputs.dag,
         entry_proof.inputs.custody,
         entry_proof.inputs.current,
         entry_proof.inputs.history,

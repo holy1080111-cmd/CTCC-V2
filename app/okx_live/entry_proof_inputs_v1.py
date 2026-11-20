@@ -7,22 +7,13 @@ model, source observation or authorization is retained across guard calls.
 """
 
 import asyncio
-import dataclasses
-import math
 import re
-import sys
-from datetime import datetime, timedelta
-from decimal import Decimal
-from enum import Enum
-from fractions import Fraction
-from types import MappingProxyType, ModuleType
-
-from pydantic import BaseModel
 
 from app.domain.source_primitives import canonical, decode, sha
 from app.exchange.okx import live_account_config_custody_v1 as custody
 from app.exchange.okx import live_account_current_chain_v1 as current
 from app.exchange.okx import live_account_history_chain_v1 as history
+from app.okx_live import entry_input_dag_v2 as dag
 from app.okx_live import trusted_source_bridge_v1 as source
 
 _ID = re.compile(r"[a-f0-9]{32}\Z", re.ASCII)
@@ -34,128 +25,9 @@ def _need(value):
         raise ValueError("native_live_entry_original_inputs_changed") from None
 
 
-def _original_class(kind):
-    module = sys.modules.get(kind.__module__)
-    _need(
-        kind.__module__.startswith("app.")
-        and type(module) is ModuleType
-        and vars(module).get(kind.__name__) is kind
-    )
-
-
 def exact_input_digest_v1(value, *, invocation):
-    """Hash the actual model graph, never a model's saved receipt alone."""
-    memo, active = {}, set()
-    budget = [500_000]
-
-    def visit(item, depth=0):
-        budget[0] -= 1
-        _need(depth <= 40 and budget[0] >= 0)
-        kind = type(item)
-        if item is invocation:
-            return b"V"
-        elif item is None or kind in (str, bool, int):
-            _need(kind is not str or len(item) <= 8 * 1024 * 1024)
-            if item is None:
-                return b"N"
-            if kind is bool:
-                return b"T" if item else b"F"
-            if kind is int:
-                _need(item.bit_length() <= 4096)
-                return _frame(b"I", str(item).encode("ascii"))
-            return _frame(b"S", item.encode("utf-8", "surrogatepass"))
-        elif kind is bytes:
-            _need(len(item) <= _MAX_BYTES)
-            return _frame(
-                b"Y", str(len(item)).encode("ascii") + b":" + sha(item).encode("ascii")
-            )
-        elif kind is Decimal:
-            _need(item.is_finite())
-            return _frame(b"D", str(item).encode("ascii"))
-        elif kind is Fraction:
-            return _frame(
-                b"Q",
-                visit(item.numerator, depth + 1) + visit(item.denominator, depth + 1),
-            )
-        elif kind is float:
-            _need(math.isfinite(item))
-            return _frame(b"R", item.hex().encode("ascii"))
-        elif kind is datetime:
-            _need(item.tzinfo is not None and item.utcoffset() == timedelta(0))
-            return _frame(b"U", item.isoformat().encode("ascii"))
-        elif isinstance(item, Enum):
-            _original_class(kind)
-            return _frame(
-                b"E",
-                visit(kind.__module__, depth + 1)
-                + visit(kind.__qualname__, depth + 1)
-                + visit(item.value, depth + 1),
-            )
-        else:
-            identity = id(item)
-            _need(identity not in active)
-            if identity in memo:
-                original, encoded = memo[identity]
-                _need(original is item)
-                return encoded
-            active.add(identity)
-            if kind in (list, tuple, set, frozenset):
-                _need(len(item) <= 8192)
-                parts = [visit(child, depth + 1) for child in item]
-                if kind in (set, frozenset):
-                    parts.sort()
-                encoded = _frame(kind.__name__.encode("ascii"), b"".join(parts))
-            elif kind in (dict, MappingProxyType):
-                _need(len(item) <= 8192)
-                pairs = sorted(
-                    (visit(key, depth + 1), visit(child, depth + 1))
-                    for key, child in item.items()
-                )
-                encoded = _frame(
-                    b"K" if kind is dict else b"P",
-                    b"".join(key + child for key, child in pairs),
-                )
-            elif isinstance(item, BaseModel):
-                _original_class(kind)
-                _need(
-                    kind.__module__.startswith("app.")
-                    and item.__pydantic_extra__ is None
-                )
-                values = object.__getattribute__(item, "__dict__")
-                _need(type(values) is dict and set(values) == set(kind.model_fields))
-                encoded = _frame(
-                    b"M",
-                    visit(kind.__module__, depth + 1)
-                    + visit(kind.__qualname__, depth + 1)
-                    + visit(values, depth + 1),
-                )
-            elif dataclasses.is_dataclass(item) and not isinstance(item, type):
-                _original_class(kind)
-                _need(kind.__module__.startswith("app."))
-                members = b"".join(
-                    visit(field.name, depth + 1)
-                    + visit(object.__getattribute__(item, field.name), depth + 1)
-                    for field in dataclasses.fields(item)
-                )
-                encoded = _frame(
-                    b"C",
-                    visit(kind.__module__, depth + 1)
-                    + visit(kind.__qualname__, depth + 1)
-                    + members,
-                )
-            else:
-                _need(False)
-            active.remove(identity)
-            _need(len(encoded) <= _MAX_BYTES)
-            memo[identity] = item, encoded
-            return encoded
-
-    return sha(b"ctcc.native_live.exact_entry_input_tree.v1\n" + visit(value))
-
-
-def _frame(tag, payload):
-    """Typed, length-framed bytes; no per-leaf JSON/hashing or saved model cache."""
-    return len(tag).to_bytes(2, "big") + tag + len(payload).to_bytes(8, "big") + payload
+    """Every call observes a fresh exact DAG; no saved hash grants permission."""
+    return dag.exact_input_dag_digest_v2(value, invocation=invocation)
 
 
 def _config_bytes(directory, expected, evidence):

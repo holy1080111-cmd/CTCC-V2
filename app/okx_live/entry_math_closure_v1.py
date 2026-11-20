@@ -79,7 +79,7 @@ def _data_constant(value, depth=0, *, budget=None):
     if (
         value is None
         or kind in (str, bool, int, bytes, Decimal, Fraction, float, datetime)
-        or isinstance(value, Enum)
+        or type(kind) is type(Enum)
     ):
         return True
     if kind in (tuple, list, set, frozenset):
@@ -87,15 +87,21 @@ def _data_constant(value, depth=0, *, budget=None):
             _data_constant(v, depth + 1, budget=budget) for v in value
         )
     if kind in (dict, MappingProxyType):
+        if kind is MappingProxyType:
+            from app.okx_live.entry_input_dag_v2 import _mapping
+
+            value = _mapping(value)
         return len(value) <= 8192 and all(
             _data_constant(k, depth + 1, budget=budget)
             and _data_constant(v, depth + 1, budget=budget)
             for k, v in value.items()
         )
-    if isinstance(value, BaseModel):
-        return kind.__module__.startswith("app.")
-    if is_dataclass(value) and not isinstance(value, type):
-        return kind.__module__.startswith("app.") and all(
+    if type(kind) is type(BaseModel) and BaseModel in type.__getattribute__(
+        kind, "__mro__"
+    ):
+        return type.__getattribute__(kind, "__module__").startswith("app.")
+    if type(kind) is type and is_dataclass(kind):
+        return type.__getattribute__(kind, "__module__").startswith("app.") and all(
             _data_constant(
                 object.__getattribute__(value, f.name), depth + 1, budget=budget
             )

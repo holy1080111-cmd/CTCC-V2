@@ -10,6 +10,24 @@ guard computations alone took 5.068–5.319 seconds. These failures are retained
 the source staging and original-math scheduling remedies require their own
 implementation, regression and exact-clock measurement.
 
+The staged-consumer followup is an engineering checkpoint, **not** latency
+acceptance. The real original worker now uses the versioned OHLC→new account→
+mutable public source order. Its initial full mathematical replay runs before
+G12, with a private same-task/original-frame proof bound to the new publication.
+The current R7 mathematics still runs in full. Current observations are never
+used to repair a failed original candidate. One positive original-worker long
+case and a separate actual-guard profile case passed; the new broad original-
+proof mutation cases are authored but not yet executed at this checkpoint.
+
+The first staged run still failed the optimistic native-clock budget: an
+explicit synthetic stress loop of 32 guards took 5.326 seconds and its last
+ticker/WS observation age was 9.683 seconds. That loop is **not** a count or
+measurement of the genuine physical normal route. An actual physical call-graph
+harness remains necessary. Per-function profiling located the largest cost in
+the fresh exact-input DAG traversal; the scalar/edge hot-loop followup passed
+its 8 alias/capacity/callback tests and an original-worker guard profile. It does
+not establish a usable five-second entry or configured/venue acceptance.
+
 This private continuation preserves the existing initial G1–G11, six-file G12
 publication/readback, new post-publication account/public capture, and full fixed
 R7 computation. It never turns a saved report, receipt, DTO or `passed` flag into
@@ -53,7 +71,10 @@ entry, SL, TP, event and policy are unchanged. Neither the original Arm deadline
 nor the account/quote five-second policy is extended.
 
 The input serializer traverses the actual bounded model graph on every call. It
-uses typed length-framed bytes and one final SHA256. Its memo exists only during
+encodes a typed node/schema table with every edge, reference, multiplicity and
+field path, then computes one final SHA256. Different objects are never merged
+by equal content. Repeated references are charged their full expanded node,
+byte and depth costs; cycles are rejected. Its memo exists only during
 that synchronous traversal and retains no model hash or observation between
 guards. It distinguishes unknown, zero, false, numeric types, decimal
 representations, field/container types, ordered source rows and original source
