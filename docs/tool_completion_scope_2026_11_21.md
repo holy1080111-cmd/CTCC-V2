@@ -56,11 +56,20 @@ union. The59ce3b0 exact archive/verified Git bundle checkpoint receipt is
 
 ## Remaining integration
 
-The physical controlled-close path and its restricted durable SQL boundary are
-integrated. Its independent read-only restart recovery and the complete entry
-final-guard CPU budget remain under integration. A later emergency stop revokes
+The physical controlled-close path, its restricted durable SQL boundary,
+independent read-only filled-close recovery and proven zero-effect FOK to
+original OCO recovery are integrated. The complete entry final-guard CPU budget
+remains under integration. A later emergency stop revokes
 the original pre-entry close permission. Unknown results retain risk holds,
 journal and protection.
+
+[Sourcea22b022 component2](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/44794857052)
+passed142 actual SQL cases with no failures, errors or skips, including all43
+controlled-close,3 physical-control and16 lifecycle cases. Complete matching
+archived source/verifier, collection/JUnit, result hashes, migration and cleanup
+readback receipt SHA256:
+`dcc86d4b587d6b75435864d698b1042563ecd5e03d826318cb1ab1daf11308c0`.
+This accepts that component on that source only.
 
 The retained initial native-clock synthetic transport measurement found7.4-second
 quote age against the unchanged5-second policy and correctly refused. Pure
@@ -82,7 +91,29 @@ is a diagnostic baseline. Components3/4 were refused before Docker/tests by the
 generic runner's old maximum index2. The dispatcher now permits routing to all
 five source58 components; each captured-source verifier still enforces its own
 closed topology, including the unchanged historical two/three-component limits.
-The fix passed214 Windows unit checks. Its actual full-source rerun is pending.
+The fix passed214 Windows unit checks. The
+[complete sourcea22b022 rerun](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/44795244461)
+has passed component0 and component2; the full union remains incomplete. Its
+Linux6 shard failed one obsolete test which still classified component3 as
+invalid. The source58 dispatcher correctly routed it to archive admission.
+The fixture now checks invalid indices5 and6; all6 argument-boundary cases
+pass locally. A separate obsolete Docker COPY assertion now explicitly requires
+the tracked desktop launcher. Neither repair skips a case or changes an
+execution safety boundary. The Windows5 source-capture fixture still needs its
+separate root-cause repair and rerun.
+
+The actual original ENTRY worker's initial synthetic lower-bound measurement
+found ticker age10.59/10.82 seconds and correctly failed the unchanged5-second
+policy. The new staged public producer acquires OHLC, then NEW account state,
+then mutable public quotes. Its85-case scoped regression passes, but producer
+timing alone does not accept the full coordinator. Original pre-G12 mathematics,
+current R7 mathematics, durable intent and every final guard must still fit the
+same original account/source deadlines together.
+
+The configured Notion runtime token and destination have completed official
+read-only database/data-source verification for all four exact property IDs and
+types. This is distinct from a durable report delivery. Local destination-file
+privacy is being hardened; no report POST or worker was run by that readback.
 
 Final-source Windows/Linux/PostgreSQL/Docker regression, installed activation,
 final secret audit, matching GitHub CI, PR/main/release and final immutable
