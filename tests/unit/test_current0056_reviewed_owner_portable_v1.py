@@ -6,7 +6,8 @@ from shutil import copy2, copytree
 import pytest
 
 from scripts import current0056_reviewed_owner_portable_v1 as portable
-from scripts import historical0056_owner_source_on_0057_v1 as historical
+from scripts import historical0056_owner_source_on_0057_v1 as source57
+from scripts import historical0056_owner_source_on_0058_v1 as historical
 from scripts import manifest
 from scripts.current0056_native_owner_pregrant_v1 import (
     NativeOwnerPregrant0056Diagnostic,
@@ -18,11 +19,11 @@ _REFERENCE = "57898f9a111d2bfeeeff7b1e01aa166e22b9166fd33b8e5717ea0d66a2f8bdf7"
 
 
 @pytest.fixture(autouse=True)
-def approved_source57(tmp_path, monkeypatch):
+def approved_source58(tmp_path, monkeypatch):
     root = tmp_path / "source"
     root.mkdir()
     source = portable._SOURCE
-    for name in (*historical._REVIEWED_SOURCE57_FILES, "alembic.ini"):
+    for name in (*historical._REVIEWED_SOURCE58_FILES, "alembic.ini"):
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
         copy2(source / name, path)
@@ -35,10 +36,11 @@ def approved_source57(tmp_path, monkeypatch):
     manifest.write_manifest(root, root / "MANIFEST.sha256")
     monkeypatch.setattr(portable, "_SOURCE", root)
     monkeypatch.setattr(historical, "_SOURCE", root)
+    monkeypatch.setattr(source57, "_SOURCE", root)
 
 
 def _verify(target):
-    return historical.verify_historical_owner56_reference_on_source57(
+    return historical.verify_historical_owner56_reference_on_source58(
         portable._SOURCE, target
     )
 
@@ -79,7 +81,7 @@ def test_portable_match_is_stable_across_target_specific_raw_observations():
 )
 def test_portable_drift_refuses(field):
     target = replace(_target_observation(), **{field: "f" * 64})
-    with pytest.raises(historical.HistoricalOwnerSource0057Error):
+    with pytest.raises(historical.HistoricalOwnerSource0058Error):
         _verify(target)
 
 
@@ -107,12 +109,12 @@ def test_measured_source_drift_refuses_before_using_receipts(monkeypatch):
         return raw
 
     monkeypatch.setattr(portable, "_read", tampered)
-    with pytest.raises(historical.HistoricalOwnerSource0057Error):
+    with pytest.raises(historical.HistoricalOwnerSource0058Error):
         _verify(_target_observation())
     assert not any(name.endswith(".inherited.json") for name in reads)
 
 
-def test_default0056_portable_loader_still_refuses_to_relabel_source57():
+def test_default0056_portable_loader_still_refuses_to_relabel_source58():
     with pytest.raises(portable.ReviewedOwnerPortable0056Error):
         portable.load_reviewed_owner_portable_0056_v1(portable._SOURCE)
 
@@ -126,10 +128,15 @@ def test_default0056_portable_loader_still_refuses_to_relabel_source57():
         ("execution_authority", True),
     ],
 )
-def test_historical_source57_reference_cannot_promote_physical57_or_permissions(
+def test_historical_source58_reference_cannot_promote_physical57_or_permissions(
     field, value
 ):
     target = _target_observation()
     object.__setattr__(target, field, value)
-    with pytest.raises(historical.HistoricalOwnerSource0057Error):
+    with pytest.raises(historical.HistoricalOwnerSource0058Error):
         _verify(target)
+
+
+def test_source57_reader_stays_strict_on_actual_source58():
+    with pytest.raises(source57.HistoricalOwnerSource0057Error):
+        source57.require_historical_owner_source57(portable._SOURCE)

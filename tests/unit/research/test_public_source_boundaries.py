@@ -166,6 +166,16 @@ def test_public_source_has_only_explicit_reviewed_consumers():
         APP / "trade_qualification" / "global_public_runtime_v1.py": (
             ("app.public_market_source", (("public_runtime_journal", "journal"),)),
         ),
+        # Live acquisition retains the unchanged anonymous Global journal;
+        # it reaches acquisition only through the reviewed Global coordinator.
+        APP / "trade_qualification" / "native_live_public_source_v1.py": (
+            ("app.public_market_source", (("public_runtime_journal", "journal"),)),
+        ),
+        # Pure Live math replays the same retained bytes; no capture/storage
+        # constructor, source substitution or promotion capability is admitted.
+        APP / "okx_live" / "qualification_math_v1.py": (
+            ("app.public_market_source", (("public_runtime_journal", "journal"),)),
+        ),
         APP / "trade_qualification" / "global_public_capture_companion_v1.py": (
             (
                 "app.public_market_source.public_market_receipts",
@@ -612,6 +622,40 @@ def test_native_public_replay_consumers_reject_unreviewed_import(
             yield unreviewed
 
     monkeypatch.setattr(sys.modules[__name__], "nodes", with_unreviewed_import)
+    with pytest.raises(AssertionError):
+        test_public_source_has_only_explicit_reviewed_consumers()
+
+
+@pytest.mark.parametrize(
+    "area,filename",
+    (
+        ("trade_qualification", "native_live_public_source_v1.py"),
+        ("okx_live", "qualification_math_v1.py"),
+    ),
+)
+@pytest.mark.parametrize(
+    "import_line",
+    (
+        "from app.public_market_source.public_market_capture import capture_public_market",
+        "from app.public_market_source import public_runtime_journal as caller_alias",
+        "from ..public_market_source import public_runtime_journal as journal",
+        "from app.public_market_source import public_runtime_journal as journal",
+    ),
+)
+def test_exact_live_consumers_reject_new_capture_alias_relative_and_duplicate_imports(
+    monkeypatch, area, filename, import_line
+):
+    test_public_source_has_only_explicit_reviewed_consumers()
+    original_nodes = nodes
+    consumer = APP / area / filename
+    unreviewed = ast.parse(import_line).body[0]
+
+    def changed(path):
+        yield from original_nodes(path)
+        if path == consumer:
+            yield unreviewed
+
+    monkeypatch.setattr(sys.modules[__name__], "nodes", changed)
     with pytest.raises(AssertionError):
         test_public_source_has_only_explicit_reviewed_consumers()
 
