@@ -88,7 +88,10 @@ async def test_actual0056_stopped_postsubmit_transactions_preserve_control_and_c
         assert session not in repository._HELD_POSTSUBMIT_0056
 
     await observe()
-    with pytest.raises(RuntimeError, match="^synthetic_process_abort$"):
+    with pytest.raises(
+        locked.NativeLockedDemoControl0056Error,
+        match="^native_locked_demo_control_0056_unavailable$",
+    ):
         await observe(abort=True)
     assert all(session not in repository._HELD_POSTSUBMIT_0056 for session in sessions)
     await observe()
