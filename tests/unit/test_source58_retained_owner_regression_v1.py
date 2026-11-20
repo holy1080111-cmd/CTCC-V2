@@ -14,7 +14,10 @@ ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github/workflows/db0058-retained-owner-regression.yml"
 BRANCH = "work/db0058-retained-owner-regression"
 NEW_CASES = full.OWNER0057_NULL_CASES + tuple(
-    case for case in full.OWNER_UPGRADE_CASES if "null_bitmap" in case[1]
+    case
+    for case in full.OWNER_UPGRADE_CASES
+    if "null_bitmap" in case[1]
+    or case[1].startswith("test_actual0057_shared_snapshot_")
 )
 
 
@@ -51,9 +54,9 @@ def _actual_owner_cases():
 
 def test_actual_owner_cases_all_run_once_on_source58_component3():
     expected = _actual_owner_cases()
-    assert len(expected) == len(set(expected)) == 10
+    assert len(expected) == len(set(expected)) == 12
     assert set(full.CANONICAL_OWNER_CASES) == set(expected)
-    assert len(NEW_CASES) == 4 and set(NEW_CASES) <= set(expected)
+    assert len(NEW_CASES) == 6 and set(NEW_CASES) <= set(expected)
     assert set(expected).isdisjoint(full.SUCCESSOR_CASES)
     for case in expected:
         assert full.REQUIRED_CASES.count(case) == 1

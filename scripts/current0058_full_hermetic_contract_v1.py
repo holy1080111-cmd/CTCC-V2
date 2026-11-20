@@ -83,6 +83,8 @@ OWNER_UPGRADE_CASES = tuple(
         "test_actual0057_owner58_rehearsal_and_commit_preserve_every_row_actor_and44_acl",
         "test_actual0057_owner58_final_ddl_failure_restores_original_head_rows_oids_and_acl",
         "test_actual0057_owner58_unreviewed_live_access_rolls_back_without_granting_or_commit",
+        "test_actual0057_shared_snapshot_rejects_user_domain_before_selecting_its_rows",
+        "test_actual0057_shared_snapshot_never_calls_active_public_json_overload",
         *(
             "test_actual0057_owner58_null_bitmap_refuses_rehearsal_or_final_null_flip_and_restores_all_state["
             + stage
