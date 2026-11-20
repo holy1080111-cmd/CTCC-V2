@@ -698,11 +698,27 @@ async def _observe_owned_live_get_v1(
         lease.verify_current()
         raw = bytes(body)
         signature = request.headers["OK-ACCESS-SIGN"]
-        canonical_body = validate_body(raw, lease, signature)
         if signature.encode("ascii") in raw or any(
             token.encode("utf-8") in raw for token in lease._pin.credentials
         ):
             _deny("live_config_credential_echo_rejected")
+        # The fixed lifecycle hook has no caller callback or credential result.
+        # It retains bounded original bytes before semantic decode only during
+        # an original active lifecycle. Secret echoes are rejected above.
+        from app.okx_live.owned_lifecycle_v1 import _retain_owned_live_get_raw_v1
+
+        _retain_owned_live_get_raw_v1(
+            lease=lease,
+            raw=raw,
+            headers=raw_headers,
+            stamps=(started, dispatched, headers_received, body_completed, closed),
+            request_path=request_path,
+            signed_at=signed_at,
+            request_signature_sha256=signed_request_sha256,
+            certificate_sha256=certificate_hash,
+            synthetic_mock=synthetic,
+        )
+        canonical_body = validate_body(raw, lease, signature)
         validated = _stamp()
         stamps = (
             started,

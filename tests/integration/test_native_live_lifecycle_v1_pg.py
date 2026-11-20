@@ -180,6 +180,16 @@ async def test_actual58_lifecycle_closed_reconciler_profile_hides_key_and_forbid
             with pytest.raises(DBAPIError):
                 async with session.begin():
                     await session.execute(text(sql))
+    # An added default preserves body/argtypes yet changes the callable
+    # contract. The actual actor must refuse it before any proof operation.
+    altered = spec.KEY_IDENTITY_SQL.replace(
+        "CREATE FUNCTION", "CREATE OR REPLACE FUNCTION", 1
+    ).replace("(u text)", "(u text DEFAULT '" + lab[2].account_uid + "')", 1)
+    async with lab[0].begin() as connection:
+        await connection.exec_driver_sql(altered)
+    async with lab[3]() as session, session.begin():
+        with pytest.raises(subject.LiveLifecycleRepositoryError):
+            await subject._profile(session, lab[4])
 
 
 @pytest.mark.parametrize(

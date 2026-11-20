@@ -257,7 +257,10 @@ async def _catalog(session, pins):
             text("""SELECT p.proname::text,p.proowner::bigint,
  encode(sha256(convert_to(p.prosrc,'UTF8')),'hex'),p.prosecdef,p.proconfig,p.prokind::text,
  p.proleakproof,p.proisstrict,p.provolatile::text,p.proparallel::text,p.prosupport::bigint,
- l.lanname::text,p.pronargs,p.proargtypes::text,p.proretset,p.prorettype::bigint
+ l.lanname::text,p.pronargs,p.proargtypes::text,p.proretset,p.prorettype::bigint,
+ p.pronargdefaults,p.provariadic::bigint,p.proallargtypes::oid[],p.proargmodes::text[],p.proargnames,
+ NOT EXISTS(SELECT 1 FROM pg_catalog.aclexplode(COALESCE(p.proacl,pg_catalog.acldefault('f',p.proowner))) a
+ WHERE a.grantee=0 OR (a.grantee<>p.proowner AND a.is_grantable))
  FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
  JOIN pg_catalog.pg_language l ON l.oid=p.prolang
  WHERE n.nspname='public' AND p.proname=ANY(CAST(:names AS text[]))"""),
@@ -306,6 +309,12 @@ async def _catalog(session, pins):
                 " ".join(["25"] * nargs),
                 name == spec.FUNCTIONS[1],
                 return_types[name],
+                0,
+                0,
+                None,
+                None,
+                ["p", "s"] if nargs == 2 else ["u"] if nargs == 1 else None,
+                True,
             )
         )
     table_rows = (
