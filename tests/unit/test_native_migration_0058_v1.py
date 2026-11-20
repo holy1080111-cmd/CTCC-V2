@@ -64,10 +64,10 @@ def test_downgrade_checks_retained_custody_before_removing_only_new_objects(
         if "protected58_preserve_history_and_revoke_grants" in value
     )
     assert refusal < statements.index(subject.previous.CURRENT_SQL)
-    assert refusal < statements.index(submission.ANCESTOR_SQL)
+    assert refusal < statements.index(submission.restore_statements()[0])
     assert refusal < statements.index(report.restore_statements()[0])
     assert statements.index(report.restore_statements()[0]) < statements.index(
-        submission.ANCESTOR_SQL
+        submission.restore_statements()[0]
     )
     assert "ctcc.native_original_oco_report_ready.v1" in statements[refusal]
     assert "native_live_financial_epochs_v1" in statements[refusal]

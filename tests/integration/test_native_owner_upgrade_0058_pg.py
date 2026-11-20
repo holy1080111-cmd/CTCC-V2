@@ -108,6 +108,11 @@ async def test_actual0057_owner58_rehearsal_and_commit_preserve_every_row_actor_
         selected, owner, pins, "0057"
     )
     before = await subject._inventory(owner, pins)
+    namespace_count = text("""SELECT count(*) FROM pg_catalog.pg_proc p
+ JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+ WHERE n.nspname='pg_catalog' AND p.proname='qualification_submission_binding'""")
+    async with owner.connect() as connection:
+        assert await connection.scalar(namespace_count) == 0
     try:
         final = await subject._commit_once(script, pins, owner, before)
     except subject.OwnerProfileUpgrade0058Refused as error:
@@ -131,6 +136,8 @@ async def test_actual0057_owner58_rehearsal_and_commit_preserve_every_row_actor_
         after_identity.execution_authority is after_identity.startup_admission is False
     )
     assert await subject._inventory(owner, after_pins) == final
+    async with owner.connect() as connection:
+        assert await connection.scalar(namespace_count) == 0
     subject._preserved(before, final)
     async with owner.connect() as connection:
         assert (

@@ -139,7 +139,23 @@ def _extended():
         raise ValueError("native_submission58_original_guard_changed") from None
     old_allow = original[len(_START) : -len(_CLOSE)]
     added = _START + "(" + old_allow + ") OR (" + _ADDITIONAL + ")" + _CLOSE
-    return ANCESTOR_SQL[:start] + added + _REPORT_GUARD + ANCESTOR_SQL[end:]
+    return _public_ddl(
+        ANCESTOR_SQL[:start] + added + _REPORT_GUARD + ANCESTOR_SQL[end:]
+    )
+
+
+def _public_ddl(sql):
+    # The owner maintenance transaction deliberately searches pg_catalog first.
+    # Always replace the intended existing public function, never create a
+    # same-named function in a caller-selected schema. Its body is unchanged.
+    original = "CREATE OR REPLACE FUNCTION qualification_submission_binding("
+    if sql.count(original) != 1:
+        raise ValueError("native_submission58_original_guard_changed") from None
+    return sql.replace(
+        original,
+        "CREATE OR REPLACE FUNCTION public.qualification_submission_binding(",
+        1,
+    )
 
 
 CURRENT_SQL = _extended()
@@ -158,4 +174,4 @@ def statements():
 
 def restore_statements():
     statements()
-    return (ANCESTOR_SQL,)
+    return (_public_ddl(ANCESTOR_SQL),)
