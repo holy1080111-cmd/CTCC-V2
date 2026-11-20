@@ -32,14 +32,14 @@ UPGRADE_SQL = (
  emergency_stop boolean NOT NULL DEFAULT true,
  armed boolean NOT NULL DEFAULT false,
  arm_id varchar(64), arm_expires_at timestamptz, lease_until timestamptz NOT NULL,
- per_trade_risk_cap numeric(60,20) NOT NULL CHECK(per_trade_risk_cap>0),
- portfolio_risk_cap numeric(60,20) NOT NULL CHECK(portfolio_risk_cap>=per_trade_risk_cap),
- margin_cap numeric(60,20) NOT NULL CHECK(margin_cap>0),
- micro_notional_cap numeric(60,20) NOT NULL CHECK(micro_notional_cap>0),
+ per_trade_risk_cap numeric(60,20) NOT NULL CHECK(per_trade_risk_cap>0 AND per_trade_risk_cap::text NOT IN ('NaN','Infinity','-Infinity')),
+ portfolio_risk_cap numeric(60,20) NOT NULL CHECK(portfolio_risk_cap>=per_trade_risk_cap AND portfolio_risk_cap::text NOT IN ('NaN','Infinity','-Infinity')),
+ margin_cap numeric(60,20) NOT NULL CHECK(margin_cap>0 AND margin_cap::text NOT IN ('NaN','Infinity','-Infinity')),
+ micro_notional_cap numeric(60,20) NOT NULL CHECK(micro_notional_cap>0 AND micro_notional_cap::text NOT IN ('NaN','Infinity','-Infinity')),
  updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
  PRIMARY KEY(environment,account_uid),
  CHECK((NOT armed AND arm_id IS NULL AND arm_expires_at IS NULL) OR
- (armed AND NOT emergency_stop AND arm_id ~ '^[a-f0-9]{64}$' AND
+ (armed AND NOT emergency_stop AND arm_id IS NOT NULL AND arm_expires_at IS NOT NULL AND arm_id ~ '^[a-f0-9]{64}$' AND
  updated_at<arm_expires_at AND arm_expires_at<=lease_until))
 )""",
     """CREATE TABLE public.native_live_reservations_v1 (
@@ -51,9 +51,9 @@ UPGRADE_SQL = (
  source_revision_sha256 varchar(64) NOT NULL CHECK(source_revision_sha256 ~ '^[a-f0-9]{64}$'),
  control_revision bigint NOT NULL CHECK(control_revision>0),
  arm_id varchar(64) NOT NULL CHECK(arm_id ~ '^[a-f0-9]{64}$'),
- risk_amount numeric(60,20) NOT NULL CHECK(risk_amount>0),
- margin_amount numeric(60,20) NOT NULL CHECK(margin_amount>0),
- notional_amount numeric(60,20) NOT NULL CHECK(notional_amount>0),
+ risk_amount numeric(60,20) NOT NULL CHECK(risk_amount>0 AND risk_amount::text NOT IN ('NaN','Infinity','-Infinity')),
+ margin_amount numeric(60,20) NOT NULL CHECK(margin_amount>0 AND margin_amount::text NOT IN ('NaN','Infinity','-Infinity')),
+ notional_amount numeric(60,20) NOT NULL CHECK(notional_amount>0 AND notional_amount::text NOT IN ('NaN','Infinity','-Infinity')),
  deadline timestamptz NOT NULL,
  state varchar(16) NOT NULL CHECK(state IN ('reserved','uncertain','reconciled')),
  resolution_sha256 varchar(64),
@@ -62,7 +62,7 @@ UPGRADE_SQL = (
  UNIQUE(environment,account_uid,event_key),
  UNIQUE(environment,account_uid,arm_id),
  CHECK(deadline>created_at),
- CHECK((state='reconciled' AND resolution_sha256 ~ '^[a-f0-9]{64}$') OR
+ CHECK((state='reconciled' AND resolution_sha256 IS NOT NULL AND resolution_sha256 ~ '^[a-f0-9]{64}$') OR
  (state<>'reconciled' AND resolution_sha256 IS NULL))
 )""",
     """CREATE TABLE public.native_live_intents_v1 (
@@ -109,7 +109,8 @@ UPGRADE_SQL = (
  IF TG_OP<>'INSERT' THEN RAISE EXCEPTION 'native_live_reservation_immutable'; END IF;
  PERFORM pg_advisory_xact_lock(('x'||substr(encode(sha256(convert_to('ctcc-live-ledger-v1:live:'||NEW.account_uid,'UTF8')),'hex'),1,16))::bit(64)::bigint);
  SELECT * INTO c FROM public.native_live_control_fence_v1(NEW.environment,NEW.account_uid);
- IF c.account_uid IS NULL OR c.emergency_stop OR NOT c.armed OR c.arm_expires_at<=clock_timestamp()
+ IF c.account_uid IS NULL OR c.emergency_stop IS DISTINCT FROM false OR c.armed IS DISTINCT FROM true
+ OR c.arm_id IS NULL OR c.arm_expires_at IS NULL OR c.arm_expires_at<=clock_timestamp()
  OR NEW.risk_amount<=0 OR NEW.margin_amount<=0 OR NEW.notional_amount<=0
  OR NEW.deadline>c.arm_expires_at OR NEW.deadline<=clock_timestamp()
  OR NEW.control_revision IS DISTINCT FROM c.revision
@@ -255,4 +256,18 @@ _NAMED = tuple(
 TABLE_CHECKS = {table: item[1] for table, item in zip(TABLES, _NAMED, strict=True)}
 TABLE_UNIQUES = {table: item[2] for table, item in zip(TABLES, _NAMED, strict=True)}
 UPGRADE_SQL = tuple(item[0] for item in _NAMED) + UPGRADE_SQL[4:]
+DOWNGRADE_SQL = (
+    """DO $body$ BEGIN
+ IF EXISTS(SELECT 1 FROM public.native_live_controls_v1)
+ OR EXISTS(SELECT 1 FROM public.native_live_reservations_v1)
+ OR EXISTS(SELECT 1 FROM public.native_live_intents_v1)
+ OR EXISTS(SELECT 1 FROM public.native_live_transitions_v1)
+ THEN RAISE EXCEPTION 'native_live_downgrade_requires_empty_retained_custody'; END IF;
+ END $body$""",
+    *(f"DROP TRIGGER {table}_immutable ON public.{table}" for table in TABLES[1:]),
+    "DROP FUNCTION public.native_live_data_guard_v1()",
+    "DROP FUNCTION public.native_live_reservation_guard_v1()",
+    "DROP FUNCTION public.native_live_control_fence_v1(text,text)",
+    *(f"DROP TABLE public.{table}" for table in reversed(TABLES)),
+)
 SPEC_SHA256 = sha(canonical({"schema": SCHEMA, "head": HEAD, "sql": UPGRADE_SQL}))

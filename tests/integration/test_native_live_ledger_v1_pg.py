@@ -17,6 +17,7 @@ from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from alembic.script import ScriptDirectory
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -236,4 +237,58 @@ async def test_actual58_estop_or_expiry_refuses_before_creating_any_hold(_live58
         )
     with pytest.raises(subject.LiveLedgerDataError):
         await repository.reserve_and_commit_intent_data_v1(value, owned_source=object())
+    assert await _counts(owner) == (0, 0, 0)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "arm_expires_at=NULL",
+        "arm_id=NULL",
+        "per_trade_risk_cap=NULL",
+        "per_trade_risk_cap='NaN'::numeric",
+        "portfolio_risk_cap='NaN'::numeric",
+        "margin_cap='NaN'::numeric",
+        "micro_notional_cap='Infinity'::numeric",
+        "portfolio_risk_cap=0.1",
+        "margin_cap=-1",
+    ),
+)
+async def test_actual58_direct_sql_cannot_make_null_armed_or_unknown_caps(
+    _live58_lab, mutation
+):
+    owner, _, _ = _live58_lab
+    with pytest.raises(DBAPIError):
+        async with owner.begin() as connection:
+            await connection.exec_driver_sql(
+                "UPDATE public.native_live_controls_v1 SET " + mutation
+            )
+    assert await _counts(owner) == (0, 0, 0)
+
+
+async def test_actual58_downgrade_refuses_retained_control_without_deleting_custody(
+    _live58_lab,
+):
+    owner, _, _ = _live58_lab
+    async with owner.connect() as connection:
+        before = await connection.scalar(
+            text("SELECT to_jsonb(c) FROM public.native_live_controls_v1 c")
+        )
+    with pytest.raises(DBAPIError):
+        async with owner.begin() as connection:
+            for sql in spec.DOWNGRADE_SQL:
+                await connection.exec_driver_sql(sql)
+    async with owner.connect() as connection:
+        assert (
+            await connection.scalar(
+                text("SELECT to_jsonb(c) FROM public.native_live_controls_v1 c")
+            )
+            == before
+        )
+        assert (
+            await connection.scalar(
+                text("SELECT version_num FROM public.alembic_version")
+            )
+            == "0058"
+        )
     assert await _counts(owner) == (0, 0, 0)
