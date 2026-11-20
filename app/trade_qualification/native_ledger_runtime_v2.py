@@ -704,6 +704,10 @@ async def read_control_v2(repository, binding, session, scope):
         state, event = await _native_issuer_transaction.read_actual_issuer_control_0056(
             session, control_scope
         )
+    elif issued.database_head == "0057":
+        state, event = await _native_issuer_transaction.read_actual_issuer_control_0056(
+            session, control_scope, database_head="0057"
+        )
     else:
         (
             state,

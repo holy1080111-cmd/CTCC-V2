@@ -120,3 +120,34 @@ independent committed readbacks are real when this test runs. It does not
 manufacture a public candidate, run R7, reserve risk or submit an order. This
 case has been collected only in the current source work; it is not an executed
 PostgreSQL or Demo acceptance claim.
+
+## Exact-source isolated G12 smoke contract
+
+`scripts.verify_current0057_hermetic` is a separately named, explicit four-case
+diagnostic. It requires `--g12-successor-smoke`, exact Git archive SHA256, commit,
+tree, all 58 migration files, unchanged 0056 prefix and matching runner/helper
+bytes. It builds a fresh source image and disposable internal-only PostgreSQL
+17 TLS/Redis containers without host credentials or host `.env`. The runner
+checks source COPY, manifest, Linux dependency lock, fresh 0056 upgrade, actual
+0057 migration identity, empty downgrade/re-upgrade and schema drift before
+executing the four G12 tests. Trading flags are disabled and external order
+writes remain zero. Disposable TLS keys are removed after container cleanup
+and are excluded from uploaded artifacts.
+
+Each test records a source-bound, no-clobber observation of the real physical
+0057 head, PostgreSQL version, TLS, cluster identity hash, all three role OIDs,
+44-statement ACL shape and inherited/G12 definition hashes. JUnit, every stage
+log, each observation and cleanup are hashed and independently read back.
+`scripts.verify_current0057_g12_smoke_pair` replays both exact-source artifact
+sets and requires distinct cluster identities with equal normalized definition
+hashes. The workflow `db0057-g12-smoke.yml` provisions those two independent
+hosted clusters when explicitly dispatched on its dedicated source branch.
+
+This smoke returns `hermetic_regression=NOT_RUN`,
+`component_validation=NOT_RUN`, `execution_authority=false` and
+`trading_acceptance=false`. It is not full Linux regression, native startup,
+candidate, Demo or Live acceptance. Generic source57 dispatch cannot fall back
+to a 0056 archive contract. Full57/union requests remain refused until a
+separate complete successor acceptance contract exists. The original 0056
+runner/contract bytes are unchanged. Historical-source scopes record real
+source57 and a separate database56 target; they never rewrite an observed head.

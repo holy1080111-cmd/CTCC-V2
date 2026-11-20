@@ -21,6 +21,12 @@ def source_tree(tmp_path):
         tmp_path / "migrations",
         ignore=lambda _root, names: {"__pycache__"} & set(names),
     )
+    # These unchanged historical contract tests intentionally use a real
+    # source56 graph. Successor57/current and explicit56-in57 cases are tested
+    # separately; no observed source/database head is rewritten.
+    successor = tmp_path / scopes._TAIL["0057"][0]
+    if successor.exists():
+        successor.unlink()
     return tmp_path
 
 
@@ -111,3 +117,34 @@ def test_historical0052_rejects_changed_later_migration_despite_fresh_manifest(
     _manifest(source_tree)
     with pytest.raises(scopes.ContractSourceScopeError):
         scopes.historical0052_source_scope(source_tree)
+
+
+def _restore_successor(source_tree):
+    relative = scopes._TAIL["0057"][0]
+    copy2(ROOT / relative, source_tree / relative)
+    _manifest(source_tree)
+
+
+def test_source57_keeps_genuine_current57_and_distinct_database56_prefix(source_tree):
+    _restore_successor(source_tree)
+    actual = scopes.actual_current_source_scope(source_tree)
+    prior = scopes.database0056_source_scope(source_tree)
+    assert actual.actual_source_head == actual.database_target == "0057"
+    assert actual.actual_migration_sha256 == scopes._PREFIX["0057"][0]
+    assert prior.actual_source_head == "0057" and prior.database_target == "0056"
+    assert prior.actual_migration_sha256 == actual.actual_migration_sha256
+    assert prior.historical_prefix_sha256 == scopes._PREFIX["0056"][0]
+    assert prior.historical_prefix_sha256 != actual.actual_migration_sha256
+    assert actual.account_complete is actual.execution_authority is False
+
+
+@pytest.mark.parametrize("revision", ["0055", "0056", "0057"])
+def test_source57_historical56_scope_rejects_any_changed_prefix_or_successor(
+    source_tree, revision
+):
+    _restore_successor(source_tree)
+    migration = source_tree / scopes._TAIL[revision][0]
+    migration.write_bytes(migration.read_bytes() + b"\n# changed synthetic fixture\n")
+    _manifest(source_tree)
+    with pytest.raises(scopes.ContractSourceScopeError):
+        scopes.database0056_source_scope(source_tree)

@@ -64,7 +64,7 @@ def _migrate(connection, target):
 
 
 @pytest.fixture
-async def _isolated_0057_g12_lab():
+async def _isolated_0057_g12_lab(request):
     url, tls = _isolated_tls_database_config()
     nonce = uuid4().hex[:12]
     database = "ctcc_g12_57_" + nonce
@@ -116,6 +116,19 @@ async def _isolated_0057_g12_lab():
                     hide_parameters=True,
                 )
             )
+        from app.demo_automation.native_server_selectors_v2 import (
+            ConfiguredNativeDemoFactoriesV2,
+        )
+        from scripts.current0057_g12_measurement_v1 import record_profile_if_requested
+
+        measured_factories = tuple(
+            async_sessionmaker(engine, autoflush=False, expire_on_commit=False)
+            for engine in writers
+        )
+        measured = ConfiguredNativeDemoFactoriesV2(
+            *measured_factories, writers[1], writers[2]
+        )
+        await record_profile_if_requested(owner, measured, case=request.node.name)
         yield owner, writers, names
     finally:
         for writer in writers:

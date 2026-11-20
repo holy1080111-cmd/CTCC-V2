@@ -40,7 +40,7 @@ def test_changed_archive_denies_before_importing_a_new_runner(tmp_path):
         )
 
 
-@pytest.mark.parametrize("head", ["0054", "0055"])
+@pytest.mark.parametrize("head", ["0054", "0055", "0056", "0057"])
 @pytest.mark.parametrize("inline", [False, True])
 def test_reviewed_head_routes_to_matching_runner_and_preserves_its_rejection(
     tmp_path, monkeypatch, head, inline
@@ -341,3 +341,19 @@ def test_genuine52_union_archive_retains_the_historical_route(tmp_path):
         )
         is None
     )
+
+
+def test_genuine57_smoke_cannot_be_reported_as_full_linux_union(tmp_path):
+    evidence = tmp_path / "cluster" / "ctcc-validation"
+    evidence.mkdir(parents=True)
+    archive = evidence.parent / "ctcc-source.tar"
+    pin = _archive(archive, "0057")
+    with tarfile.open(archive) as stream:
+        tree = archived.archive_tree(stream)
+    (evidence / "identity.json").write_text(json.dumps({"archive_sha256": pin}))
+    with pytest.raises(
+        ValueError, match="^current57_full_union_contract_not_implemented$"
+    ):
+        dispatch.maybe_dispatch_union(
+            ["--artifacts", str(tmp_path), "--commit", "a" * 40, "--tree", tree]
+        )

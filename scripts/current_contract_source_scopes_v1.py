@@ -1,6 +1,6 @@
 """Explicit actual-source and historical-database scopes; never relabel a head.
 
-A verified source54, source55 or source56 checkout can create a separate historical
+A verified source54, source55, source56 or source57 checkout can create a separate historical
 PostgreSQL database for unchanged component contracts. Full source/manifest identity and every original
 migration-prefix byte remain checked. These scopes are not schema admission.
 """
@@ -13,6 +13,7 @@ from pathlib import Path
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 
+from scripts import current0057_migration_pin as source57
 from scripts import manifest
 from scripts.current0056_migration_pin import (
     HEAD as SOURCE56_HEAD,
@@ -31,6 +32,10 @@ _PREFIX = {
     "0054": ("505f11187e1211074b9e4b60f77a7bada7d4a5136a651cad577de772d524d5e5", 55),
     "0055": ("19673eda7f135753ee63d4c7fd483178cbbe775b829d786067963af5dd8ba2f7", 56),
     SOURCE56_HEAD: (MIGRATION_INVENTORY_SHA256, MIGRATION_INVENTORY_COUNT),
+    source57.HEAD: (
+        source57.MIGRATION_INVENTORY_SHA256,
+        source57.MIGRATION_INVENTORY_COUNT,
+    ),
 }
 _TAIL = {
     "0053": (
@@ -49,6 +54,7 @@ _TAIL = {
         "0054",
     ),
     SOURCE56_HEAD: (MIGRATION_PATH, MIGRATION_SHA256, "0055"),
+    source57.HEAD: (source57.MIGRATION_PATH, source57.MIGRATION_SHA256, "0056"),
 }
 _SUPPORTED = {
     "0052": frozenset(("0052",)),
@@ -56,6 +62,9 @@ _SUPPORTED = {
     "0054": frozenset(("0052", "0053", "0054")),
     "0055": frozenset(("0052", "0053", "0054", "0055")),
     SOURCE56_HEAD: frozenset(("0052", "0053", "0054", "0055", SOURCE56_HEAD)),
+    source57.HEAD: frozenset(
+        ("0052", "0053", "0054", "0055", SOURCE56_HEAD, source57.HEAD)
+    ),
 }
 
 
@@ -171,6 +180,11 @@ def database0054_source_scope(root):
 def database0055_source_scope(root):
     """Bind genuine database0055 to a measured source55 or source56."""
     return _scope(root, "0055")
+
+
+def database0056_source_scope(root):
+    """Keep actual DB0056 distinct under exact supported source56/source57."""
+    return _scope(root, "0056")
 
 
 def current0054_source_scope(root):
