@@ -21,6 +21,7 @@ from app.domain.source_primitives import canonical, decode, sha
 
 _POSTSUBMIT_HANDOFF_KEY_V1 = object()
 _SOURCE_LEASE_KEY_V1 = object()
+_CLOSE_PERMISSION_KEY_V1 = object()
 _OWNER_KEY_V1 = object()
 _OWNERS = WeakKeyDictionary()
 _ACTIVE_CAPTURE = ContextVar("ctcc_owned_live_lifecycle_capture_v1", default=None)

@@ -14,7 +14,7 @@ import os
 import secrets
 import sys
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_CEILING, Context, Decimal, localcontext
 from pathlib import Path
@@ -73,6 +73,7 @@ EXIT_PHRASE = "CLOSE_OKX_LIVE_MICRO_POSITION"
 _NATIVE_GUARD = None
 CHALLENGE_SECONDS = 120
 ARM_SECONDS = 30
+CONTROLLED_EXIT_SECONDS = 120
 _STRATEGIES = frozenset(
     {
         "trend_pullback",
@@ -175,6 +176,23 @@ class LivePostsubmitHandoffFactsV1:
     initial_math_json: bytes
     recheck_math_json: bytes
     final_dispatch_recheck_json: bytes
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class LiveControlledCloseConsentFactsV1:
+    operator_roundtrip_id: str
+    consent_received: ClockStamp
+    expires_at: datetime
+    expiry_monotonic_ns: int
+    consent_sha256: str
+    account_uid: str
+    main_uid: str
+    credential_session_sha256: str
+    reservation_id: str
+    original_intent_sha256: str
+    process_sha256: str
+    maximum_close_submissions: int = field(default=1, init=False)
+    execution_authority: bool = field(default=False, init=False)
 
 
 def _settings_pin_v1(settings):
@@ -664,6 +682,7 @@ def _inhibit_owned_live_qualification_v1(owner, *, code, key):
 
 
 def _consume_owned_live_postsubmit_v1(owner, physical_handle, *, key):
+    _NATIVE_GUARD()
     from app.okx_live import owned_lifecycle_v1 as lifecycle
 
     _need(key is lifecycle._POSTSUBMIT_HANDOFF_KEY_V1)
@@ -695,6 +714,113 @@ def _consume_owned_live_postsubmit_v1(owner, physical_handle, *, key):
     )
 
 
+def _close_consent_record_v1(owner, physical_handle, *, used, key):
+    from app.okx_live import owned_lifecycle_v1 as lifecycle
+
+    _need(key is lifecycle._CLOSE_PERMISSION_KEY_V1)
+    record, state = _qualified(owner, spent=True, current=False)
+    _need(record["postsubmit_used"] is True and record["close_permission_used"] is used)
+    actual = physical._record(physical_handle)
+    _need(
+        actual["owner"] is owner
+        and actual["facts"] is record["facts"]
+        and actual["consumed"] is True
+        and state["physical_handle"] is physical_handle
+    )
+    _need(
+        record["revoked"] is False
+        and state["active"] is True
+        and state["exit_requested"] is True
+        and state["exit_authorized"] is True
+        and state["closed"] is False
+        and state.get("inhibit_code") is None
+    )
+    _need(
+        type(state["close_consent_received"]) is ClockStamp
+        and state["close_expiry_monotonic_ns"]
+        == state["close_consent_received"].monotonic_ns
+        + CONTROLLED_EXIT_SECONDS * 1_000_000_000
+        and state["close_expires_at"]
+        == utc_from_ns(state["close_consent_received"].utc_ns)
+        + timedelta(seconds=CONTROLLED_EXIT_SECONDS)
+    )
+    now = _stamp()
+    # _qualified/_session just extended the measured <=60s clock chain. The
+    # separate120s consent lifetime never widens a native clock batch.
+    validate_stamps((state["last"].model_dump(), now.model_dump()))
+    _need(
+        now.monotonic_ns >= state["close_consent_received"].monotonic_ns
+        and now.utc_ns >= state["close_consent_received"].utc_ns
+    )
+    _need(
+        now.monotonic_ns < state["close_expiry_monotonic_ns"]
+        and utc_from_ns(now.utc_ns) < state["close_expires_at"],
+        "native_live_controlled_close_consent_expired",
+    )
+    return record, state
+
+
+def _close_consent_facts_v1(record, state):
+    facts = record["facts"]
+    received = state["close_consent_received"]
+    _need(type(received) is ClockStamp)
+    expires = utc_from_ns(received.utc_ns) + timedelta(seconds=CONTROLLED_EXIT_SECONDS)
+    expiry_monotonic = received.monotonic_ns + CONTROLLED_EXIT_SECONDS * 1_000_000_000
+    _need(
+        state["close_expires_at"] == expires
+        and state["close_expiry_monotonic_ns"] == expiry_monotonic
+    )
+    expected_sha = sha(
+        canonical(
+            [
+                "ctcc-native-live-human-controlled-close-v1",
+                state["approval_sha256"],
+                state["close_consent_received"].model_dump(),
+                CONTROLLED_EXIT_SECONDS,
+                state["challenge_id"],
+                state["identity"]["uid"],
+                state["identity"]["main_uid"],
+                state["process_sha256"],
+            ]
+        )
+    )
+    _need(state["close_consent_sha256"] == expected_sha)
+    return LiveControlledCloseConsentFactsV1(
+        state["challenge_id"],
+        received,
+        expires,
+        expiry_monotonic,
+        expected_sha,
+        facts.account_uid,
+        facts.main_uid,
+        facts.credential_session_sha256,
+        facts.reservation_id,
+        sha(facts.intent_readback),
+        state["process_sha256"],
+    )
+
+
+def _consume_owned_live_close_permission_v1(owner, physical_handle, *, key):
+    """Burn only the exact separately confirmed close permission before await."""
+    _NATIVE_GUARD()
+    record, state = _close_consent_record_v1(
+        owner, physical_handle, used=False, key=key
+    )
+    data = _close_consent_facts_v1(record, state)
+    record["close_permission_used"] = True
+    record["close_permission_facts"] = data
+    return data
+
+
+def _replay_spent_owned_live_close_permission_v1(owner, physical_handle, *, key):
+    _NATIVE_GUARD()
+    record, state = _close_consent_record_v1(owner, physical_handle, used=True, key=key)
+    data = record["close_permission_facts"]
+    _need(type(data) is LiveControlledCloseConsentFactsV1)
+    _need(data == _close_consent_facts_v1(record, state))
+    return data
+
+
 def signal_live_operator_approval_v1(
     *, challenge_id, arm_phrase, clear_stop_phrase, controlled_exit_phrase=""
 ):
@@ -717,6 +843,13 @@ def signal_live_operator_approval_v1(
         and asyncio.get_running_loop() is state["loop"]
         and not state["approval_future"].done()
     )
+    received = _stamp()
+    validate_stamps((state["last"].model_dump(), received.model_dump()))
+    _need(
+        received.monotonic_ns < state["challenge_expiry_monotonic_ns"],
+        "native_live_human_challenge_expired",
+    )
+    state["approval_received"] = received
     state["approval_future"].set_result(
         (challenge_id, arm_phrase, clear_stop_phrase, controlled_exit_phrase)
     )
@@ -905,6 +1038,30 @@ async def run_owned_live_operator_once_v1(session):
                 ]
             )
         )
+        if state["exit_authorized"]:
+            received = state["approval_received"]
+            _need(type(received) is ClockStamp)
+            state["close_consent_received"] = received
+            state["close_expires_at"] = utc_from_ns(received.utc_ns) + timedelta(
+                seconds=CONTROLLED_EXIT_SECONDS
+            )
+            state["close_expiry_monotonic_ns"] = (
+                received.monotonic_ns + CONTROLLED_EXIT_SECONDS * 1_000_000_000
+            )
+            state["close_consent_sha256"] = sha(
+                canonical(
+                    [
+                        "ctcc-native-live-human-controlled-close-v1",
+                        state["approval_sha256"],
+                        received.model_dump(),
+                        CONTROLLED_EXIT_SECONDS,
+                        state["challenge_id"],
+                        state["identity"]["uid"],
+                        state["identity"]["main_uid"],
+                        state["process_sha256"],
+                    ]
+                )
+            )
         facts = await _refresh(session, _stamp())
         view = state["identity"]
         current_instrument = adapter.live_instrument_data_v1(
@@ -1067,6 +1224,8 @@ async def run_owned_live_operator_once_v1(session):
             "spent": False,
             "revoked": False,
             "postsubmit_used": False,
+            "close_permission_used": False,
+            "close_permission_facts": None,
         }
         state["qualified_owner"] = qualified
         _qualified(qualified, spent=False)
@@ -1228,6 +1387,11 @@ async def _open_live_operator_body_v1(
             "nonce": nonce,
             "exit_authorized": False,
             "exit_requested": controlled_exit_authorized,
+            "approval_received": None,
+            "close_consent_received": None,
+            "close_expires_at": None,
+            "close_expiry_monotonic_ns": None,
+            "close_consent_sha256": None,
             "lease_until": utc_from_ns(stamp.utc_ns)
             + timedelta(seconds=CHALLENGE_SECONDS + ARM_SECONDS + 30),
             "challenge_expiry_monotonic_ns": stamp.monotonic_ns
@@ -1299,6 +1463,9 @@ async def _open_live_operator_body_v1(
                     "candidate_created": False,
                     "controlled_exit_authorized": False,
                     "controlled_exit_requested": controlled_exit_authorized,
+                    "controlled_exit_seconds": CONTROLLED_EXIT_SECONDS
+                    if controlled_exit_authorized
+                    else 0,
                     "controlled_exit_phrase": EXIT_PHRASE + ":" + nonce
                     if controlled_exit_authorized
                     else "",
