@@ -31,9 +31,9 @@ def test_runtime_profile_keeps_the_real_compiled_source_closure_intact():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("head", ["0055", "0056"])
-@pytest.mark.parametrize("history_only", [False, True])
+@pytest.mark.parametrize("purpose", ["entry", "history", "recovery"])
 async def test_runtime_role_verification_failure_precedes_signed_get(
-    monkeypatch, head, history_only
+    monkeypatch, head, purpose
 ):
     settings = object()
     client = SimpleNamespace(account_config_selector_v2=AsyncMock())
@@ -57,12 +57,19 @@ async def test_runtime_role_verification_failure_precedes_signed_get(
 
         monkeypatch.setattr(roles55, "verify_selected_native_roles_v1", refused)
     with pytest.raises(selectors.NativeDemoCallerReadinessErrorV2):
-        await selectors._select_configured_demo_runtime_identity_v2(
-            private_client=client,
-            read_session=object(),
-            instrument_ids=("BTC-USDT-SWAP",),
-            history_only=history_only,
-        )
+        if purpose == "recovery":
+            await selectors._select_configured_demo_runtime_recovery_identity_v2(
+                private_client=client,
+                read_session=object(),
+                instrument_ids=("BTC-USDT-SWAP",),
+            )
+        else:
+            await selectors._select_configured_demo_runtime_identity_v2(
+                private_client=client,
+                read_session=object(),
+                instrument_ids=("BTC-USDT-SWAP",),
+                history_only=purpose == "history",
+            )
     head_read.assert_awaited_once_with(factories)
     refused.assert_awaited_once_with(factories)
     client.account_config_selector_v2.assert_not_awaited()
@@ -129,6 +136,14 @@ async def test_source_only_registration_cannot_dispatch_control_or_recovery(
     assert selectors._replay_configured_demo_recovery_identity_v2(
         object(), key=controlled._SOURCE_KEY_V6
     ) == (record, (factories, roles))
+    entry["purpose_0056"] = selectors._RECOVERY_0056
+    assert selectors._replay_configured_demo_recovery_identity_v2(
+        object(), key=controlled._SOURCE_KEY_V6
+    ) == (record, (factories, roles))
+    with pytest.raises(selectors.NativeDemoCallerReadinessErrorV2):
+        selectors._runtime_selection_database_head_v2(object())
+    with pytest.raises(selectors.NativeDemoCallerReadinessErrorV2):
+        selectors._controlled_identity_0056(object())
     with pytest.raises(selectors.NativeDemoCallerReadinessErrorV2):
         selectors._replay_configured_demo_recovery_identity_v2(object(), key=object())
 

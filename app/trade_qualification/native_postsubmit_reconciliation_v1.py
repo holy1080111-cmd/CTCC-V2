@@ -3396,11 +3396,10 @@ async def recover_native_for_service_v1(service, request, *, operator_token):
             client = _private.OkxDemoPrivateRestClient(settings=settings)
             state["client"] = client
             with client.pinned_read_session() as lease:
-                selection = await _selector.select_configured_demo_identity_v2(
+                selection = await _selector._select_configured_demo_runtime_recovery_identity_v2(
                     private_client=client,
                     read_session=lease,
                     instrument_ids=instruments,
-                    retain_read_transport=True,
                 )
                 state["selection"], state["factories"] = selection, selection.factories
                 _caller._ready(service, state)
