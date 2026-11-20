@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager, suppress
 from fastapi import APIRouter, FastAPI
 from fastapi.responses import RedirectResponse
 
+from app.api.native_manual_demo_http_0056_v1 import router as native_manual_demo_router
 from app.api.native_only_http import router as native_only_api_router
 from app.api.router import api_router
 from app.api.routers.paper import local_paper_runtime_router
@@ -41,6 +42,30 @@ async def lifespan(instance: FastAPI):
         settings.environment,
         settings.trading_mode,
     )
+    if getattr(settings, "ctcc_native_demo_manual_lifespan_0056_v1", False):
+        from app.core.native_manual_demo_lifespan_0056_v1 import (
+            start_manual_demo_0056_v1,
+        )
+
+        instance.state.native_manual_demo_recovery_confirmed = False
+        try:
+            await start_manual_demo_0056_v1(
+                settings, AsyncSessionFactory, safe_demo_automation
+            )
+        except BaseException:
+            with suppress(Exception, CancelledError):
+                await engine.dispose()
+            raise
+        instance.state.native_manual_demo_recovery_confirmed = True
+        try:
+            yield
+        finally:
+            instance.state.native_manual_demo_recovery_confirmed = False
+            try:
+                await safe_demo_automation.stop()
+            finally:
+                await engine.dispose()
+        return
     if settings.ctcc_native_only_lifespan_v1:
         instance.state.native_only_recovery_confirmed = False
         try:
@@ -170,6 +195,9 @@ def _local_analysis_router() -> APIRouter:
 def _build_app() -> FastAPI:
     native_only = settings.ctcc_native_only_lifespan_v1
     local_analysis = getattr(settings, "ctcc_local_analysis_only_v1", False)
+    manual_demo = getattr(settings, "ctcc_native_demo_manual_lifespan_0056_v1", False)
+    if sum(bool(mode) for mode in (native_only, local_analysis, manual_demo)) > 1:
+        raise RuntimeError("ctcc_runtime_profile_conflict")
     docs_options = (
         {
             "openapi_url": None,
@@ -177,7 +205,7 @@ def _build_app() -> FastAPI:
             "redoc_url": None,
             "redirect_slashes": False,
         }
-        if native_only or local_analysis
+        if native_only or local_analysis or manual_demo
         else {}
     )
     instance = FastAPI(
@@ -188,7 +216,9 @@ def _build_app() -> FastAPI:
     )
     instance.state.notion_outbox_runtime = notion_outbox_runtime
     instance.state.submission_outbox_runtime = submission_outbox_runtime
-    if native_only:
+    if manual_demo:
+        instance.include_router(native_manual_demo_router)
+    elif native_only:
         instance.include_router(native_only_api_router)
     elif local_analysis:
         instance.include_router(_local_analysis_router())

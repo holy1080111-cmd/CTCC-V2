@@ -64,6 +64,8 @@ def require_native_only_settings(settings) -> None:
         or getattr(settings, "trading_mode", None) != "okx_demo"
         or getattr(settings, "web_concurrency", None) != 1
         or getattr(settings, "okx_demo_enabled", None) is not True
+        or getattr(settings, "ctcc_native_demo_manual_lifespan_0056_v1", False)
+        is not False
         or any(getattr(settings, name, None) is not False for name in _MUST_BE_FALSE)
     ):
         raise NativeOnlyLifespanError("native_only_configuration_denied")

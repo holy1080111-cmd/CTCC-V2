@@ -68,6 +68,8 @@ class Settings(BaseSettings):
     api_token: SecretStr = SecretStr("")
     # Opt-in, no-execution native Demo startup. Legacy lifespan stays default.
     ctcc_native_only_lifespan_v1: bool = False
+    # Explicit manual native Demo profile. No scheduler or automatic Arm.
+    ctcc_native_demo_manual_lifespan_0056_v1: bool = False
     ctcc_local_analysis_only_v1: bool = False
     # Optional reviewed PostgreSQL CA for native-only restricted role transport.
     # Both values are required together; the digest is independently pinned.
@@ -481,6 +483,7 @@ class Settings(BaseSettings):
     def _require_local_analysis_settings(self) -> None:
         switches = (
             self.ctcc_native_only_lifespan_v1,
+            self.ctcc_native_demo_manual_lifespan_0056_v1,
             self.auto_trade,
             self.live_trading,
             self.okx_ws_enabled,
