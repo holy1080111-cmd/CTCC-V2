@@ -694,7 +694,9 @@ class PublicJournal0058:
         )
         return original, terminal, hold
 
-    async def close(self, original, terminal, hold, *, mutation=None):
+    async def close(
+        self, original, terminal, hold, *, mutation=None, retain_forensics=False
+    ):
         """Actual predicate/UPDATE guard; a rehashed DATA claim cannot release."""
         expected = facts.assess_original_protective_exit_v1(
             self.target, original, terminal
@@ -736,6 +738,37 @@ class PublicJournal0058:
             manifest, _ = await self.manifest(
                 session, observed, expected, label="terminal"
             )
+            forensic_id, report = None, None
+            if retain_forensics:
+                # Declared synthetic venue ingress, with genuine public SQL
+                # linkage and immutable pre-flat reporting rows. No native
+                # source or actual SDK-cleanup authority is minted here.
+                from app.domain import native_protective_report_schema_v58 as reporting
+                from app.trade_evidence import native_protective_forensics_v58 as mapper
+
+                report = mapper.reconstruct_native_protective_forensics_v58(
+                    self.target, original, observed
+                )
+                held = await session.get(Outcome, hold)
+                held_capture = decode(held.capture_json.encode())
+                forensic_id, _ = await self.append(
+                    session,
+                    {
+                        "version": reporting.FORENSICS_VERSION,
+                        "reservation_id": self.target.reservation_id,
+                        "request_sha256": sha(self.target.request_json.encode()),
+                        "intent_sha256": self.intent.sha256,
+                        "hold_outcome_id": hold,
+                        "original_manifest_outcome_id": held_capture[
+                            "original_manifest_outcome_id"
+                        ],
+                        "final_manifest_outcome_id": manifest,
+                        "assessment_sha256": sha(expected.receipt_json),
+                        "forensics_json": report.receipt_json.decode(),
+                        "forensics_sha256": sha(report.receipt_json),
+                        "risk_hold_retained": True,
+                    },
+                )
             inner = decode(
                 decode(self.intent.canonical_json.encode())["intent_json"].encode()
             )
@@ -757,6 +790,11 @@ class PublicJournal0058:
                 "risk_hold_retained": False,
                 "metrics_complete": False,
             }
+            if retain_forensics:
+                witness.update(
+                    forensics_outcome_id=forensic_id,
+                    forensics_sha256=sha(report.receipt_json),
+                )
             closure, at = await self.append(session, witness, status="acknowledged")
             allowed = await session.scalar(
                 text(
@@ -819,6 +857,8 @@ class PublicJournal0058:
             manifest=manifest,
             assessment=expected,
             write_xid=write_xid,
+            forensic_id=forensic_id,
+            report=report,
         )
 
     async def readback_held(self):

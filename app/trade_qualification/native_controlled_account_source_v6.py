@@ -8317,6 +8317,7 @@ def _install_source_kernel_v6():
             issuer55.issuer_transaction.writer56.inherited.protective58,
             issuer55.issuer_transaction.writer56.inherited.protective58.schema,
             issuer55.issuer_transaction.writer56.inherited.protective58.submission,
+            issuer55.issuer_transaction.writer56.inherited.protective58.report,
             database_profiles,
             g12_acl57,
             g12_acl57.g12,

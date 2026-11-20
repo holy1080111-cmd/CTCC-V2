@@ -148,15 +148,26 @@ async def reconcile_owned_protected_history_v1(state):
     )
     await repository.append_owned_protective_assessment_v1(state["binding"])
     if state["target"].current_state == "reconciled_flat":
-        return await repository.replay_owned_protective_exit_v1(state["binding"])
-    result = await repository.finish_owned_protective_exit_v1(state["binding"])
-    terminal = state["protective_durable_assessment"]
-    state["verified_normal_protected_recovery"] = (
-        result,
-        terminal[1],
-        terminal[2],
-        terminal[3],
+        result = await repository.replay_owned_protective_exit_v1(state["binding"])
+    else:
+        result = await repository.finish_owned_protective_exit_v1(state["binding"])
+        terminal = state["protective_durable_assessment"]
+        state["verified_normal_protected_recovery"] = (
+            result,
+            terminal[1],
+            terminal[2],
+            terminal[3],
+        )
+    from app.database.repositories import (
+        native_protective_reporting_owner_v58 as reporting,
     )
+
+    try:
+        await reporting.prepare_owned_protective_report_writer_v58(
+            state, result=result, key=post._PROTECTIVE_REPORT_KEY_V58
+        )
+    except Exception:  # noqa: BLE001 -- a report failure cannot undo a committed protective exit or prevent read-resource retirement.
+        state["protective_report_status"] = "pending"
     return result
 
 

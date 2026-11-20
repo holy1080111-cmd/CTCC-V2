@@ -391,6 +391,9 @@ async def append_owned_protective_assessment_v1(binding):
 async def finish_owned_protective_exit_v1(binding):
     """Only full raw SQL predicate + committed independent replay resolve risk."""
     state, _ = journal._source(binding)
+    from app.database.repositories import native_protective_reporting_v58 as reporting
+
+    forensic = await reporting.append_owned_original_oco_forensic_v58(binding)
     target, history = state["target"], state["normal_protected_history"]
     terminal = state["protective_durable_assessment"]
     inner = decode(
@@ -416,6 +419,8 @@ async def finish_owned_protective_exit_v1(binding):
         "closure_body_sha256": schema.CURRENT_BODY_SHA256,
         "risk_hold_retained": False,
         "metrics_complete": False,
+        "forensics_outcome_id": forensic.outcome_id,
+        "forensics_sha256": sha(forensic.report.receipt_json),
         "execution_authority": False,
         "order_retry_authority": False,
     }

@@ -26,6 +26,7 @@ _ROOT_TRANSPORT_SETTLEMENT_KEY_V1 = object()
 _SOURCE_SETTLEMENT_KEY_V1 = object()
 _ROOT_FILLED_TRANSPORT_SETTLEMENT_KEY_V1 = object()
 _FILLED_SOURCE_SETTLEMENT_KEY_V1 = object()
+_PROTECTIVE_REPORT_KEY_V58 = object()
 _LIVE = {}
 _UNKNOWN = {}
 _FLAT_SETTLEMENTS = {}
@@ -3361,6 +3362,23 @@ async def _dispose_completed_recovery_v1(service, caller, attempt, result):
             and _repository._RECOVERY_CLOSE_HISTORIES_V1.get(binding)
             is state.get("recovery_close_history")
         )
+        report_cap = state.get("protective_report_writer")
+        if report_cap is not None:
+            from app.database.repositories import (
+                native_protective_reporting_owner_v58 as protective_report,
+            )
+
+            protective_report.capture_actual_protective_read_cleanup_v58(
+                report_cap,
+                caller=caller,
+                source=source,
+                record=record,
+                read_set=read_set,
+                pages=pages,
+                pools=pools,
+                started=started,
+                key=_PROTECTIVE_REPORT_KEY_V58,
+            )
         if (
             state.get("verified_normal_protected_recovery") is not None
             and result.risk_hold_retained is False
@@ -3374,8 +3392,8 @@ async def _dispose_completed_recovery_v1(service, caller, attempt, result):
             )
         selection.close()
         _need(selection not in _selector._SELECTIONS)
-        # No await after exact retirement. The closed selection can never be
-        # acquired again, and the authoritative journal remains in PostgreSQL.
+        # No old owner is used after exact retirement. A separately prepared
+        # DATA-only writer may persist a report; it cannot reacquire this source.
         del source._RECOVERY_SELECTION_USES_V6[selection]
         del source._RECONCILIATION_READ_V6[generation]
         _repository._RECOVERY_HISTORY_BUFFERS_V1.pop(binding, None)
@@ -3383,6 +3401,23 @@ async def _dispose_completed_recovery_v1(service, caller, attempt, result):
         del _UNKNOWN[binding]
         del _caller._HELD[caller["id"]]
     caller["fresh_resource_cleanup"] = "confirmed"
+    if state.get("protective_report_status") == "pending":
+        caller["protective_report_status"] = "pending"
+    if report_cap is not None:
+        try:
+            protective_report.mark_original_protective_selection_retired_v58(
+                report_cap, key=_PROTECTIVE_REPORT_KEY_V58
+            )
+            spool = await protective_report.persist_retired_protective_report_v58(
+                report_cap, key=_PROTECTIVE_REPORT_KEY_V58
+            )
+            caller["protective_report_status"] = spool.status
+            caller["protective_report_spool_id"] = spool.spool_id
+        except asyncio.CancelledError:
+            caller["protective_report_status"] = "pending"
+            raise
+        except Exception:  # noqa: BLE001 -- reporting stays pending and cannot undo confirmed exchange/ledger/resource facts.
+            caller["protective_report_status"] = "pending"
     return True
 
 
@@ -3445,7 +3480,8 @@ async def recover_native_for_service_v1(service, request, *, operator_token):
                         service, state, attempt, result
                     )
                 except asyncio.CancelledError:
-                    state["fresh_resource_cleanup"] = "unknown"
+                    if state.get("fresh_resource_cleanup") != "confirmed":
+                        state["fresh_resource_cleanup"] = "unknown"
                     raise
                 except Exception:  # noqa: BLE001 -- keep exact owners; a late cleanup failure changes no exchange or ledger outcome.
                     state["fresh_resource_cleanup"] = "unknown"
@@ -3457,6 +3493,10 @@ async def recover_native_for_service_v1(service, request, *, operator_token):
                     receipt_sha256=result.receipt_sha256,
                     risk_hold_retained=result.risk_hold_retained,
                     fresh_resource_cleanup_confirmed=resources_closed,
+                    report_status=state.get(
+                        "protective_report_status", "not_applicable"
+                    ),
+                    report_spool_id=state.get("protective_report_spool_id"),
                 )
         finally:
             # A new authenticated recovery read cannot restore old credentials,

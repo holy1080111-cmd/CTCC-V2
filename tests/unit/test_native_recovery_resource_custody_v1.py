@@ -11,6 +11,7 @@ import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from app.database.repositories import native_protective_reporting_owner_v58 as reporting
 from app.exchange.okx import native_reconciliation_observation_v1 as read
 from app.exchange.okx.errors import OkxPrivateApiError
 from app.exchange.okx.private_rest import OkxDemoPrivateRestClient
@@ -144,9 +145,13 @@ def _recovery_journal(lease):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("late_failure", (False, True))
+@pytest.mark.parametrize(
+    "reporting_result", ("not_applicable", "saved", "failure", "cancelled")
+)
 async def test_recovery_cleans_only_new_owners_and_preserves_custody_on_late_failure(
     monkeypatch,
     late_failure,
+    reporting_result,
 ):
     # This is the retirement coordinator, with simulated source/transport
     # observations and real unconnected SQLAlchemy engine/pool disposal.
@@ -273,6 +278,48 @@ async def test_recovery_cleans_only_new_owners_and_preserves_custody_on_late_fai
                 post._repository, "_RECOVERY_HISTORY_BUFFERS_V1", {binding: history}
             )
             patches.setattr(post._repository, "_RECOVERY_CLOSE_HISTORIES_V1", {})
+            report_calls = []
+            if reporting_result != "not_applicable":
+                # Deliberately synthetic DATA dispatch, never a real report cap.
+                cap = object()
+                state["protective_report_writer"] = cap
+
+                def capture(actual, **kwargs):
+                    assert actual is cap
+                    assert post._UNKNOWN[binding] is state
+                    assert custody.sync_engine.pool is not pools[1]
+                    assert kwargs["key"] is post._PROTECTIVE_REPORT_KEY_V58
+                    report_calls.append("captured")
+
+                def retired(actual, *, key):
+                    assert actual is cap and key is post._PROTECTIVE_REPORT_KEY_V58
+                    assert binding not in post._UNKNOWN
+                    assert caller["id"] not in post._caller._HELD
+                    assert selection not in post._selector._SELECTIONS
+                    assert generation not in source._RECONCILIATION_READ_V6
+                    report_calls.append("retired")
+
+                async def save(actual, *, key):
+                    assert actual is cap and key is post._PROTECTIVE_REPORT_KEY_V58
+                    assert caller["fresh_resource_cleanup"] == "confirmed"
+                    report_calls.append("independent_writer")
+                    if reporting_result == "failure":
+                        raise ValueError("synthetic independent report SQL failure")
+                    if reporting_result == "cancelled":
+                        raise asyncio.CancelledError
+                    return SimpleNamespace(
+                        status="durable_pending_projection", spool_id="c" * 64
+                    )
+
+                patches.setattr(
+                    reporting, "capture_actual_protective_read_cleanup_v58", capture
+                )
+                patches.setattr(
+                    reporting, "mark_original_protective_selection_retired_v58", retired
+                )
+                patches.setattr(
+                    reporting, "persist_retired_protective_report_v58", save
+                )
 
             if late_failure:
 
@@ -293,10 +340,17 @@ async def test_recovery_cleans_only_new_owners_and_preserves_custody_on_late_fai
                 assert post._caller._HELD[caller["id"]] is caller
                 assert post._repository._RECOVERY_HISTORY_BUFFERS_V1[binding] is history
                 assert custody.sync_engine.pool is pools[1]
+                assert report_calls == []
             else:
-                assert await post._dispose_completed_recovery_v1(
-                    object(), caller, attempt, result
-                )
+                if reporting_result == "cancelled":
+                    with pytest.raises(asyncio.CancelledError):
+                        await post._dispose_completed_recovery_v1(
+                            object(), caller, attempt, result
+                        )
+                else:
+                    assert await post._dispose_completed_recovery_v1(
+                        object(), caller, attempt, result
+                    )
                 assert (
                     post._UNKNOWN
                     == post._caller._HELD
@@ -310,6 +364,19 @@ async def test_recovery_cleans_only_new_owners_and_preserves_custody_on_late_fai
                 )
                 assert post._repository._RECOVERY_HISTORY_BUFFERS_V1 == {}
                 assert custody.sync_engine.pool is not pools[1]
+                assert caller["fresh_resource_cleanup"] == "confirmed"
+                if reporting_result != "not_applicable":
+                    assert report_calls == ["captured", "retired", "independent_writer"]
+                    assert caller["protective_report_status"] == (
+                        "pending"
+                        if reporting_result in {"failure", "cancelled"}
+                        else "durable_pending_projection"
+                    )
+                    assert caller.get("protective_report_spool_id") == (
+                        None
+                        if reporting_result in {"failure", "cancelled"}
+                        else "c" * 64
+                    )
             assert reads == [(initial, "initial"), (fresh, "fresh")]
             assert reader.sync_engine.pool is not pools[0]
             assert writer.sync_engine.pool is pools[2]

@@ -423,9 +423,11 @@ def _observe_inherited_graph(value, *, owner_mode, read_only, profile=profiles.D
     terminal_defs = inherited.native_terminal.observe_catalog(
         value["native_terminal55"], owner=owner
     )
-    report_defs = inherited.native_report.observe_catalog(
-        value["native_report55"], owner=owner, actor=role["oid"], owner_mode=owner_mode
-    )
+    report_defs = (
+        inherited.native_report.observe_protective58_catalog
+        if profile is profiles.DB0058
+        else inherited.native_report.observe_catalog
+    )(value["native_report55"], owner=owner, actor=role["oid"], owner_mode=owner_mode)
     close_intent_defs = inherited._close_intent55(
         value["native_close_intent55"],
         owner=owner,
@@ -656,8 +658,12 @@ def _observe_inherited_graph(value, *, owner_mode, read_only, profile=profiles.D
         "native_filled_flat_body_sha256": terminal_defs[
             "qualification_native_filled_flat_data_v55"
         ]["body_sha256"],
-        "native_report_eligibility_body_sha256": inherited.native_report.schema.body_sha(
-            inherited.native_report.schema.ELIGIBLE_SQL, "$ctcc$"
+        "native_report_eligibility_body_sha256": (
+            protective58.report.ELIGIBLE_BODY_SHA256
+            if profile is profiles.DB0058
+            else inherited.native_report.schema.body_sha(
+                inherited.native_report.schema.ELIGIBLE_SQL, "$ctcc$"
+            )
         ),
         "native_close_intent_index_sha256": inherited.native_close_intent.INDEX_SPEC_SHA256,
         "native_configuration_ddl_sha256": inherited.native_configuration.DDL_SHA256,

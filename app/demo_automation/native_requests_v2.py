@@ -156,10 +156,22 @@ class NativeDemoRecoveryResultV1(BaseModel):
     receipt_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     risk_hold_retained: bool
     fresh_resource_cleanup_confirmed: bool = False
+    report_status: Literal[
+        "not_applicable", "pending", "durable_pending_projection"
+    ] = "not_applicable"
+    report_spool_id: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     historical_transport_custody_unproven: Literal[True] = True
     execution_complete: Literal[False] = False
     execution_authority: Literal[False] = False
     order_retry_authority: Literal[False] = False
+
+    @model_validator(mode="after")
+    def report_readback_consistent(self):
+        if (self.report_status == "durable_pending_projection") != (
+            self.report_spool_id is not None
+        ):
+            raise ValueError("native_recovery_report_readback_inconsistent")
+        return self
 
 
 class NativeDemoZeroCompleteResultV3(BaseModel):

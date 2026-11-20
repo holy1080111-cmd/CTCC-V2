@@ -105,6 +105,17 @@ async def _replay_native_terminal_spool(session, spool):
             and reservation.state == "reconciled_flat"
             and reservation.state_revision == 4
         )
+        if (
+            decode(outcome.capture_json.encode(), 140000).get("version")
+            == "ctcc.native_original_oco_report_ready.v1"
+        ):
+            from app.database.repositories import (
+                native_protective_reporting_v58 as protective,
+            )
+
+            return await protective.replay_protective_terminal_spool_data_v58(
+                session, spool
+            )
         retained = (
             await session.execute(
                 text("""
