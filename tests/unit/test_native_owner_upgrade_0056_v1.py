@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import io
 import tarfile
-from contextlib import nullcontext
+from contextlib import asynccontextmanager, nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -34,6 +34,18 @@ def _pins(manifest_sha="a" * 64):
         database_head="0055",
     )
     return subject.OwnerUpgradePinsV1("c" * 40, "d" * 40, "e" * 64, route)
+
+
+def _upgrade_pins():
+    pins = _pins()
+    return subject.OwnerUpgradePinsV2(
+        pins.source_commit,
+        pins.source_tree,
+        pins.source_archive_sha256,
+        pins.route,
+        ("demo_writer", "demo_custody", "demo_frame"),
+        (20001, 20002, 20003),
+    )
 
 
 def _row(pins, head, read_only="off"):
@@ -79,7 +91,7 @@ def test_default_cli_refuses_before_opening_any_input(capsys, monkeypatch):
 def test_cli_commit_uncertainty_has_distinct_fixed_terminal(
     capsys, monkeypatch, error, exit_code, terminal
 ):
-    monkeypatch.setattr(subject, "_load_pins", lambda *args: _pins())
+    monkeypatch.setattr(subject, "_load_upgrade_pins_v2", lambda *args: _upgrade_pins())
 
     def stop_before_any_runtime(coroutine):
         coroutine.close()
@@ -185,7 +197,9 @@ def test_migration_graph_rechecks_exact_predecessor_and_source_scope(monkeypatch
 
 
 def _fake_commit(monkeypatch, *, fail_at=None):
-    pins = _pins()
+    from scripts import native_owner_upgrade_0057_v1 as shared
+
+    pins = _upgrade_pins()
     events = []
 
     class Transaction:
@@ -211,6 +225,10 @@ def _fake_commit(monkeypatch, *, fail_at=None):
             events.append("BEGIN")
             return Transaction()
 
+        async def begin_nested(self):
+            events.append("SAVEPOINT")
+            return SimpleNamespace(rollback=rollback_savepoint)
+
         async def exec_driver_sql(self, statement):
             events.append(statement)
             if fail_at == "lock" and statement == subject._LOCK_REVISION:
@@ -233,36 +251,54 @@ def _fake_commit(monkeypatch, *, fail_at=None):
         def connect(self):
             return Connection()
 
-        async def dispose(self):
-            events.append("DISPOSE")
-            if fail_at == "dispose":
-                raise RuntimeError("private database detail")
+    async def rollback_savepoint():
+        events.append("ROLLBACK_SAVEPOINT")
+        if fail_at == "savepoint":
+            raise RuntimeError("private database detail")
 
-    def create(*args, **kwargs):
-        assert kwargs["poolclass"] is subject.NullPool
-        assert kwargs["connect_args"]["timeout"] == 10
-        events.append("ENGINE")
-        return Engine()
+    async def inventory(connection, pins, head, *, read_only):
+        events.append("PROFILE_" + head)
+        if fail_at == "rollback_readback" and events.count("PROFILE_0055") == 2:
+            return {"changed": True}
+        return {"logical_sha256": "a" * 64, "head": head}
 
-    monkeypatch.setattr(subject, "create_async_engine", create)
+    async def lock(*args, **kwargs):
+        events.append("TABLE_LOCKS")
+
+    def preserved(before, after):
+        events.append("PRESERVED")
+        if fail_at == "preservation":
+            raise RuntimeError("private database detail")
+
+    monkeypatch.setattr(shared, "_relations", lock)
+    monkeypatch.setattr(subject, "_inventory_v2", inventory)
+    monkeypatch.setattr(subject, "_preserved_v2", preserved)
     monkeypatch.setattr(
         subject,
         "_upgrade_exact_0055",
         lambda *args: events.append("CHECKED_0055_TO_0056"),
     )
     route = SimpleNamespace(url="synthetic", tls=object())
-    return pins, (route, object(), object(), object()), events
+    return (
+        pins,
+        (route, object(), object(), object()),
+        events,
+        Engine(),
+        {"logical_sha256": "a" * 64, "head": "0055"},
+    )
 
 
 @pytest.mark.asyncio
 async def test_single_transaction_locks_checks_migrates_then_commits(monkeypatch):
-    pins, prepared, events = _fake_commit(monkeypatch)
-    await subject._commit_once(prepared, pins)
+    pins, prepared, events, engine, expected = _fake_commit(monkeypatch)
+    await subject._commit_once(prepared, pins, engine, expected)
     assert events.index("ADVISORY_LOCK") < events.index(subject._LOCK_REVISION)
     assert events.index("PROFILE_0055") < events.index("MIGRATE")
     assert events.index("CHECKED_0055_TO_0056") < events.index("PROFILE_0056")
     assert events.index("PROFILE_0056") < events.index("COMMIT")
-    assert events[-1] == "DISPOSE"
+    assert events.index("TABLE_LOCKS") < events.index("PROFILE_0055")
+    assert events.count("MIGRATE") == 2 and events.count("PRESERVED") == 2
+    assert events.index("ROLLBACK_SAVEPOINT") < events.index("COMMIT")
     assert events.count("COMMIT") == 1 and "ROLLBACK" not in events
 
 
@@ -272,24 +308,25 @@ async def test_single_transaction_locks_checks_migrates_then_commits(monkeypatch
     (
         ("lock", subject.NativeOwnerUpgradeRefusal),
         ("commit", subject.NativeOwnerUpgradeCommitUnknown),
-        ("dispose", subject.NativeOwnerUpgradePostcommitIncomplete),
+        ("savepoint", subject.NativeOwnerUpgradeRefusal),
+        ("rollback_readback", subject.NativeOwnerUpgradeRefusal),
+        ("preservation", subject.NativeOwnerUpgradeRefusal),
     ),
 )
 async def test_failure_stage_is_fixed_and_never_retries(monkeypatch, stage, expected):
-    pins, prepared, events = _fake_commit(monkeypatch, fail_at=stage)
+    pins, prepared, events, engine, inventory = _fake_commit(monkeypatch, fail_at=stage)
     with pytest.raises(expected) as caught:
-        await subject._commit_once(prepared, pins)
+        await subject._commit_once(prepared, pins, engine, inventory)
     assert "private database detail" not in str(caught.value)
-    assert events.count("COMMIT") == (0 if stage == "lock" else 1)
-    assert events.count("ROLLBACK") == (1 if stage == "lock" else 0)
-    assert events.count("DISPOSE") == 1
+    assert events.count("COMMIT") == (1 if stage == "commit" else 0)
+    assert events.count("ROLLBACK") == (0 if stage == "commit" else 1)
 
 
 @pytest.mark.asyncio
 async def test_postcommit_readback_failure_is_incomplete_not_second_upgrade(
     monkeypatch,
 ):
-    pins = _pins()
+    pins = _upgrade_pins()
     route = SimpleNamespace(
         url="synthetic",
         source_head="0056",
@@ -300,6 +337,9 @@ async def test_postcommit_readback_failure_is_incomplete_not_second_upgrade(
     prepared = (route, object(), object(), object())
     phases = []
     monkeypatch.setattr(subject, "_prepared", lambda *args: prepared)
+    monkeypatch.setattr(
+        subject, "_require_positive_private_file_v2", lambda *args: None
+    )
 
     async def preflight(*args, **kwargs):
         phases.append("PREFLIGHT")
@@ -331,6 +371,25 @@ async def test_postcommit_readback_failure_is_incomplete_not_second_upgrade(
     monkeypatch.setattr(subject, "preflight_owner_route_0056_v1", preflight)
     monkeypatch.setattr(subject, "_commit_once", commit)
     monkeypatch.setattr(subject, "_independent_readback", readback)
+
+    async def resources(*args):
+        return object(), object()
+
+    async def roles(*args):
+        return "unchanged"
+
+    async def inventory(*args):
+        return {"before": "synthetic"}
+
+    monkeypatch.setattr(subject, "_configured_resources_v2", resources)
+    monkeypatch.setattr(subject, "_role_observation_v2", roles)
+    monkeypatch.setattr(subject, "_readonly_inventory_v2", inventory)
+
+    @asynccontextmanager
+    async def marker(*args):
+        yield object()
+
+    monkeypatch.setattr(subject, "_marker_checked_v2", marker)
     with pytest.raises(subject.NativeOwnerUpgradePostcommitIncomplete) as caught:
         await subject.upgrade_owner_0055_to_0056_v1(
             pins,

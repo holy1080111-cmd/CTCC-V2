@@ -1,5 +1,6 @@
 """Real source graph preparation with synthetic route data; no SQL or grants."""
 
+from contextlib import asynccontextmanager
 from dataclasses import replace
 from pathlib import Path
 from shutil import copy2, copytree
@@ -11,7 +12,7 @@ from scripts import current_contract_source_scopes_v1 as scopes
 from scripts import manifest
 from scripts import native_owner_upgrade_0056_v1 as upgrade
 from tests.historical_source_prefix_v1 import trim_synthetic_migration_tree
-from tests.unit.test_native_owner_upgrade_0056_v1 import _pins
+from tests.unit.test_native_owner_upgrade_0056_v1 import _pins, _upgrade_pins
 
 
 @pytest.mark.parametrize("head", ["0056", "0057", "0058"])
@@ -64,7 +65,7 @@ def test_upgrade_preparation_keeps_fixed_database55_to56_under_real_source_graph
 @pytest.mark.asyncio
 @pytest.mark.parametrize("head", ["0056", "0057", "0058"])
 async def test_upgrade_receipt_does_not_project_actual57_source_as56(monkeypatch, head):
-    pins = _pins()
+    pins = _upgrade_pins()
     route = SimpleNamespace(
         source_head=head,
         url="DECLARED_SYNTHETIC",
@@ -75,6 +76,9 @@ async def test_upgrade_receipt_does_not_project_actual57_source_as56(monkeypatch
     after = SimpleNamespace(historical_prefix_sha256=scopes._PREFIX["0056"][0])
     prepared = (route, object(), after, object())
     monkeypatch.setattr(upgrade, "_prepared", lambda *_: prepared)
+    monkeypatch.setattr(
+        upgrade, "_require_positive_private_file_v2", lambda *args: None
+    )
     calls = []
 
     async def read(*_a, **_kw):
@@ -98,13 +102,32 @@ async def test_upgrade_receipt_does_not_project_actual57_source_as56(monkeypatch
 
     async def commit(*_):
         calls.append("synthetic_commit_callback_only")
+        return {"snapshot": {"row_encoding": upgrade.retained_rows.ROW_ENCODING}}
 
     async def readback(*_):
         return {"database_head": "0056"}
 
+    async def resources(*_):
+        return object(), object()
+
+    async def roles(*_):
+        return "same-synthetic-role-identities"
+
+    async def inventory(*_):
+        return {"snapshot": {"row_encoding": upgrade.retained_rows.ROW_ENCODING}}
+
     monkeypatch.setattr(upgrade, "preflight_owner_route_0056_v1", read)
     monkeypatch.setattr(upgrade, "_commit_once", commit)
     monkeypatch.setattr(upgrade, "_independent_readback", readback)
+    monkeypatch.setattr(upgrade, "_configured_resources_v2", resources)
+    monkeypatch.setattr(upgrade, "_role_observation_v2", roles)
+    monkeypatch.setattr(upgrade, "_readonly_inventory_v2", inventory)
+
+    @asynccontextmanager
+    async def marker(*args):
+        yield object()
+
+    monkeypatch.setattr(upgrade, "_marker_checked_v2", marker)
     result = await upgrade.upgrade_owner_0055_to_0056_v1(
         pins,
         owner_dsn_file=Path("dsn"),
@@ -117,6 +140,9 @@ async def test_upgrade_receipt_does_not_project_actual57_source_as56(monkeypatch
         and result["database_head_after"] == "0056"
     )
     assert result["grants_installed"] is result["execution_authority"] is False
+    assert result["schema_drift_verified"] is False
+    assert result["native_profile_catalog_verified"] is True
+    assert result["row_encoding"] == upgrade.retained_rows.ROW_ENCODING
     if head in {"0057", "0058"}:
         assert result["source_head"] == head and result["database_target"] == "0056"
         assert result["database_migration_prefix_sha256"] == scopes._PREFIX["0056"][0]

@@ -350,6 +350,11 @@ async def test_actual0056_non_superuser_owner_upgrades_0055_once_with_fresh_read
         url, poolclass=NullPool, connect_args={"ssl": tls}, hide_parameters=True
     )
     owner = None
+    restricted = []
+    restricted_names = tuple(
+        f"ctcc_owner56_{label}_{uuid4().hex[:10]}" for label in ("w", "c", "f")
+    )
+    created_restricted = []
     role_created = database_created = control_granted = False
     try:
         async with admin.begin() as connection:
@@ -443,21 +448,82 @@ async def test_actual0056_non_superuser_owner_upgrades_0055_once_with_fresh_read
             owner_oid=row[1],
             database_head="0055",
         )
-        pins = owner_upgrade.OwnerUpgradePinsV1(
+        # New positive V2 binds three already-provisioned actual restricted
+        # logins. Provisioning is lab setup; the upgrade installs no grants.
+        from scripts import current0055_native_account_source_acl_v1 as account55
+        from scripts import current0055_native_lifecycle_acl_v1 as lifecycle55
+        from tests.native_owner55_upgrade_lab_v2 import (
+            run_actual_owner55_cli_v2,
+            seed_stopped_retained_owner55_v2,
+        )
+
+        async with admin.begin() as connection:
+            for name in restricted_names:
+                await connection.exec_driver_sql(
+                    f'CREATE ROLE "{name}" LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS'
+                )
+                created_restricted.append(name)
+                await connection.exec_driver_sql(
+                    f'GRANT CONNECT ON DATABASE "{database}" TO "{name}"'
+                )
+        role_urls = tuple(
+            owner_url.set(username=name, password="synthetic-hosted-lab-only")
+            for name in restricted_names
+        )
+        for role_url in role_urls:
+            restricted.append(
+                create_async_engine(
+                    role_url,
+                    poolclass=NullPool,
+                    connect_args={"ssl": tls},
+                    hide_parameters=True,
+                )
+            )
+        arguments = dict(
+            zip(("writer", "custody", "frame_reader"), restricted_names, strict=True)
+        )
+        async with owner.connect() as connection:
+            await core_acl.provision_current55_core_grants(connection, **arguments)
+        async with owner.connect() as connection, restricted[0].connect() as writer:
+            await account55.provision_current55_native_account_source_acl_v1(
+                connection, writer, **arguments
+            )
+        async with owner.connect() as connection, restricted[0].connect() as writer:
+            await lifecycle55.provision_current55_native_lifecycle_acl_v1(
+                connection, writer, **arguments
+            )
+        await seed_stopped_retained_owner55_v2(owner)
+        async with owner.connect() as connection:
+            role_oids = tuple(
+                [
+                    await connection.scalar(
+                        text(
+                            "SELECT oid::bigint FROM pg_catalog.pg_roles WHERE rolname=:name"
+                        ),
+                        {"name": name},
+                    )
+                    for name in restricted_names
+                ]
+            )
+        pins = owner_upgrade.OwnerUpgradePinsV2(
             source_commit=identity["commit"],
             source_tree=identity["tree"],
             source_archive_sha256=archive_pin,
             route=route,
+            role_names=restricted_names,
+            role_oids=role_oids,
         )
         async with owner.begin() as competing:
             await competing.execute(owner_upgrade._OWNER_LOCK)
-            with pytest.raises(owner_upgrade.NativeOwnerUpgradeRefusal):
-                await owner_upgrade.upgrade_owner_0055_to_0056_v1(
-                    pins,
-                    owner_dsn_file=secret_file,
-                    ca_file=ca_file,
-                    source_archive_file=archive,
-                )
+            code, refused = await run_actual_owner55_cli_v2(
+                tmp_path,
+                pins,
+                owner_dsn_file=secret_file,
+                ca_file=ca_file,
+                source_archive_file=archive,
+                role_urls=role_urls,
+            )
+            assert code == 1 and refused["status"] == "REFUSED"
         async with owner.connect() as connection:
             assert (
                 await connection.scalar(
@@ -465,28 +531,38 @@ async def test_actual0056_non_superuser_owner_upgrades_0055_once_with_fresh_read
                 )
                 == "0055"
             )
-        result = await owner_upgrade.upgrade_owner_0055_to_0056_v1(
+        code, result = await run_actual_owner55_cli_v2(
+            tmp_path,
             pins,
             owner_dsn_file=secret_file,
             ca_file=ca_file,
             source_archive_file=archive,
+            role_urls=role_urls,
         )
+        assert code == 0, result
         assert result["status"] == "PASS"
         assert result["database_head_before"] == "0055"
         assert result["database_head_after"] == "0056"
         assert result["independent_postcommit_readonly_observations"] == 3
         assert result["grants_installed"] is False
+        assert result["row_encoding"] == owner_upgrade.retained_rows.ROW_ENCODING
+        assert result["rehearsal_rollback_verified"] is True
+        assert result["unchanged_demo_grants"] == 42
         assert result["startup_admission"] is result["execution_authority"] is False
         assert password not in json.dumps(result)
-        with pytest.raises(owner_upgrade.NativeOwnerUpgradeRefusal):
-            await owner_upgrade.upgrade_owner_0055_to_0056_v1(
-                pins,
-                owner_dsn_file=secret_file,
-                ca_file=ca_file,
-                source_archive_file=archive,
-            )
+        code, stale = await run_actual_owner55_cli_v2(
+            tmp_path,
+            pins,
+            owner_dsn_file=secret_file,
+            ca_file=ca_file,
+            source_archive_file=archive,
+            role_urls=role_urls,
+        )
+        assert code == 1 and stale["status"] == "REFUSED"
     finally:
         try:
+            for engine in restricted:
+                await engine.dispose()
             if owner is not None:
                 await owner.dispose()
         finally:
@@ -523,6 +599,11 @@ async def test_actual0056_non_superuser_owner_upgrades_0055_once_with_fresh_read
                                     )
                         finally:
                             try:
+                                for name in created_restricted:
+                                    async with admin.begin() as connection:
+                                        await connection.exec_driver_sql(
+                                            f'DROP ROLE "{name}"'
+                                        )
                                 await admin.dispose()
                             finally:
                                 secret_file.unlink(missing_ok=True)
