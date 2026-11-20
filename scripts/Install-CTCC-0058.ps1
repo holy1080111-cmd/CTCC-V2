@@ -14,7 +14,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-$Bridge = 'import runpy,sys;root,module=sys.argv[1:3];sys.path.insert(0,root);sys.argv=[module,*sys.argv[3:]];runpy.run_module(module,run_name="__main__")'
+$Bridge = 'import runpy,sys;root,module=sys.argv[1:3];sys.path.insert(0,root);sys.argv=[module,*sys.argv[3:]];runpy.run_module(module,run_name=''__main__'')'
 $SourceRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $PackageRoot = [IO.Path]::GetFullPath($PackageRoot)
 
