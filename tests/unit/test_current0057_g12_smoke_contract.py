@@ -138,6 +138,46 @@ def test_source_receipt_rejects_relabel_and_host_or_execution_authority(key, val
         contract.source_identity(identity, files, contract.canonical(files))
 
 
+def test_full_regression_source_context_keeps_actual_runner_identity_distinct():
+    files = _files()
+    path = ROOT / contract.FULL_RUNNER_PATH
+    files[contract.FULL_RUNNER_PATH] = {
+        "sha256": contract.digest(path.read_bytes()),
+        "size": path.stat().st_size,
+    }
+    identity = _source_identity(files)
+    identity.update(
+        runner_contract=contract.FULL_RUNNER_CONTRACT,
+        validation_scope=contract.FULL_SCOPE,
+        runner_sha256=files[contract.FULL_RUNNER_PATH]["sha256"],
+    )
+    source = contract.source_identity(identity, files, contract.canonical(files))
+    assert (
+        source["source_head"] == "0057"
+        and source["runner_sha256"] == files[contract.FULL_RUNNER_PATH]["sha256"]
+    )
+    identity["runner_sha256"] = files[contract.RUNNER_PATH]["sha256"]
+    with pytest.raises(ValueError):
+        contract.source_identity(identity, files, contract.canonical(files))
+
+
+def test_full_runner_identity_cannot_be_validated_as_smoke_by_reusing_four_cases(
+    tmp_path,
+):
+    (tmp_path / "identity.json").write_bytes(
+        contract.canonical(
+            {
+                "runner_contract": contract.FULL_RUNNER_CONTRACT,
+                "validation_scope": contract.FULL_SCOPE,
+            }
+        )
+    )
+    with pytest.raises(ValueError):
+        contract.verify_smoke(
+            tmp_path, b"DECLARED_SYNTHETIC_ARCHIVE", commit="a" * 40, tree="b" * 40
+        )
+
+
 def test_migration_readback_never_projects_real57_back_to56():
     value = {
         "schema": "ctcc.migration_identity.v1",

@@ -147,7 +147,41 @@ This smoke returns `hermetic_regression=NOT_RUN`,
 `component_validation=NOT_RUN`, `execution_authority=false` and
 `trading_acceptance=false`. It is not full Linux regression, native startup,
 candidate, Demo or Live acceptance. Generic source57 dispatch cannot fall back
-to a 0056 archive contract. Full57/union requests remain refused until a
-separate complete successor acceptance contract exists. The original 0056
+to a 0056 archive contract. It selects the distinct full successor contract
+described below. The original 0056
 runner/contract bytes are unchanged. Historical-source scopes record real
 source57 and a separate database56 target; they never rewrite an observed head.
+
+## Full source57 hermetic regression and union
+
+`verify_current0057_full_hermetic` admits only the exact 0057 source inventory,
+archive, Git tree, manifest and host runner/helper code. The closed versioned
+runner builds and tests one disposable component with host credentials and
+host `.env` excluded, an internal-only network, PostgreSQL 17 TLS, Redis,
+source COPY validation, dependency lock, lint/format, actual 0057 migration and
+schema drift checks. Its anchor exercises supported older upgrades, explicit
+0056-to-0057 upgrade, empty downgrade/re-upgrade and API/PostgreSQL/Redis restart
+with fresh readback. The root trust tests keep their constrained independent
+Linux execution and exact platform skip contract.
+
+One source-defined collection plugin assigns every collected case exactly once
+across PostgreSQL owners 0/1/2 and eight deterministic shards. Owners 0/1 keep
+the existing historical module allocation. Owner 2 executes actual 0057 G12
+guard/44-ACL/six-session cases and retains their source-bound observations.
+Owner 1 retains explicit source57/historical56 campaign, fitted, inherited
+native and postgrant observations through the separately versioned historical
+wrapper. Physical 0057 migration logs are never projected as 0056.
+
+The union replays all eleven components from the same exact archive, requires
+equal complete collections and disjoint selected cases, verifies actual JUnit
+identities, approved skips and all required inherited/new safety cases once,
+and refuses missing components, duplicated runs or smoke-only artifacts. The
+required `Docker hermetic regression` workflow selects [0,1] for historical
+source profiles and [0,1,2] only after exact reviewed source57 inventory proof.
+The eight shards and Windows acceptance remain required. No old counts or
+older receipts satisfy this new source57 contract.
+
+These runner/union mechanisms have bounded source/codec/refusal tests. A full
+hosted source57 regression has not been executed by this implementation work.
+Only actual verified component artifacts can produce a full regression PASS;
+execution authority and trading acceptance remain false throughout.

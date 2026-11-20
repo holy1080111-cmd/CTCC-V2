@@ -67,7 +67,7 @@ def test_reviewed_head_routes_to_matching_runner_and_preserves_its_rejection(
     monkeypatch.setattr(Path, "read_bytes", replace_after_read)
     monkeypatch.setitem(
         sys.modules,
-        f"scripts.verify_current{head}_hermetic",
+        f"scripts.verify_current{head}{'_full' if head == '0057' else ''}_hermetic",
         SimpleNamespace(main=reject),
     )
     argv = (
@@ -248,7 +248,7 @@ def test_union_rejects_unadmitted_archive_before_catalog_replay(
     assert called == []
 
 
-@pytest.mark.parametrize("head", ["0054", "0055"])
+@pytest.mark.parametrize("head", ["0054", "0055", "0056", "0057"])
 @pytest.mark.parametrize("markers", ["removed", "relabeled52"])
 def test_union_cannot_fall_back_to52_by_changing_identity_markers(
     tmp_path, monkeypatch, head, markers
@@ -344,6 +344,8 @@ def test_genuine52_union_archive_retains_the_historical_route(tmp_path):
 
 
 def test_genuine57_smoke_cannot_be_reported_as_full_linux_union(tmp_path):
+    from scripts.verify_current0057_linux_union import verify_union
+
     evidence = tmp_path / "cluster" / "ctcc-validation"
     evidence.mkdir(parents=True)
     archive = evidence.parent / "ctcc-source.tar"
@@ -351,9 +353,87 @@ def test_genuine57_smoke_cannot_be_reported_as_full_linux_union(tmp_path):
     with tarfile.open(archive) as stream:
         tree = archived.archive_tree(stream)
     (evidence / "identity.json").write_text(json.dumps({"archive_sha256": pin}))
-    with pytest.raises(
-        ValueError, match="^current57_full_union_contract_not_implemented$"
-    ):
-        dispatch.maybe_dispatch_union(
-            ["--artifacts", str(tmp_path), "--commit", "a" * 40, "--tree", tree]
+    with pytest.raises(ValueError):
+        verify_union(tmp_path, commit="a" * 40, tree=tree, manifest_sha256="b" * 64)
+
+
+def test_generic_third_pg_component_reaches_only_the_actual57_runner(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "source57.tar"
+    pin = _archive(path, "0057")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "generic",
+            "--archive",
+            str(path),
+            "--archive-sha256",
+            pin,
+            "--commit",
+            "a" * 40,
+            "--tree",
+            "b" * 40,
+            "--suite",
+            "postgres",
+            "--postgres-component-index",
+            "2",
+            "--output",
+            str(tmp_path / "out"),
+        ],
+    )
+    calls = []
+
+    def refused(*, archive_bytes):
+        calls.append(archive_bytes)
+        raise ValueError("DECLARED_EXACT57_RUNNER_REJECTION")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "scripts.verify_current0057_full_hermetic",
+        SimpleNamespace(main=refused),
+    )
+    with pytest.raises(ValueError, match="^DECLARED_EXACT57_RUNNER_REJECTION$"):
+        generic.main()
+    assert calls == [path.read_bytes()]
+
+
+@pytest.mark.parametrize("head", ["0052", "0056"])
+def test_third_pg_component_cannot_enter_historical_docker_runner(
+    tmp_path, monkeypatch, head
+):
+    path = tmp_path / "source.tar"
+    pin = _archive(path, head)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "generic",
+            "--archive",
+            str(path),
+            "--archive-sha256",
+            pin,
+            "--commit",
+            "a" * 40,
+            "--tree",
+            "b" * 40,
+            "--suite",
+            "postgres",
+            "--postgres-component-index",
+            "2",
+            "--output",
+            str(tmp_path / "out"),
+        ],
+    )
+    if head == "0056":
+        from scripts import verify_current0056_hermetic as previous
+
+        monkeypatch.setattr(
+            previous,
+            "_admit_archive",
+            lambda *_: pytest.fail("historical profile accepted third component"),
         )
+    with pytest.raises(ValueError):
+        generic.main()
+    assert not (tmp_path / "out").exists()

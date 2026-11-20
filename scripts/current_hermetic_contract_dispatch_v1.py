@@ -74,7 +74,7 @@ def dispatch_captured_hermetic(archive_bytes):
     if head < 54:
         return None
     if head == 57:
-        from scripts.verify_current0057_hermetic import main
+        from scripts.verify_current0057_full_hermetic import main
     elif head == 56:
         from scripts.verify_current0056_hermetic import main
     elif head == 55:
@@ -152,10 +152,8 @@ def maybe_dispatch_union(argv):
     if len(heads) != 1:
         raise ValueError("hermetic_contract_dispatch_mixed_migration_heads")
     if heads == {57}:
-        # Four scoped smoke cases cannot satisfy a full Linux union. Read
-        # those artifacts with the explicit successor smoke-pair verifier.
-        raise ValueError("current57_full_union_contract_not_implemented")
-    if heads == {56}:
+        from scripts.verify_current0057_linux_union import main
+    elif heads == {56}:
         from scripts.verify_current0056_linux_union import main
     elif heads == {55}:
         from scripts.verify_current0055_linux_union import main

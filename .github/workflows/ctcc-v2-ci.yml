@@ -19,14 +19,43 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  source-profile:
+    name: Exact source CI topology
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      postgres-components: ${{ steps.profile.outputs.postgres-components }}
+      source-head: ${{ steps.profile.outputs.source-head }}
+    steps:
+      - name: Checkout exact topology source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Bind topology to exact Git archive
+        id: profile
+        shell: bash
+        run: |
+          set -euo pipefail
+          commit=$(git rev-parse HEAD)
+          test "$commit" = "$GITHUB_SHA"
+          tree=$(git rev-parse 'HEAD^{tree}')
+          archive="$RUNNER_TEMP/ctcc-topology-source.tar"
+          git -c core.autocrlf=false -c core.eol=lf archive --format=tar --output="$archive" "$commit"
+          digest=$(sha256sum "$archive" | cut -d ' ' -f 1)
+          python3 -m scripts.hermetic_workflow_profile_v1 \
+            --archive "$archive" --archive-sha256 "$digest" \
+            --commit "$commit" --tree "$tree" > "$RUNNER_TEMP/ctcc-topology.json"
+          python3 -c 'import json,os,pathlib; p=json.loads(pathlib.Path(os.environ["RUNNER_TEMP"],"ctcc-topology.json").read_text()); out="postgres-components="+json.dumps(p["postgres_components"],separators=(",",":"))+"\nsource-head="+p["source_head"]+"\n"; open(os.environ["GITHUB_OUTPUT"],"a").write(out)'
+
   linux-postgres:
     name: Docker PostgreSQL component ${{ matrix.component }}
     runs-on: ubuntu-24.04
     timeout-minutes: 180
+    needs: [source-profile]
     strategy:
       fail-fast: false
       matrix:
-        component: [0, 1]
+        component: ${{ fromJSON(needs.source-profile.outputs.postgres-components) }}
     steps:
       - name: Checkout reviewed source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -139,12 +168,13 @@ jobs:
     name: Docker hermetic regression
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    needs: [linux-postgres, linux-shard, windows-union]
+    needs: [source-profile, linux-postgres, linux-shard, windows-union]
     if: always()
     steps:
       - name: Require every isolated component to pass
         shell: bash
         run: |
+          test '${{ needs.source-profile.result }}' = success
           test '${{ needs.linux-postgres.result }}' = success
           test '${{ needs.linux-shard.result }}' = success
           test '${{ needs.windows-union.result }}' = success

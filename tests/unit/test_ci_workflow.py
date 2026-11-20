@@ -41,6 +41,7 @@ def test_required_aggregate_rejects_failed_windows_full_suite_union() -> None:
     aggregate = jobs["regression"]
 
     assert set(aggregate["needs"]) == {
+        "source-profile",
         "linux-postgres",
         "linux-shard",
         "windows-union",
@@ -53,6 +54,20 @@ def test_required_aggregate_rejects_failed_windows_full_suite_union() -> None:
     assert jobs["windows-union"]["needs"] == ["windows-shard"]
     assert jobs["windows-shard"]["strategy"]["matrix"]["shard"] == list(range(8))
     assert jobs["windows-shard"]["strategy"]["fail-fast"] is False
+
+
+def test_postgres_topology_is_bound_to_verified_source_and_required_status():
+    jobs = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]
+    assert jobs["linux-postgres"]["needs"] == ["source-profile"]
+    assert (
+        jobs["linux-postgres"]["strategy"]["matrix"]["component"]
+        == "${{ fromJSON(needs.source-profile.outputs.postgres-components) }}"
+    )
+    source = jobs["source-profile"]
+    proof = next(step["run"] for step in source["steps"] if step.get("id") == "profile")
+    assert 'test "$commit" = "$GITHUB_SHA"' in proof
+    assert "scripts.hermetic_workflow_profile_v1" in proof
+    assert '--archive-sha256 "$digest"' in proof and '--tree "$tree"' in proof
 
 
 def test_image_includes_core_blueprint_acceptance_inputs_explicitly() -> None:

@@ -3916,7 +3916,9 @@ def main():
         args.postgres_component_index is not None
         and (
             type(args.postgres_component_index) is not int
-            or not 0 <= args.postgres_component_index < POSTGRES_COMPONENT_COUNT
+            # The captured source57 dispatcher alone may admit its third
+            # component. Every historical/default profile keeps two owners.
+            or not 0 <= args.postgres_component_index <= POSTGRES_COMPONENT_COUNT
         )
     ):
         raise ValueError("postgres_component_selection_invalid")
@@ -3932,6 +3934,8 @@ def main():
     dispatched = dispatch_captured_hermetic(archive_bytes)
     if dispatched is not None:
         return dispatched
+    if pg_index is not None and pg_index >= POSTGRES_COMPONENT_COUNT:
+        raise ValueError("postgres_component_selection_invalid")
     from scripts.original_history_0052_toolchain import (
         COVERAGE_NATIVE_CATALOG_CAPTURE_0052,
         HISTORY_PARTITION_NATIVE_CATALOG_CAPTURE_0052,

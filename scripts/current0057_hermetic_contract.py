@@ -19,6 +19,9 @@ PARENT = pins.PARENT
 RUNNER_CONTRACT = "ctcc.current0057.g12_hermetic_smoke.v1"
 RUNNER_PATH = "scripts/verify_current0057_hermetic.py"
 SCOPE = "g12_restricted_writer_smoke_only"
+FULL_RUNNER_CONTRACT = "ctcc.current0057.hermetic.v1"
+FULL_RUNNER_PATH = "scripts/verify_current0057_full_hermetic.py"
+FULL_SCOPE = "hermetic_regression_component"
 JUNIT = "test-results/g12-successor-smoke.xml"
 TEST_MODULE = "tests.integration.test_g12_restricted_writer_0057_pg"
 CASES = tuple(
@@ -112,11 +115,12 @@ def source_identity(identity, files, files_raw):
     _need(
         type(identity) is dict and type(files) is dict and canonical(files) == files_raw
     )
-    _need(
-        identity.get("runner_contract") == RUNNER_CONTRACT
-        and identity.get("source_contract_head") == HEAD
-        and identity.get("validation_scope") == SCOPE
-    )
+    context = (identity.get("runner_contract"), identity.get("validation_scope"))
+    runner = {
+        (RUNNER_CONTRACT, SCOPE): RUNNER_PATH,
+        (FULL_RUNNER_CONTRACT, FULL_SCOPE): FULL_RUNNER_PATH,
+    }.get(context)
+    _need(runner is not None and identity.get("source_contract_head") == HEAD)
     _need(
         all(
             type(identity.get(k)) is str and _GIT.fullmatch(identity[k]) is not None
@@ -133,7 +137,7 @@ def source_identity(identity, files, files_raw):
         identity["source_files_sha256"] == digest(files_raw)
         and identity["manifest_sha256"] == files["MANIFEST.sha256"]["sha256"]
         and identity.get("build_context") == "admitted_archive_bytes_v1"
-        and identity.get("runner_sha256") == files[RUNNER_PATH]["sha256"]
+        and identity.get("runner_sha256") == files[runner]["sha256"]
     )
     _need(
         identity.get("host_credentials") is False
@@ -157,7 +161,7 @@ def source_identity(identity, files, files_raw):
         "migration_inventory_sha256": pins.MIGRATION_INVENTORY_SHA256,
         "migration_leaf_sha256": pins.MIGRATION_SHA256,
         "producer_sha256": files["scripts/current0057_g12_measurement_v1.py"]["sha256"],
-        "runner_sha256": files[RUNNER_PATH]["sha256"],
+        "runner_sha256": files[runner]["sha256"],
     }
 
 
@@ -207,6 +211,10 @@ def _verify_host_code(files):
 
 def verify_smoke(root: Path, raw: bytes, *, commit, tree):
     identity = read_evidence_json(_read(root, "identity.json"))
+    _need(
+        identity.get("runner_contract") == RUNNER_CONTRACT
+        and identity.get("validation_scope") == SCOPE
+    )
     steps = read_evidence_json(_read(root, "steps.json"))
     hashes = read_evidence_json(_read(root, "results.sha256.json"))
     with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as archive:
