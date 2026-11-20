@@ -86,6 +86,7 @@ padding:18px 0}dl{display:grid;grid-template-columns:140px 1fr;gap:10px}dd{margi
 <button id="stop" class="stop" disabled>停止本次操作</button>
 <p class="muted">停止會撤銷後續送單權限。既有成交仍需對帳；停止按鈕不會自行平倉或取消保護。</p></section>
 <section class="card"><h2>交易與待處理紀錄</h2><p id="journalState">尚未讀取。</p>
+<p class="muted">紀錄保留該筆操作當時的對帳結果。新的操作會重新核對帳戶與行情。</p>
 <div id="journalRows"></div></section>
 </main><script nonce="__NONCE__">
 'use strict';
@@ -97,7 +98,7 @@ STOPPED_DEFAULT_OFF:'已確認停止，Live 預設關閉',PREPARING_READ_ONLY:'�
 AWAITING_HUMAN_ARM:'等待當次人工確認',RUNNING_ONCE:'單次驗證與執行中',STOP_REQUESTED:'已要求停止',
 RECONCILING_READ_ONLY:'正在重新對帳',ZERO_FILL_FLAT:'未成交，已確認無曝險',
 PROTECTED_HOLD:'已有保護，仍保留風險占用',UNCERTAIN:'結果不確定，停止新增曝險',
-RECONCILED_FLAT:'已完成對帳並確認無曝險',WAIT:'條件或資料不符，未送出訂單',
+RECONCILED_FLAT:'已保存無曝險對帳結果',WAIT:'條件或資料不符，未送出訂單',
 CANCELLED:'發布後條件已變更，已取消',EXPIRED:'人工確認逾時，已取消',
 STOPPED_BEFORE_ARM:'已停止，未送出訂單'};
 const label=value=>names[value]||'狀態尚未確認';
