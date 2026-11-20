@@ -154,6 +154,18 @@ STOPPED_SETUP_CASES = tuple(
 LIVE_CONTROLLED_CLOSE_CASES = tuple(
     ("tests.integration.test_native_live_controlled_close_v1_pg", name)
     for name in (
+        "test_actual58_controlled_restart_optional_lookup_replays_original_hmac_records",
+        *(
+            "test_actual58_controlled_restart_complete_fresh_source_resolves_or_retains_hold["
+            + source_case
+            + "]"
+            for source_case in (
+                "complete",
+                "client_id_reuse",
+                "partial_close",
+                "protection_still_active",
+            )
+        ),
         "test_actual58_close_closed_profile_and_immutable_two_action_schema",
         *(
             "test_actual58_close_rejects_unbound_or_changed_original_geometry["

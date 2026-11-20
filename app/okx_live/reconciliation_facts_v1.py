@@ -248,6 +248,11 @@ class LiveReconciliationFactsV1:
     exit_source_sha256: str | None = None
     exit_kind: str | None = None
     exit_lineage_verified: bool = False
+    exit_client_order_id: str | None = None
+    controlled_close_intent_sha256: str | None = None
+    controlled_close_claim_sha256: str | None = None
+    controlled_close_consent_sha256: str | None = None
+    controlled_cancel_claim_sha256: str | None = None
     execution_authority: bool = field(default=False, init=False)
     resolution_authority: bool = field(default=False, init=False)
     source_authenticity_verified: bool = field(default=False, init=False)

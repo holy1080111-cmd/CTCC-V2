@@ -44,6 +44,12 @@ without verified exit lineage remains `UNCERTAIN`. The dedicated
 can establish that lineage using retained authenticated original IDs and new
 complete raw entry/algo/child/fill/global-flat observations.
 
+A persisted controlled-close claim selects the separate
+[controlled-close restart recovery](live_controlled_close_restart_recovery_v1.md)
+source. It verifies retained claim HMACs and complete unique archive lineage,
+then only reads exact orders, fills, protection and global current state. It
+never falls back to original OCO after a close claim or repeats a close/cancel.
+
 The existing source-owned HMAC boundary independently reopens raw custody,
 replays current source and history operands, and binds the new proof to the
 original journal/intent before SQL append and committed readback. The public

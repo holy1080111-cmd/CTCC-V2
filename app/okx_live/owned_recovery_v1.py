@@ -34,6 +34,14 @@ class _RecoveryScope:
     source_root: object
     evidence_root: object
     region: str
+    controlled_records: object
+    controlled_records_sha256: str
+
+
+async def _read_controlled_close_records_v1(cfg, key_owner, journal):
+    from app.okx_live.controlled_close_recovery_v1 import read_retained_records_v1
+
+    return await read_retained_records_v1(cfg, key_owner, journal)
 
 
 def _historical_times(journal):
@@ -100,6 +108,8 @@ def _require_stopped(control):
 
 
 def _scope(owner):
+    from app.database.repositories import native_live_controlled_close_v1 as closes
+    from app.okx_live import controlled_close_recovery_v1 as controlled
     from app.okx_live import lifecycle_key_v1 as keys
     from app.okx_live import native_runtime_v1 as runtime
     from app.okx_live import owned_lifecycle_v1 as lifecycle
@@ -116,6 +126,20 @@ def _scope(owner):
     _need(state["source_root"] == scope.source_root == cfg["source_root"])
     _need(state["evidence_root"] == scope.evidence_root == cfg["evidence_root"])
     _need(cfg["region"] == scope.region)
+    _need(state["controlled_close_recovery"] is scope.controlled_records)
+    _need(
+        controlled.records_sha256_v1(scope.controlled_records)
+        == scope.controlled_records_sha256
+    )
+    if scope.controlled_records is not None:
+        controlled.verify_retained_records_v1(
+            scope.controlled_records,
+            closes.NativeLiveControlledCloseRepositoryV1(
+                cfg["reconciler_factory"], cfg["reconciler_pins"]
+            ),
+            scope.key_owner,
+            scope.journal,
+        )
     metadata = keys.lifecycle_key_metadata_v1(scope.key_owner)
     _need(
         metadata["environment"] == "live"
@@ -249,7 +273,6 @@ async def _recover_with_scope(owner):
     )
     from app.exchange.okx.live_account_current_chain_v1 import _check_config
     from app.exchange.okx.live_read_lease_v1 import OkxLivePinnedGetClientV1
-    from app.okx_live import original_oco_recovery_v1 as capture_source
     from app.okx_live import owned_lifecycle_v1 as lifecycle
     from app.okx_live.lifecycle_custody_v1 import publish_live_lifecycle_blob_v1
 
@@ -287,10 +310,7 @@ async def _recover_with_scope(owner):
             capture = assessed = None
             failure = None
             try:
-                capture = await capture_source.capture_recovery_pages_v1(
-                    owner, key=capture_source._CAPTURE_KEY
-                )
-                assessed = capture_source.assess_recovery_capture_v1(state, capture)
+                capture, assessed = await _capture_for_recovery_v1(owner)
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001 -- no private response or exception text escapes.
@@ -331,6 +351,23 @@ async def _recover_with_scope(owner):
             lifecycle._ACTIVE_CAPTURE.reset(token)
 
 
+async def _capture_for_recovery_v1(owner):
+    from app.okx_live import controlled_close_recovery_v1 as controlled
+    from app.okx_live import original_oco_recovery_v1 as original
+
+    state, scope = _scope(owner)
+    records = scope.controlled_records
+    if records is not None and records.close is not None:
+        # A persisted close claim may have reached the venue. Never reinterpret
+        # failure or a missing ACK as an original OCO, or try another submit.
+        capture = await controlled.capture_controlled_close_recovery_v1(
+            owner, key=controlled._CAPTURE_KEY
+        )
+        return capture, controlled.assess_owned_capture_data_v1(state, capture)
+    capture = await original.capture_recovery_pages_v1(owner, key=original._CAPTURE_KEY)
+    return capture, original.assess_recovery_capture_v1(state, capture)
+
+
 async def _reconcile_pending_v1(reservation_id):
     from app.okx_live import native_runtime_v1 as runtime
     from app.okx_live import owned_lifecycle_v1 as lifecycle
@@ -354,6 +391,10 @@ async def _reconcile_pending_v1(reservation_id):
         _need(journal.reservation_state in ("reserved", "uncertain"))
         settings = _settings(cfg["region"], journal.intent)
         history = _historical_times(journal)
+        controlled = await _read_controlled_close_records_v1(cfg, key_owner, journal)
+        from app.okx_live.controlled_close_recovery_v1 import records_sha256_v1
+
+        controlled_digest = records_sha256_v1(controlled)
         try:
             owner = lifecycle._new_owner(
                 runtime_owner=runtime_owner,
@@ -373,6 +414,7 @@ async def _reconcile_pending_v1(reservation_id):
                 credential_continuity="fresh_recovery_lease_uid_reverified",
                 recovery_history=history,
                 recovery_control=control,
+                controlled_close_recovery=controlled,
             )
             _SCOPES[owner] = _RecoveryScope(
                 runtime_owner,
@@ -382,6 +424,8 @@ async def _reconcile_pending_v1(reservation_id):
                 cfg["source_root"],
                 cfg["evidence_root"],
                 cfg["region"],
+                controlled,
+                controlled_digest,
             )
             return await _recover_with_scope(owner)
         finally:

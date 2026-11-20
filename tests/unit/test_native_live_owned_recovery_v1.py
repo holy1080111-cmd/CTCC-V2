@@ -66,6 +66,15 @@ def harness(monkeypatch, *, control=None, terminal=False, missing_time=False):
             return journal
 
     repository = Repository()
+
+    async def declared_no_controlled_records(*args):
+        # This harness is an explicitly synthetic SQL handoff, never a real
+        # absence proof. The actual repository is covered in its own PG lane.
+        return None
+
+    monkeypatch.setattr(
+        subject, "_read_controlled_close_records_v1", declared_no_controlled_records
+    )
     monkeypatch.setattr(runtime, "configured_live_runtime_v1", configured)
     monkeypatch.setattr(
         lifecycle, "_runtime_repository", lambda owner: (cfg, key_owner, repository)

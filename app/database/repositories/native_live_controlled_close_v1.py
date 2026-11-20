@@ -366,6 +366,53 @@ class NativeLiveControlledCloseRepositoryV1:
         _need(self._key(key_owner) == metadata)
         return value
 
+    async def read_by_reservation_v1(self, key_owner, reservation_id):
+        """Complete unique optional lookup; absence is never a failed read."""
+        metadata = self._key(key_owner)
+        _digest(reservation_id)
+        async with self.factory() as session, session.begin():
+            await self._settings(session, readonly=True)
+            rows = (
+                await session.execute(
+                    text("""SELECT close_intent_id
+ FROM public.native_live_controlled_close_intents_v1
+ WHERE environment='live' AND account_uid=:uid AND reservation_id=:rid LIMIT 2"""),
+                    {"uid": metadata["account_uid"], "rid": reservation_id},
+                )
+            ).all()
+            _need(len(rows) <= 1)
+            close_id = None if not rows else _digest(rows[0][0])
+        _need(self._key(key_owner) == metadata)
+        if close_id is None:
+            return None
+        value = await self.read_close_intent_v1(key_owner, close_id)
+        _need(value.reservation_id == reservation_id)
+        return value
+
+    async def read_claim_if_present_v1(self, key_owner, close_id, action):
+        """A separate optional index read followed by full original HMAC replay."""
+        metadata = self._key(key_owner)
+        _digest(close_id)
+        _need(type(action) is str and action in spec.ACTIONS)
+        async with self.factory() as session, session.begin():
+            await self._settings(session, readonly=True)
+            rows = (
+                await session.execute(
+                    text("""SELECT c.close_intent_id
+ FROM public.native_live_controlled_close_claims_v1 c
+ JOIN public.native_live_controlled_close_intents_v1 i USING(close_intent_id)
+ WHERE i.environment='live' AND i.account_uid=:uid AND c.close_intent_id=:id AND c.action=:action LIMIT 2"""),
+                    {"uid": metadata["account_uid"], "id": close_id, "action": action},
+                )
+            ).all()
+            _need(len(rows) <= 1 and (not rows or rows[0][0] == close_id))
+        _need(self._key(key_owner) == metadata)
+        return (
+            None
+            if not rows
+            else await self.read_close_claim_v1(key_owner, close_id, action)
+        )
+
     async def read_close_claim_v1(self, key_owner, close_id, action):
         metadata = self._key(key_owner)
         _digest(close_id)

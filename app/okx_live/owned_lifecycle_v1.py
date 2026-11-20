@@ -14,7 +14,7 @@ import threading
 from contextvars import ContextVar
 from copy import deepcopy
 from pathlib import Path
-from types import FunctionType
+from types import CodeType, FunctionType
 from weakref import WeakKeyDictionary
 
 from app.domain.source_primitives import canonical, decode, sha
@@ -188,6 +188,7 @@ def _require_complete_entry_flow_v1():
 
 def _require_lifecycle_source_modules_v1():
     from app.okx_live import (
+        controlled_close_recovery_v1,
         lifecycle_custody_v1,
         original_oco_recovery_v1,
         owned_recovery_v1,
@@ -199,6 +200,7 @@ def _require_lifecycle_source_modules_v1():
 
     root = Path(__file__).resolve().parent
     for module in (
+        controlled_close_recovery_v1,
         lifecycle_custody_v1,
         owned_recovery_v1,
         original_oco_recovery_v1,
@@ -209,8 +211,23 @@ def _require_lifecycle_source_modules_v1():
         path = root / (module.__name__.rsplit(".", 1)[1] + ".py")
         _need(Path(module.__file__).resolve() == path)
         raw = path.read_bytes()
-        for value in vars(module).values():
-            if type(value) is FunctionType and value.__module__ == module.__name__:
+        # A substituted foreign callable/nonfunction must not disappear from
+        # this check just because its __module__ differs from the original.
+        # Read named function definitions from compiled original source DATA;
+        # do not let a mutable AST/model decide which definitions exist.
+        compiled = compile(raw, str(path), "exec", dont_inherit=True)
+        for definition in compiled.co_consts:
+            if (
+                type(definition) is CodeType
+                and definition.co_flags & 2
+                and not definition.co_name.startswith("<")
+            ):
+                value = getattr(module, definition.co_name, None)
+                _need(
+                    type(value) is FunctionType
+                    and value.__module__ == module.__name__
+                    and value.__globals__ is vars(module)
+                )
                 _source_code(value, raw, str(path))
 
 
@@ -258,12 +275,16 @@ def _verify_source_for_signing_v1(owner, *, key_owner):
             _stamp,
             verify_live_account_config_readback_v1,
         )
+        from app.exchange.okx.live_account_history_page_v1 import (
+            verify_live_account_history_page_readback_v1,
+        )
         from app.exchange.okx.live_account_raw_page_v1 import (
             verify_live_account_raw_page_readback_v1,
         )
         from app.exchange.okx.live_trade_read_page_v1 import (
             verify_live_trade_read_page_v1,
         )
+        from app.okx_live import controlled_close_recovery_v1 as controlled
         from app.okx_live import original_oco_recovery_v1 as original_oco
         from app.okx_live.lifecycle_custody_v1 import read_live_lifecycle_blob_v1
         from app.okx_live.postfill_economics_v1 import (
@@ -271,7 +292,22 @@ def _verify_source_for_signing_v1(owner, *, key_owner):
         )
         from app.okx_live.reconciliation_facts_v1 import assess_live_postsubmit_facts_v1
 
-        extra = original_oco.extra_terminal_pages_v1(capture) if recovery else ()
+        extra = (
+            original_oco.extra_terminal_pages_v1(capture)
+            + controlled.extra_trade_pages_v1(capture)
+            if recovery
+            else ()
+        )
+        history_pages = controlled.extra_history_pages_v1(capture) if recovery else ()
+        config_pages = controlled.extra_config_pages_v1(capture) if recovery else ()
+        if recovery and type(capture) is controlled.ControlledCloseRecoveryCaptureV1:
+            _need(
+                capture.raw_custody_sha256
+                == sha(canonical([item[1] for item in state["raw_captures"]]))
+            )
+            controlled.verify_owned_archive_custody_v1(
+                owner, capture, key=_SOURCE_LEASE_KEY_V1
+            )
 
         lease = state["lease"]
         lease.verify_current()
@@ -296,6 +332,8 @@ def _verify_source_for_signing_v1(owner, *, key_owner):
             *(() if capture.protection is None else (capture.protection,)),
             capture.config_after,
             *extra,
+            *history_pages,
+            *config_pages,
         ):
             _need(page.synthetic_mock is False)
             _need(
@@ -310,6 +348,10 @@ def _verify_source_for_signing_v1(owner, *, key_owner):
             )
         verify_live_account_config_readback_v1(capture.config_before, lease=lease)
         verify_live_account_config_readback_v1(capture.config_after, lease=lease)
+        for page in config_pages:
+            verify_live_account_config_readback_v1(page, lease=lease)
+        for page in history_pages:
+            verify_live_account_history_page_readback_v1(page, lease=lease)
         for page in capture.current_pages:
             verify_live_account_raw_page_readback_v1(page, lease=lease)
         for page in (
@@ -320,7 +362,9 @@ def _verify_source_for_signing_v1(owner, *, key_owner):
         ):
             verify_live_trade_read_page_v1(page, lease=lease)
         observed = (
-            original_oco.assess_recovery_capture_v1(state, capture)
+            controlled.assess_owned_capture_data_v1(state, capture)
+            if recovery and type(capture) is controlled.ControlledCloseRecoveryCaptureV1
+            else original_oco.assess_recovery_capture_v1(state, capture)
             if recovery
             else assess_live_postsubmit_facts_v1(
                 state["intent"], **_capture_arguments(state, capture)
@@ -567,7 +611,7 @@ def _proof_document(state, *, capture, facts, economics, failure_code=None):
     terminal = (
         facts is not None
         and facts.outcome == "RECONCILED_FLAT"
-        and facts.exit_kind == "original_oco"
+        and facts.exit_kind in ("original_oco", "controlled_micro_close")
         and facts.exit_lineage_verified is True
     )
     flat = zero or terminal
@@ -656,13 +700,21 @@ def _proof_document(state, *, capture, facts, economics, failure_code=None):
     }
     if terminal:
         proof.update(
-            exit_kind="original_oco",
+            exit_kind=facts.exit_kind,
             exit_lineage_verified=True,
             exit_order_id=facts.exit_order_id,
             exit_filled_contracts=str(facts.exit_filled_contracts),
             exit_source_sha256=facts.exit_source_sha256,
             protection_algo_id=facts.protection_algo_id,
         )
+        if facts.exit_kind == "controlled_micro_close":
+            proof.update(
+                exit_client_order_id=facts.exit_client_order_id,
+                controlled_close_intent_sha256=facts.controlled_close_intent_sha256,
+                controlled_close_claim_sha256=facts.controlled_close_claim_sha256,
+                controlled_close_consent_sha256=facts.controlled_close_consent_sha256,
+                controlled_cancel_claim_sha256=facts.controlled_cancel_claim_sha256,
+            )
     if state.get("recovery_history") is not None:
         history = state["recovery_history"]
         proof["recovery_history"] = {

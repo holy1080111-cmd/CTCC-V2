@@ -83,9 +83,9 @@ def test_all_physical_and_restart_source_cases_are_mandatory_once(
         ] == [2]
 
 
-def test_all34_real_source_case_identities_are_mandatory_in_both_closed_rosters():
+def test_all39_real_source_case_identities_are_mandatory_in_both_closed_rosters():
     actual = _actual_source_cases()
-    assert len(actual) == len(set(actual)) == 34
+    assert len(actual) == len(set(actual)) == 39
     assert actual == full.LIVE_CONTROLLED_CLOSE_CASES
     for case in actual:
         assert full.REQUIRED_CASES.count(case) == full.SUCCESSOR_CASES.count(case) == 1
@@ -153,7 +153,7 @@ def test_any_one_missing_close_parameter_is_an_incomplete_component(tmp_path, om
         )
 
 
-def test_full34_synthetic_report_has_no_authority_and_cannot_borrow_a_duplicate_case(
+def test_full39_synthetic_report_has_no_authority_and_cannot_borrow_a_duplicate_case(
     tmp_path,
 ):
     result = reports.verify_pytest_report(
@@ -161,7 +161,7 @@ def test_full34_synthetic_report_has_no_authority_and_cannot_borrow_a_duplicate_
         required_cases=full.LIVE_CONTROLLED_CLOSE_CASES,
         allow_unrelated_skips=False,
     )
-    assert result["tests"] == 34 and len(result["required_case_passed"]) == 34
+    assert result["tests"] == 39 and len(result["required_case_passed"]) == 39
     duplicated = (
         *full.LIVE_CONTROLLED_CLOSE_CASES,
         full.LIVE_CONTROLLED_CLOSE_CASES[0],

@@ -122,6 +122,199 @@ async def _state(lab):
         ).one()
 
 
+def _synthetic_key_file_handoff(monkeypatch, lab):
+    """Only private-file/runtime handoff is synthetic; real role/HMAC/SQL remain."""
+    from app.okx_live import lifecycle_key_v1 as keys
+
+    monkeypatch.setattr(
+        keys,
+        "_record",
+        lambda owner: {
+            "state": {"reconciler_factory": lab[3], "reconciler_pins": lab[4]},
+            "document": {**lab[5], "key_hex": lab[6].hex()},
+        },
+    )
+
+
+async def test_actual58_controlled_restart_optional_lookup_replays_original_hmac_records(
+    lifecycle_lab,
+    monkeypatch,
+):
+    from app.database.repositories import (
+        native_live_controlled_close_v1 as close_repository,
+    )
+    from app.okx_live import controlled_close_recovery_v1 as recovery
+
+    lab = lifecycle_lab
+    _synthetic_key_file_handoff(monkeypatch, lab)
+    key = object()
+    repository = close_repository.NativeLiveControlledCloseRepositoryV1(lab[3], lab[4])
+    journal_repository = lifecycle_repository.NativeLiveLifecycleRepositoryV1(
+        lab[3], lab[4]
+    )
+    rid, _, _ = exact_live_intent_document_v1(lab[2])
+    assert await repository.read_by_reservation_v1(key, rid) is None
+    parent, _, _ = await _ready(lab)
+    parent_raw, _ = await _call(lab, parent)
+    close_raw, _ = await _call(lab, claim_document(parent), claim=True)
+    # Stopped readback is an actual database action, not a mocked flag.
+    await journal_repository.inhibit_for_recovery_v1(key)
+    journal = await journal_repository.read_journal_v1(key, rid)
+    cfg = {"reconciler_factory": lab[3], "reconciler_pins": lab[4]}
+    first = await recovery.read_retained_records_v1(cfg, key, journal)
+    second = await recovery.read_retained_records_v1(cfg, key, journal)
+    assert first.intent.document_json == second.intent.document_json == parent_raw
+    assert first.close.document_json == second.close.document_json == close_raw
+    assert first.cancel is second.cancel is None
+    assert recovery.records_sha256_v1(first) == recovery.records_sha256_v1(second)
+    assert first.intent.execution_authority is first.close.execution_authority is False
+    assert (
+        await repository.read_claim_if_present_v1(
+            key, parent["close_intent_id"], "cancel_original_protection"
+        )
+        is None
+    )
+    assert await _state(lab) == ("reserved", None)
+
+
+@pytest.mark.parametrize(
+    "source_case",
+    ("complete", "client_id_reuse", "partial_close", "protection_still_active"),
+)
+async def test_actual58_controlled_restart_complete_fresh_source_resolves_or_retains_hold(
+    lifecycle_lab,
+    monkeypatch,
+    source_case,
+):
+    """Actual SQL/HMAC; explicitly synthetic new Live raw DTOs, never a venue claim."""
+    from dataclasses import replace
+
+    from app.okx_live import controlled_close_recovery_v1 as recovery
+    from app.okx_live.reconciliation_facts_v1 import LiveReconciliationHistoryV1
+    from tests import native_live_postsubmit_fixtures_v1 as wire
+    from tests.unit.test_native_live_controlled_close_recovery_v1 import reraw, scenario
+
+    lab = lifecycle_lab
+    _synthetic_key_file_handoff(monkeypatch, lab)
+    key = object()
+    parent, _, protected = await _ready(lab)
+    intent_raw, _ = await _call(lab, parent)
+    close_raw, _ = await _call(lab, claim_document(parent), claim=True)
+    cancel = claim_document(
+        parent,
+        action="cancel_original_protection",
+        observation=stamp(datetime.now(UTC), monotonic_ns=11_000_000_000),
+    )
+    cancel_raw, _ = await _call(lab, cancel, claim=True)
+    journal_repository = lifecycle_repository.NativeLiveLifecycleRepositoryV1(
+        lab[3], lab[4]
+    )
+    await journal_repository.inhibit_for_recovery_v1(key)
+    rid, _, _ = exact_live_intent_document_v1(lab[2])
+    journal = await journal_repository.read_journal_v1(key, rid)
+    records = await recovery.read_retained_records_v1(
+        {"reconciler_factory": lab[3], "reconciler_pins": lab[4]}, key, journal
+    )
+    recorded = journal.intent_recorded_at
+    delta = recorded - datetime(1970, 1, 1, tzinfo=UTC)
+    recorded_ns = (
+        delta.days * 86400 + delta.seconds
+    ) * 1_000_000_000 + delta.microseconds * 1000
+    base = ((recorded_ns + 999999) // 1_000_000) * 1_000_000
+    # Choose this NEW synthetic timeline before constructing raw DTOs. No
+    # original receipt, POST start, lease, consent or expiry is rewritten.
+    now = datetime.now(UTC)
+    now_delta = now - datetime(1970, 1, 1, tzinfo=UTC)
+    now_ms = (
+        now_delta.days * 86400 + now_delta.seconds
+    ) * 1000 + now_delta.microseconds // 1000
+    with monkeypatch.context() as construction:
+        construction.setattr(wire, "BASE", base)
+        value, capture, args = scenario(
+            original_intent=lab[2],
+            retained_records=records,
+            retained_journal=journal,
+            history_override=LiveReconciliationHistoryV1(recorded),
+            shift=max(0, now_ms - base // 1_000_000),
+        )
+        if source_case == "client_id_reuse":
+            row = json.loads(capture.archive_pages[0].raw_body)["data"][0]
+            later = {**row, "ordId": str(int(row["ordId"]) + 1)}
+            capture = replace(
+                capture,
+                archive_pages=(
+                    reraw(capture.archive_pages[0], [later, row]),
+                    capture.archive_pages[1],
+                ),
+            )
+        elif source_case == "partial_close":
+            row = json.loads(capture.close_order.raw_body)["data"][0]
+            row["accFillSz"] = "0.5"
+            capture = replace(
+                capture,
+                close_order=reraw(capture.close_order, [row]),
+                close_order_after=reraw(capture.close_order_after, [row]),
+            )
+        elif source_case == "protection_still_active":
+            row = json.loads(capture.protection.raw_body)["data"][0]
+            row["state"] = "live"
+            capture = replace(
+                capture,
+                protection=reraw(capture.protection, [row]),
+                protection_after=reraw(capture.protection_after, [row]),
+            )
+    assessed = recovery.assess_controlled_close_recovery_v1(value, capture, **args)
+    complete = source_case == "complete"
+    assert assessed.outcome == ("RECONCILED_FLAT" if complete else "UNCERTAIN")
+    assert assessed.execution_authority is assessed.resolution_authority is False
+    # Allow only this declared future synthetic receipt to pass; no source
+    # timestamp, original request or database deadline is reset.
+    await asyncio.sleep(1.1)
+    terminal = {
+        "outcome": assessed.outcome,
+        "sequence": 2,
+        "previous_sha256": sha(protected),
+        "credential_continuity": "fresh_recovery_lease_uid_reverified",
+        "full_account_verified": complete,
+        "fills_complete": complete,
+        "flat_verified": complete,
+        "unknown_exposure": not complete,
+        "raw_bank_sha256": assessed.raw_bank_sha256,
+        "submission_sha256": "2" * 64,
+        "submission_started": None,
+        "account_config_before_sha256": capture.config_before.receipt_sha256,
+        "account_config_after_sha256": capture.config_after.receipt_sha256,
+        "entry_order_id": assessed.order_id,
+        "entry_order_state": "filled" if complete else None,
+        "entry_filled_contracts": str(assessed.filled_contracts) if complete else None,
+        "exit_filled_contracts": str(assessed.exit_filled_contracts)
+        if complete
+        else None,
+        "exit_lineage_verified": assessed.exit_lineage_verified,
+        "protection_client_id": value.protection_client_id,
+        "position_count": 0 if complete else None,
+        "pending_order_count": 0 if complete else None,
+        "pending_algo_count": 0 if complete else None,
+        "submission_attempted": complete,
+        "exit_kind": assessed.exit_kind,
+        "exit_order_id": assessed.exit_order_id,
+        "exit_client_order_id": assessed.exit_client_order_id,
+        "exit_source_sha256": assessed.exit_source_sha256,
+        "controlled_close_intent_sha256": sha(intent_raw) if complete else None,
+        "controlled_close_claim_sha256": sha(close_raw) if complete else None,
+        "controlled_cancel_claim_sha256": sha(cancel_raw) if complete else None,
+        "controlled_close_consent_sha256": parent["consent_sha256"]
+        if complete
+        else None,
+        "fixture_purpose": "synthetic_raw_current_lease_data_and_actual_sql_hmac_only",
+    }
+    _, raw, signature = fixtures._proof(lab, **terminal)
+    assert await fixtures._append(lab, raw, signature) == sha(raw)
+    assert await _state(lab) == (
+        ("reconciled", sha(raw)) if complete else ("reserved", None)
+    )
+
+
 async def test_actual58_close_closed_profile_and_immutable_two_action_schema(
     lifecycle_lab,
 ):
