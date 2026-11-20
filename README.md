@@ -1,9 +1,19 @@
 # CTCC V2 v1.6.9 — Durable OKX Live Recovery
 
 **V2.0 production acceptance is incomplete.** The final-completion branch is
-undergoing new source-bound validation (2026-10-22 update); [current status and boundaries](docs/final_completion_validation.md)
+undergoing new source-bound validation (2026-11-21 update); [current status and boundaries](docs/final_completion_validation.md)
 distinguish engineering checks from real Demo, OOS and Micro Live acceptance.
 Live remains default OFF and requires contemporaneous operator authorization.
+
+The current tool work uses a separate [exact-source Windows installer](docs/windows_tool_physical0058_v1.md)
+for the offline analysis viewer, canonical manual Demo interface and dedicated
+default-OFF manual Live interface. The optional Demo HighVol profile uses the
+same qualification and execution boundary. The [five-component PostgreSQL
+validation](docs/current0058_parallel_validation.md) preserves every case and
+requires a complete matching-source union. These changes remain under final
+integration; they are not the installed deployment or release acceptance.
+By the user's revised scope, Gate3 and real trading examples are deferred;
+neither is reported as passed, and no profitability claim is made.
 
 ## Use CTCC analysis with a saved market snapshot
 

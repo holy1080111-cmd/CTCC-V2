@@ -112,6 +112,12 @@ def configure(package_root, identity, mode, port):
         # continuous scheduler switches. Defaults stay conservative and OFF.
         values["okx_demo_allowed_symbols"] = "BTC-USDT-SWAP,ETH-USDT-SWAP"
         values["okx_demo_scan_symbols"] = values["okx_demo_allowed_symbols"]
+        selected_profile = input(
+            "Demo 策略設定：1 標準，2 加入 HighVol Momentum（預設 1）："
+        ).strip()
+        package.need(selected_profile in ("", "1", "2"))
+        values["ctcc_demo_high_vol_momentum_v2"] = selected_profile == "2"
+        print("策略設定只會寫入新設定檔；仍需完整對帳、空倉檢查與人工啟動。")
     if mode == "live":
         print("Live 預設關閉。尚未配置專用 Live 角色及金鑰時，直接按 Enter。")
         filename = input("已審核的 Live 私人 runtime 設定檔路徑（可空白）：")

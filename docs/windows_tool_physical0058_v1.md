@@ -62,6 +62,11 @@ deleted or activated. Keep it for diagnosis and stage a different directory.
 prints them. It creates a NEW NTFS directory under LocalAppData with only the
 current user/System granted access. No machine policy or existing ACL changes.
 Configure each desired tool separately, using different loopback ports.
+The Demo wizard offers Standard (default) or the canonical HighVol Momentum
+profile. This only selects the new immutable configuration. It neither changes
+an existing Control policy nor bypasses complete reconciliation, flat start,
+the current policy pin or a separate manual Arm. HighVol uses the same risk,
+qualification, publication, recheck, reservation, intent and submission chain.
 
 ```powershell
 .\scripts\Install-CTCC-0058.ps1 -Mode Configure -Tool analysis -Port 8128 -PackageRoot C:\CTCC-Releases\reviewed-final -PackageIdentitySha256 <reviewed digest>
