@@ -355,8 +355,8 @@ def test_actual_post_common_finally_refuses_unknown_cleanup_and_retains_failure_
 
 def test_pg2_owns_every_whole_module_and_keeps_both_stateful_anchors_on_zero():
     owned = [selection.postgres_paths(index) for index in range(2)]
-    assert len(selection.POSTGRES_TEST_PATHS) == 91
-    assert [len(paths) for paths in owned] == [40, 51]
+    assert len(selection.POSTGRES_TEST_PATHS) == 94
+    assert [len(paths) for paths in owned] == [40, 54]
     assert selection.DEVVAL_CUSTODY_TEST_PATH in owned[1]
     assert selection.FITTED_CUSTODY_TEST_PATH in owned[1]
     assert selection.DEVVAL_PREDICTION_DIAGNOSTIC_TEST_PATH in owned[1]
@@ -378,6 +378,9 @@ def test_pg2_owns_every_whole_module_and_keeps_both_stateful_anchors_on_zero():
         elif path in (
             selection.DB0056_CONTROL_MONITOR_TEST_PATH,
             selection.DB0056_REPORT_RESUME_TEST_PATH,
+            selection.DB0056_POSTSUBMIT_TEST_PATH,
+            selection.DB0056_RESTART_CLEAR_TEST_PATH,
+            selection.DB0056_MANUAL_STARTUP_TEST_PATH,
             selection.FITTED_CUSTODY_TEST_PATH,
             selection.DEVVAL_PREDICTION_DIAGNOSTIC_TEST_PATH,
         ):
@@ -581,7 +584,7 @@ def test_fitted_diagnostic_is_explicit_and_cases_only(
     if accepted:
         args, observed = current56._arguments()
         assert args.fitted_catalog_diagnostic is True and observed == 1
-        assert len(set(current56._FITTED_CASES)) == len(current56._FITTED_CASES) == 41
+        assert len(set(current56._FITTED_CASES)) == len(current56._FITTED_CASES) == 44
         assert current56_contract.devval_catalog.HERMETIC_CATALOG_CASE in (
             current56._FITTED_CASES
         )

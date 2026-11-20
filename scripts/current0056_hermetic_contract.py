@@ -25,7 +25,10 @@ from scripts.current0056_migration_pin import (
 from scripts.evidence_json import read_evidence_json
 from scripts.verify_linux_shard import (
     DB0056_CONTROL_MONITOR_TEST_PATH,
+    DB0056_MANUAL_STARTUP_TEST_PATH,
+    DB0056_POSTSUBMIT_TEST_PATH,
     DB0056_REPORT_RESUME_TEST_PATH,
+    DB0056_RESTART_CLEAR_TEST_PATH,
     DEVVAL_CUSTODY_TEST_PATH,
     FITTED_CUSTODY_TEST_PATH,
     module_shard,
@@ -109,6 +112,18 @@ INITIAL_TRANSPORT_CASE = (
     DB0056_REPORT_RESUME_TEST_PATH.removesuffix(".py").replace("/", "."),
     "test_actual0056_report_initial_transport_appends_atomically_without_eligibility[long-net]",
 )
+POSTSUBMIT_SAFETY_CASE = (
+    DB0056_POSTSUBMIT_TEST_PATH.removesuffix(".py").replace("/", "."),
+    "test_actual0056_stopped_postsubmit_transactions_preserve_control_and_catalog",
+)
+RESTART_CLEAR_CASE = (
+    DB0056_RESTART_CLEAR_TEST_PATH.removesuffix(".py").replace("/", "."),
+    "test_actual0056_restart_clear_preserves_history_rolls_back_and_reopens_audit",
+)
+MANUAL_STARTUP_CASE = (
+    DB0056_MANUAL_STARTUP_TEST_PATH.removesuffix(".py").replace("/", "."),
+    "test_actual0056_manual_startup_uses_configured_roles_and_durable_restart_cas",
+)
 CURRENT56_PG1_REQUIRED_CASES = (
     *CURRENT56_CUSTODY_CASES,
     *CURRENT56_NATIVE_ROLE_CASES,
@@ -119,6 +134,9 @@ CURRENT56_PG1_REQUIRED_CASES = (
     OWNED_ARM_CASE,
     REPORT_RESUME_CASE,
     INITIAL_TRANSPORT_CASE,
+    POSTSUBMIT_SAFETY_CASE,
+    RESTART_CLEAR_CASE,
+    MANUAL_STARTUP_CASE,
 )
 PREDICTION_CUSTODY_CASE = (
     "tests.integration.test_public_runtime_bundle_custody_repository",

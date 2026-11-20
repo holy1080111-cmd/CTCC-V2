@@ -21,6 +21,13 @@ DB0056_CONTROL_MONITOR_TEST_PATH = "tests/integration/test_db0056_control_monito
 DB0056_REPORT_RESUME_TEST_PATH = (
     "tests/integration/test_db0056_terminal_report_resume_pg.py"
 )
+DB0056_POSTSUBMIT_TEST_PATH = "tests/integration/test_native_postsubmit_db0056_pg.py"
+DB0056_RESTART_CLEAR_TEST_PATH = (
+    "tests/integration/test_native_restart_legacy_clear_db0056_pg.py"
+)
+DB0056_MANUAL_STARTUP_TEST_PATH = (
+    "tests/integration/test_native_manual_startup_0056_pg.py"
+)
 POSTGRES_TEST_PATHS = frozenset(
     {
         DEVVAL_CUSTODY_TEST_PATH,
@@ -28,6 +35,9 @@ POSTGRES_TEST_PATHS = frozenset(
         FITTED_CUSTODY_TEST_PATH,
         DB0056_CONTROL_MONITOR_TEST_PATH,
         DB0056_REPORT_RESUME_TEST_PATH,
+        DB0056_POSTSUBMIT_TEST_PATH,
+        DB0056_RESTART_CLEAR_TEST_PATH,
+        DB0056_MANUAL_STARTUP_TEST_PATH,
         "tests/integration/test_qualification_ledger_repository.py",
         "tests/integration/test_qualification_ledger_restricted_role_repository.py",
         "tests/integration/test_qualification_submission_intent_repository.py",
@@ -234,6 +244,9 @@ def postgres_component(path: str) -> int:
         DEVVAL_PREDICTION_DIAGNOSTIC_TEST_PATH,
         DB0056_CONTROL_MONITOR_TEST_PATH,
         DB0056_REPORT_RESUME_TEST_PATH,
+        DB0056_POSTSUBMIT_TEST_PATH,
+        DB0056_RESTART_CLEAR_TEST_PATH,
+        DB0056_MANUAL_STARTUP_TEST_PATH,
     ):
         return 1
     return (
