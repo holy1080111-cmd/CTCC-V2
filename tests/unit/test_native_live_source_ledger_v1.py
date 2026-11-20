@@ -284,8 +284,8 @@ def test_final_locked_control_refuses_stop_expiry_identity_and_revision_drift(
 
 def test_source_plan_enumerates_every_existing_history_product_bill_and_algo_partition():
     selectors = bridge._selectors(_plan())
-    assert len(selectors) == 50
-    assert len({(item.path, item.query) for item in selectors}) == 50
+    assert len(selectors) == 51
+    assert len({(item.path, item.query) for item in selectors}) == 51
 
 
 @pytest.mark.parametrize("days", (7, 28))
@@ -299,7 +299,7 @@ def test_recent_history_windows_fit_real_retention_while_archives_keep_full_scop
     )
     for selector in selectors:
         _require_window(selector, start=observed, through=observed)
-        if selector.kind == "algo_history":
+        if selector.kind in ("algo_history", "positions_history"):
             continue
         expected = NOW - timedelta(
             days=1 if selector.kind.endswith("_recent") else days
@@ -315,6 +315,7 @@ def test_recent_history_windows_fit_real_retention_while_archives_keep_full_scop
         "bills_recent",
         "bills_archive",
         "algo_history",
+        "positions_history",
     }
     assert all(
         item.cursor_type == "billId"
@@ -365,7 +366,7 @@ async def test_constructor_saved_receipt_or_foreign_task_cannot_create_owned_sou
 
 def test_schema_is_additive_live_only_append_only_and_dedicated_writer_has_no_arm_or_delete():
     grants = schema.live_ledger_grant_sql_v1("ctcc_live_ledger")
-    assert len(grants) == 12 and all("demo" not in sql for sql in grants)
+    assert len(grants) == 17 and all("demo" not in sql for sql in grants)
     assert schema.METADATA_READ_TABLES == ("alembic_version",)
     assert [sql for sql in grants if "alembic_version" in sql] == [
         'GRANT SELECT ON TABLE public.alembic_version TO "ctcc_live_ledger"'

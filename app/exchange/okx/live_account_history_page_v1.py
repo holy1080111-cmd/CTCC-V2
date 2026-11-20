@@ -47,6 +47,7 @@ _PATHS = {
     "orders_recent": "/api/v5/trade/orders-history",
     "orders_archive": "/api/v5/trade/orders-history-archive",
     "algo_history": "/api/v5/trade/orders-algo-history",
+    "positions_history": "/api/v5/account/positions-history",
 }
 _ID = re.compile(r"[1-9][0-9]{0,39}\Z")
 _MS = re.compile(r"[1-9][0-9]{12}\Z")
@@ -93,8 +94,17 @@ def select_live_account_history_page_v1(
     if after is not None and (type(after) is not str or _ID.fullmatch(after) is None):
         _deny("live_history_cursor_invalid")
     algo = kind == "algo_history"
+    positions = kind == "positions_history"
     product = kind.startswith(("fills_", "orders_"))
-    if algo:
+    if positions:
+        if any(
+            value is not None
+            for value in (begin_ms, end_ms, inst_type, ord_type, state)
+        ):
+            _deny("live_history_partition_invalid")
+        if after is not None and _MS.fullmatch(after) is None:
+            _deny("live_history_cursor_invalid")
+    elif algo:
         if (
             begin_ms is not None
             or end_ms is not None
@@ -123,12 +133,20 @@ def select_live_account_history_page_v1(
         ):
             _deny("live_history_partition_invalid")
     cursor_type = (
-        "algoId" if algo else "ordId" if kind.startswith("orders_") else "billId"
+        "uTime"
+        if positions
+        else "algoId"
+        if algo
+        else "ordId"
+        if kind.startswith("orders_")
+        else "billId"
     )
     query: dict[str, str] = {"limit": "100"}
     if after is not None:
         query["after"] = after
-    if algo:
+    if positions:
+        pass
+    elif algo:
         query.update(ordType=ord_type, state=state)
     else:
         query.update(begin=begin_ms, end=end_ms)
@@ -184,15 +202,27 @@ def checked_live_account_history_rows_v1(
         rows = payload.get("data")
         if (
             type(rows) is not list
-            or len(rows) > 100
+            or len(rows) > (256 if selector.kind == "positions_history" else 100)
             or any(type(row) is not dict for row in rows)
         ):
             _deny("live_history_rows_invalid")
         row_ids: list[str] = []
+        position_identities = set()
         for row in rows:
             identifier = row.get(selector.cursor_type)
             if type(identifier) is not str or _ID.fullmatch(identifier) is None:
                 _deny("live_history_identity_invalid")
+            if selector.kind == "positions_history":
+                if (
+                    _MS.fullmatch(identifier) is None
+                    or type(row.get("posId")) is not str
+                    or _ID.fullmatch(row["posId"]) is None
+                ):
+                    _deny("live_history_identity_invalid")
+                identity = row["posId"], identifier
+                if identity in position_identities:
+                    _deny("live_history_position_identity_conflict")
+                position_identities.add(identity)
             if (
                 selector.inst_type is not None
                 and row.get("instType") != selector.inst_type
@@ -205,7 +235,10 @@ def checked_live_account_history_rows_v1(
                 _deny("live_history_algo_partition_mismatch")
             row_ids.append(identifier)
         numeric_ids = tuple(int(value) for value in row_ids)
-        if any(left <= right for left, right in pairwise(numeric_ids)):
+        if any(
+            left < right if selector.kind == "positions_history" else left <= right
+            for left, right in pairwise(numeric_ids)
+        ):
             _deny("live_history_cursor_order_invalid")
         if selector.after is not None and any(
             value >= int(selector.after) for value in numeric_ids

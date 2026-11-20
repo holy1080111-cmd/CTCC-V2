@@ -31,6 +31,9 @@ from app.domain.native_live_intent_v1 import (
     exact_live_intent_document_v1,
     live_account_lock_key_v1,
 )
+from app.domain.native_live_legacy_safety_v1 import (
+    require_legacy_live_negative_fence_v1,
+)
 from app.domain.source_primitives import (
     canonical,
     decode,
@@ -279,6 +282,7 @@ def _hard_micro(value, view):
         and row.get("ctType") == "linear"
         and row.get("settleCcy") == "USDT"
         and row.get("state") == "live"
+        and _number(row, "ctMult") == 1
     )
     quantity = Fraction(value.contracts)
     lot, minimum, maximum, tick = (
@@ -380,6 +384,7 @@ def _require_physical_gate_v1(gate, *, key):
         and record["session"].sync_session.get_transaction()
         is record["transaction"].sync_transaction
         and _HELD.get(record["session"]) is record
+        and record.get("legacy_fence_held") is True
     )
     _require_vendor_state_v1()
     _same_facts(record["facts"], _facts(record["owner"], record["api"], spent=True))
@@ -481,6 +486,7 @@ async def _held_readback(record):
     )
     value = facts.intent_data
     await ledger._profile(session, facts.role_pins)
+    await require_legacy_live_negative_fence_v1(session)
     rows = (
         (
             await session.execute(
@@ -557,6 +563,7 @@ async def _held_readback(record):
         and Fraction(sums[2]) <= Fraction(control["micro_notional_cap"])
     )
     record["control"] = control
+    record["legacy_fence_held"] = True
     _HELD[session] = record
 
 

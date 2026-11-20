@@ -74,6 +74,7 @@ _OWNED_GET_PATHS = frozenset(
         "/api/v5/trade/orders-history",
         "/api/v5/trade/orders-history-archive",
         "/api/v5/trade/orders-algo-history",
+        "/api/v5/account/positions-history",
     }
 )
 _HISTORY_GET_PATHS = frozenset(
@@ -82,6 +83,7 @@ _HISTORY_GET_PATHS = frozenset(
         "/api/v5/trade/fills-history",
         "/api/v5/account/bills",
         "/api/v5/account/bills-archive",
+        "/api/v5/account/positions-history",
         "/api/v5/trade/orders-history",
         "/api/v5/trade/orders-history-archive",
         "/api/v5/trade/orders-algo-history",

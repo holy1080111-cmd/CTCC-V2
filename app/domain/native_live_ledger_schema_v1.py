@@ -7,6 +7,7 @@ The dedicated Live writer cannot create/arm/clear a Control or remove a hold.
 
 import re
 
+from app.domain.native_live_legacy_safety_v1 import TABLES as LEGACY_READ_TABLES
 from app.domain.source_primitives import canonical, sha
 
 SCHEMA = "ctcc.native_live.ledger_data.v1"
@@ -227,7 +228,7 @@ def live_ledger_grant_sql_v1(writer: str) -> tuple[str, ...]:
         f'GRANT USAGE ON SCHEMA public TO "{writer}"',
         *(
             f'GRANT SELECT ON TABLE public.{table} TO "{writer}"'
-            for table in (*TABLES, *METADATA_READ_TABLES)
+            for table in (*TABLES, *METADATA_READ_TABLES, *LEGACY_READ_TABLES)
         ),
         *(
             f'GRANT INSERT ON TABLE public.{table} TO "{writer}"'

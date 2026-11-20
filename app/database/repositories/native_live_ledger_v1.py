@@ -27,6 +27,9 @@ from app.domain.native_live_intent_v1 import (
     exact_live_intent_document_v1,
     live_account_lock_key_v1,
 )
+from app.domain.native_live_legacy_safety_v1 import (
+    require_legacy_live_negative_fence_v1,
+)
 from app.domain.source_primitives import canonical, sha
 from app.okx_live import trusted_source_bridge_v1 as source
 from app.trade_qualification.hard_risk_caps import (
@@ -152,7 +155,12 @@ async def _profile(session, pins):
     )
     observed = {tuple(row) for row in (await session.execute(_ACCESS)).all()}
     expected = {
-        (table, "SELECT") for table in (*schema.TABLES, *schema.METADATA_READ_TABLES)
+        (table, "SELECT")
+        for table in (
+            *schema.TABLES,
+            *schema.METADATA_READ_TABLES,
+            *schema.LEGACY_READ_TABLES,
+        )
     } | {(table, "INSERT") for table in schema.TABLES[1:]}
     inherited_helpers = await require_inherited_live_data_helpers_v1(
         session, owner_oid=pins.owner_oid
@@ -368,6 +376,7 @@ class NativeLiveLedgerDataRepositoryV1:
                         text("SELECT pg_advisory_xact_lock(:key)"),
                         {"key": live_account_lock_key_v1(value.account_uid)},
                     )
+                    await require_legacy_live_negative_fence_v1(session)
                     rows = (
                         (
                             await session.execute(

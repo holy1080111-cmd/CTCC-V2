@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 
 from app.demo_automation.native_private_root_v2 import mkdir_private_evidence_child_v2
-from app.domain.source_primitives import ClockStamp, canonical, decode, sha
+from app.domain.source_primitives import ClockStamp, canonical, decode, sha, utc_from_ns
 from app.exchange.okx.live_account_config_custody_v1 import (
     _check_directory,
     _check_name,
@@ -101,7 +101,7 @@ def _plan(attempt_id, selector, *, lease_binding_id, origin) -> bytes:
 
 
 def _require_window(selector, *, start, through) -> None:
-    if selector.kind == "algo_history":
+    if selector.kind in ("algo_history", "positions_history"):
         return
     if (int(selector.end_ms) + 1) * _NS_PER_MS > start.utc_ns or through.utc_ns > (
         int(selector.begin_ms) + _MAX_AGE_DAYS[selector.kind] * _DAY_MS
@@ -126,6 +126,18 @@ def _check_row_times(page) -> None:
     )
     rows = decode(page.raw_body, maximum=MAX_HISTORY_BODY)["data"]
     for row in rows:
+        if selector.kind == "positions_history":
+            # Reuse only the environment-neutral row arithmetic/shape checks;
+            # the Demo plan/archive and its source claims are never adopted.
+            from app.trade_qualification.account_positions_history_v1 import (
+                PositionHistoryError,
+                _row,
+            )
+
+            try:
+                _row(row, utc_from_ns(page.stamps[3].utc_ns))
+            except PositionHistoryError:
+                _deny("live_history_position_row_invalid")
         if selector.kind.startswith("fills_"):
             filtered = _millis(row, "ts")  # Record generation, not execution.
             event = _millis(row, "fillTime")
@@ -137,7 +149,10 @@ def _check_row_times(page) -> None:
         if (
             max(filtered, event) > received_ms
             or (selector.kind.startswith("fills_") and event > filtered)
-            or (selector.cursor_type in {"ordId", "algoId"} and event < filtered)
+            or (
+                selector.cursor_type in {"ordId", "algoId", "uTime"}
+                and event < filtered
+            )
             or (bounds is not None and not bounds[0] <= filtered <= bounds[1])
         ):
             _deny("live_history_row_timestamp_outside_source_scope")

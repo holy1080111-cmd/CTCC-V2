@@ -131,6 +131,7 @@ def _micro_view(**changes):
         "settleCcy": "USDT",
         "state": "live",
         "ctVal": "0.1",
+        "ctMult": "1",
         "ctValCcy": "ETH",
         "lotSz": "0.01",
         "minSz": "0.01",
@@ -197,6 +198,7 @@ def test_micro_caps_never_increase_budget_or_repair_changed_execution(changes):
         ("maxLmtSz", ""),
         ("lotSz", "0"),
         ("ctVal", "NaN"),
+        ("ctMult", "2"),
         ("state", "suspend"),
     ),
 )
