@@ -27,6 +27,7 @@ from app.config.settings import get_settings
 from app.database.repositories import native_live_financial_epoch_v1 as financial
 from app.database.repositories import native_live_ledger_v1 as ledger
 from app.database.repositories import native_live_operator_control_v1 as controls
+from app.domain import native_clock as public_clock_primitives
 from app.domain import native_live_intent_v1 as intent_source
 from app.domain import source_primitives
 from app.domain.native_clock import native_stamp
@@ -46,6 +47,8 @@ from app.domain.source_primitives import (
     validate_stamps,
 )
 from app.exchange.okx import native_live_write_v1 as physical
+from app.exchange.okx import parsers as public_parser_source
+from app.exchange.okx import symbols as public_symbol_source
 from app.okx_live import entry_math_closure_v1 as entry_math_closure
 from app.okx_live import entry_original_math_v2 as entry_original
 from app.okx_live import entry_owned_seal_v1 as entry_proof
@@ -54,10 +57,15 @@ from app.okx_live import native_runtime_v1 as runtime
 from app.okx_live import owned_risk_adapter_v1 as adapter
 from app.okx_live import qualification_math_v1 as math
 from app.okx_live import trusted_source_bridge_v1 as source
+from app.public_market_source import public_clock as public_clock_source
+from app.public_market_source import public_market_receipts as public_receipt_contracts
+from app.public_market_source import public_receipt_storage as public_receipt_source
 from app.trade_evidence import live_v1 as evidence
 from app.trade_evidence import storage
 from app.trade_evidence.native_private_root_v2 import mkdir_private_evidence_child_v2
+from app.trade_qualification import global_public_staged_v2 as public_staged_source
 from app.trade_qualification import native_live_public_source_v1 as public
+from app.trade_qualification import ws_reference as public_ws_reference_source
 from app.trade_qualification.engine import _hash as policy_hash
 from app.trade_qualification.portfolio import LiveEvidenceStamp
 from app.trade_qualification.service import QualificationIntent
@@ -1710,6 +1718,18 @@ _RUNTIME_BODY_SOURCE_V1 = runtime.configured_live_runtime_v1.__wrapped__
 _SOURCE_BODY_SOURCE_V1 = source.acquire_owned_live_source_v1.__wrapped__
 _ENTRY_RUN_BODY_SOURCE_V1 = run_owned_live_operator_once_v1
 _PUBLIC_STAGE_BODY_SOURCE_V2 = _post_g12_public_stage_v2.__wrapped__
+# These fixed context-manager bodies are actual source callbacks. Their
+# decorator closures pin the inner function identity, while these aliases also
+# pin its code/defaults/namespace before any capture or readback can execute it.
+_PUBLIC_OWNED_STAGE_BODY_SOURCE_V2 = (
+    public.begin_owned_live_post_g12_public_v2.__wrapped__
+)
+_PUBLIC_WIRE_STAGE_BODY_SOURCE_V2 = (
+    public_staged_source.begin_global_public_ohlc_v2.__wrapped__
+)
+_PUBLIC_JOURNAL_ATTEMPT_BODY_SOURCE_V2 = public.journal._runtime_attempt.__wrapped__
+_PUBLIC_POSIX_ROOT_BODY_SOURCE_V2 = evidence.storage._posix_root.__wrapped__
+_PUBLIC_WINDOWS_ROOT_BODY_SOURCE_V2 = evidence.storage._windows_root.__wrapped__
 
 
 from app.trade_qualification.native_continuation_guard_v1 import (
@@ -1735,6 +1755,26 @@ _install(
         financial,
         source,
         public,
+        # Closed Global public read/capture graph: the sole reader, canonical
+        # wire/packet validators, projection and their native clock/root
+        # definers. Imported module identity alone does not pin its callbacks.
+        public.production,
+        public.projection,
+        public_staged_source,
+        public.transport,
+        public.journal,
+        public.candles,
+        public.auxiliary,
+        public.collectors,
+        public.quote_wire,
+        public.websocket,
+        public_ws_reference_source,
+        public_parser_source,
+        public_symbol_source,
+        public_clock_source,
+        public_receipt_contracts,
+        public_receipt_source,
+        public_clock_primitives,
         evidence,
         evidence.shared,
         evidence.service,
