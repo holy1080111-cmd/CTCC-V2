@@ -25,6 +25,7 @@ def app(monkeypatch, *, ready=True):
         api_token_value=TOKEN,
         api_token_is_safe=True,
         environment="production",
+        trading_mode="okx_demo",
     )
     monkeypatch.setattr(main, "settings", config)
     monkeypatch.setattr(security, "get_settings", lambda: config)
@@ -126,7 +127,7 @@ async def test_manual_lifespan_never_launches_background_ws_or_workers(monkeypat
     outbox = AsyncMock()
     monkeypatch.setattr(startup, "start_manual_demo_0056_v1", start)
     monkeypatch.setattr(main.safe_demo_automation, "stop", stop)
-    monkeypatch.setattr(main.engine, "dispose", dispose)
+    monkeypatch.setattr(main, "engine", SimpleNamespace(dispose=dispose))
     monkeypatch.setattr(main.realtime_client, "start", background_ws)
     monkeypatch.setattr(main.notion_outbox_runtime, "start", outbox)
     async with main.lifespan(instance):
