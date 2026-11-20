@@ -286,6 +286,26 @@ def test_source_plan_enumerates_every_existing_history_product_bill_and_algo_par
     selectors = bridge._selectors(_plan())
     assert len(selectors) == 50
     assert len({(item.path, item.query) for item in selectors}) == 50
+
+
+@pytest.mark.parametrize("days", (7, 28))
+def test_recent_history_windows_fit_real_retention_while_archives_keep_full_scope(days):
+    from app.exchange.okx.live_account_history_chain_v1 import _require_window
+
+    plan = _plan(history_start=NOW - timedelta(days=days))
+    selectors = bridge._selectors(plan)
+    observed = ClockStamp(
+        utc_ns=bridge._utc_ns(NOW + timedelta(minutes=5)), monotonic_ns=999
+    )
+    for selector in selectors:
+        _require_window(selector, start=observed, through=observed)
+        if selector.kind == "algo_history":
+            continue
+        expected = NOW - timedelta(
+            days=1 if selector.kind.endswith("_recent") else days
+        )
+        assert selector.begin_ms == str(bridge._utc_ns(expected) // 1_000_000)
+        assert selector.end_ms == str(bridge._utc_ns(plan.history_end) // 1_000_000)
     assert all(item.after is None for item in selectors)
     assert {item.inst_type for item in selectors if item.kind == "fills_recent"} == set(
         bridge.HISTORY_INST_TYPES

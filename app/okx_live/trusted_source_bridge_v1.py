@@ -92,17 +92,28 @@ def _selectors(plan):
         <= timedelta(days=28)
     )
     begin = str(_utc_ns(plan.history_start) // 1_000_000)
+    # Recent endpoints have shorter venue retention than the account-wide
+    # archive window. Keep a fixed explicit overlap, never request an older
+    # unsupported recent window and never shorten the archive's full coverage.
+    recent_begin = str(_utc_ns(plan.history_end - timedelta(days=1)) // 1_000_000)
     end = str(_utc_ns(plan.history_end) // 1_000_000)
     return (
         *(
             select_live_account_history_page_v1(
-                kind, begin_ms=begin, end_ms=end, inst_type=product
+                kind,
+                begin_ms=recent_begin if kind.endswith("_recent") else begin,
+                end_ms=end,
+                inst_type=product,
             )
             for kind in _FAMILIES
             for product in HISTORY_INST_TYPES
         ),
         *(
-            select_live_account_history_page_v1(kind, begin_ms=begin, end_ms=end)
+            select_live_account_history_page_v1(
+                kind,
+                begin_ms=recent_begin if kind.endswith("_recent") else begin,
+                end_ms=end,
+            )
             for kind in ("bills_recent", "bills_archive")
         ),
         *(
