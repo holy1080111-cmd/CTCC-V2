@@ -10,6 +10,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, AsyncSessionTransaction
 
 from app.database.repositories import native_closed_reporting_0056_v1 as subject
+from app.domain import native_database_profile_v1 as profiles
 from scripts import native_report_lineage_status_0056_v1 as cli
 from scripts import project_native_terminal_report_0056_v1 as projector
 from tests.unit.test_native_startup_control_observation_0056_v1 import (
@@ -24,12 +25,14 @@ DEFINITIONS = "e" * 64
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("profile", [profiles.DB0056, profiles.DB0057])
 @pytest.mark.parametrize(
     "failure",
     [
         None,
         "cancelled",
         "catalog",
+        "acl_drift",
         "grant",
         "query",
         "missing",
@@ -41,8 +44,12 @@ async def test_report_observation_replays_once_and_always_rolls_back(
     scenario,  # noqa: F811
     monkeypatch,
     failure,
+    profile,
 ):
     selected = scenario.selected
+    monkeypatch.setattr(
+        subject, "_profile_from_selected_head", AsyncMock(return_value=profile)
+    )
     writer = scenario.writer
     role = "ctcc_writer"
     initial_t = datetime(2026, 6, 1, tzinfo=UTC)
@@ -68,9 +75,21 @@ async def test_report_observation_replays_once_and_always_rolls_back(
     route = subject.locked._direct_tls_route(writer)
     witness = subject.witness56.RestrictedNativeRoles0056WitnessV1(
         subject.roles56.RestrictedNativeRoles0056ObservationV1(
-            DEFINITIONS, "1" * 64, "2" * 64, "3" * 64
+            DEFINITIONS,
+            "1" * 64,
+            "2" * 64,
+            "3" * 64,
+            schema=profiles.schema(
+                profile, "ctcc.native_only.restricted0056_role_observation.v1"
+            ),
+            database_head=profiles.head(profile),
         ),
-        *subject.witness56.runtime_witness_0056(actor, names, (route,) * 3),
+        *subject.witness56.runtime_witness_0056(
+            actor, names, (route,) * 3, **profiles.arguments(profile)
+        ),
+        schema=profiles.schema(
+            profile, "ctcc.native_only.restricted0056_runtime_witness.v1"
+        ),
     )
     witness_probe = AsyncMock(return_value=witness)
     monkeypatch.setattr(
@@ -83,15 +102,26 @@ async def test_report_observation_replays_once_and_always_rolls_back(
     monkeypatch.setattr(
         subject.roles56, "_identity_at_0056", AsyncMock(return_value=actor)
     )
-    catalog = SimpleNamespace(
-        native_definitions_sha256="0" * 64 if failure == "catalog" else DEFINITIONS
+    catalog = subject.writer56.NativeWriter0056ObservationV1(
+        actor_catalog_sha256="7" * 64,
+        schema=profiles.schema(
+            profile, "ctcc.current0056.restricted_readwrite_writer_observation.v1"
+        ),
+        database_head=profiles.head(profile),
+        native_definitions_sha256="0" * 64 if failure == "catalog" else DEFINITIONS,
     )
     monkeypatch.setattr(
         subject.writer56,
         "observe_restricted_readwrite_writer_0056_v1",
         AsyncMock(return_value=catalog),
     )
-    monkeypatch.setattr(subject, "_exact_existing_acl", AsyncMock())
+    acl = AsyncMock(
+        side_effect=ValueError("extra grant") if failure == "acl_drift" else None
+    )
+    if profile is profiles.DB0056:
+        monkeypatch.setattr(subject, "_exact_existing_acl", acl)
+    else:
+        monkeypatch.setattr(subject.profiles, "require_exact_acl", acl)
     monkeypatch.setattr(
         subject.roles56, "_require_no_effective_demo_fitted_execute", AsyncMock()
     )
@@ -145,6 +175,10 @@ async def test_report_observation_replays_once_and_always_rolls_back(
                 selected, spool_id=SPOOL
             )
             assert observed.spool_sha256 == SPOOL
+            assert observed.database_head == profiles.head(profile)
+            assert observed.schema == profiles.schema(
+                profile, "ctcc.db0056.native_terminal_lineage_observation.v1"
+            )
             assert observed.report_sha256 == REPORT and observed.policy_sha256 == POLICY
             assert observed.projection_receipt_envelope_sha256 == ENVELOPE
             assert (
@@ -171,7 +205,7 @@ async def test_report_observation_replays_once_and_always_rolls_back(
     witness_probe.assert_awaited_once()
     assert sql[0] == "SET TRANSACTION ISOLATION LEVEL READ COMMITTED, READ WRITE"
     assert sql[-1] == "SET LOCAL synchronous_commit = 'on'"
-    if failure in {"catalog", "grant", "missing"}:
+    if failure in {"catalog", "acl_drift", "grant", "missing"}:
         replay.assert_not_awaited()
     else:
         replay.assert_awaited_once()

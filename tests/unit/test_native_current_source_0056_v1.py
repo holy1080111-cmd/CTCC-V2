@@ -240,6 +240,8 @@ def test_qualification_preflight_cli_has_explicit_mode_and_no_auth_flag(
 
 @pytest.mark.asyncio
 async def test_qualification_ledger_observation_always_rolls_back(monkeypatch):
+    from tests.native_role_profile_fixtures_v1 import restricted_roles_fixture
+
     transaction = SimpleNamespace(rollback=AsyncMock())
     session = SimpleNamespace(begin=AsyncMock(return_value=transaction))
 
@@ -254,7 +256,9 @@ async def test_qualification_ledger_observation_always_rolls_back(monkeypatch):
         source.ledger56, "read_locked_native_ledger_preflight_0056_v1", forbidden
     )
     with pytest.raises(source.ledger56.NativeLedgerPreflight0056Error):
-        await source._observe_qualification_ledger(factories, object(), plan)
+        await source._observe_qualification_ledger(
+            factories, restricted_roles_fixture(), plan
+        )
     session.begin.assert_awaited_once()
     transaction.rollback.assert_awaited_once()
 

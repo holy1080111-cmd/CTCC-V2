@@ -10,8 +10,10 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, AsyncSessionTransaction
 
 from app.database.repositories import native_terminal_report_resume_0056_v1 as subject
+from app.domain import native_database_profile_v1 as profiles
 from app.domain.source_primitives import canonical, decode, sha
 from scripts import resume_native_terminal_report_0056_v1 as cli
+from tests.native_role_profile_fixtures_v1 import restricted_roles_fixture
 from tests.unit.test_native_startup_control_observation_0056_v1 import (
     scenario,  # noqa: F401
 )
@@ -149,6 +151,7 @@ def test_report_resume_refuses_unproven_history(tail, fault):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("profile", [profiles.DB0056, profiles.DB0057])
 @pytest.mark.parametrize(
     "fault", [None, "sql", "roles", "commit_lost", "same_xid", "different"]
 )
@@ -156,9 +159,22 @@ async def test_resume_confirms_commit_via_independent_rollback_transaction(
     scenario,  # noqa: F811
     monkeypatch,
     fault,
+    profile,
 ):
-    role = SimpleNamespace(
-        server_incarnation_sha256="1" * 64, role_route_sha256="2" * 64
+    role = restricted_roles_fixture(profile)
+    identity = subject.report56.NativeRoleIdentity0056V2(
+        91,
+        92,
+        ("writer", "custody", "frame"),
+        (1, 2, 3),
+        "7" * 64,
+        role.server_incarnation_sha256,
+        role.role_route_sha256,
+        role.observation.inherited_native_definitions_sha256,
+        role.observation.granted_inherited_acl_shape_sha256,
+        schema=profiles.schema(
+            profile, "ctcc.native_only.restricted_role_identity0056.v2"
+        ),
     )
     settings = SimpleNamespace(submission_outbox_queue_namespace="test")
     monkeypatch.setattr(subject, "get_settings", lambda: settings)
@@ -173,6 +189,8 @@ async def test_resume_confirms_commit_via_independent_rollback_transaction(
         "6" * 64,
         role.server_incarnation_sha256,
         role.role_route_sha256,
+        schema=profiles.schema(profile, "ctcc.db0056.native_terminal_report_resume.v1"),
+        database_head=profiles.head(profile),
     )
     transactions = []
     commits = []
@@ -198,7 +216,8 @@ async def test_resume_confirms_commit_via_independent_rollback_transaction(
                 raise RuntimeError("private DB failure")
 
     @asynccontextmanager
-    async def verified(session, *_):
+    async def verified(session, *_, **kwargs):
+        assert kwargs == profiles.arguments(profile)
         assert session.in_transaction()
         transactions.append(session)
         yield catalog, object()
@@ -233,11 +252,12 @@ async def test_resume_confirms_commit_via_independent_rollback_transaction(
     monkeypatch.setattr(subject, "_resume_held", staged)
     monkeypatch.setattr(subject, "_read_resumed_report", readback)
     pending = subject._resume_native_terminal_report_0056_v1(
-        scenario.selected, cleanup_id=CLEANUP, expected_roles=role
+        scenario.selected, cleanup_id=CLEANUP, expected_roles=identity
     )
     if fault is None:
         assert await pending == result
         assert result.delivery_authority is result.execution_authority is False
+        assert result.database_head == profiles.head(profile)
     else:
         with pytest.raises(
             subject.report56.NativeTerminalReport0056Error,

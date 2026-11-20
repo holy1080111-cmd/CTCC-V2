@@ -27,6 +27,7 @@ from app.database.models.qualification_ledger import (
 )
 from app.database.repositories import qualification_ledger as ledger
 from app.database.repositories import qualification_native_checkpoint_v2 as checkpoint
+from app.domain import native_database_profile_v1 as profiles
 from app.domain import native_filled_flat_closure_schema_v55 as closure
 from app.domain.source_primitives import canonical, decode, sha
 from app.trade_qualification import control_bound_ledger, reservations
@@ -77,7 +78,7 @@ class NativeLedgerPreflight0056V1:
     native_definitions_sha256: str
     uid_ledger_checkpoint_sha256: str
     observed_at: datetime
-    database_head: Literal["0056"] = field(default="0056", init=False)
+    database_head: Literal["0056", "0057"] = field(default="0056")
     reconciliation_verified: Literal[False] = field(default=False, init=False)
     account_complete: Literal[False] = field(default=False, init=False)
     execution_authority: Literal[False] = field(default=False, init=False)
@@ -457,7 +458,9 @@ async def _replay_consumed_under_uid_lock(session, scope, held, currencies, rows
     return verified
 
 
-async def _uid_ledger_checkpoint(session, scope, held, selected):
+async def _uid_ledger_checkpoint(
+    session, scope, held, selected, *, profile=profiles.DB0056
+):
     currencies = tuple(
         (
             await session.execute(
@@ -495,7 +498,7 @@ async def _uid_ledger_checkpoint(session, scope, held, selected):
     )
     _need(len(verified) == consumed)
     checkpoint = {
-        "schema": "ctcc.demo.db0056.uid_ledger_checkpoint.v2",
+        "schema": profiles.schema(profile, "ctcc.demo.db0056.uid_ledger_checkpoint.v2"),
         "currencies": [
             [
                 currency,
@@ -522,6 +525,7 @@ async def read_locked_native_ledger_preflight_0056_v1(
     no current replay, economic, portfolio, flat-start or execution authority.
     """
     try:
+        profile = checkpoint._profile_for_original_roles_v1(roles)
         scope = checked_bootstrap(scope, LedgerScope)
         _need(scope.settlement_currency == "USDT")
         writer, engine, _, _ = locked._factory_pins(selected)
@@ -543,10 +547,12 @@ async def read_locked_native_ledger_preflight_0056_v1(
         )
         control_scope = ControlScope(scope.environment, scope.account_id)
         async with locked._verified_locked_demo_control_0056(
-            selected, session, control_scope
+            selected, session, control_scope, **profiles.arguments(profile)
         ) as proof:
             control_row, catalog, witness, started_at, held = proof
-            _require_role_witness(roles, catalog, witness)
+            _require_role_witness(
+                roles, catalog, witness, **profiles.arguments(profile)
+            )
             state, event = await locked.DemoControlRepositoryV2._snapshot(
                 session, control_row
             )
@@ -564,11 +570,13 @@ async def read_locked_native_ledger_preflight_0056_v1(
             held()
             repeated = (
                 await locked.writer56.observe_restricted_readwrite_writer_0056_v1(
-                    session
+                    session, **profiles.arguments(profile)
                 )
             )
             held()
-            _require_role_witness(roles, repeated, witness)
+            _require_role_witness(
+                roles, repeated, witness, **profiles.arguments(profile)
+            )
             _need(
                 repeated.native_definitions_sha256 == catalog.native_definitions_sha256
             )
@@ -590,7 +598,7 @@ async def read_locked_native_ledger_preflight_0056_v1(
                 session, repo, scope, row, held
             )
             unresolved, consumed, uid_checkpoint = await _uid_ledger_checkpoint(
-                session, scope, held, row
+                session, scope, held, row, **profiles.arguments(profile)
             )
             _need(scope_state != "BOOTSTRAP" or unresolved == 0)
             observed_at = await session.scalar(locked._CLOCK)
@@ -610,6 +618,7 @@ async def read_locked_native_ledger_preflight_0056_v1(
                 catalog.native_definitions_sha256,
                 uid_checkpoint,
                 observed_at,
+                database_head=profiles.head(profile),
             )
     except (NativeLedgerPreflight0056Error, asyncio.CancelledError):
         raise

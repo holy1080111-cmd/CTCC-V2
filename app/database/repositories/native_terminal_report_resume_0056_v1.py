@@ -24,6 +24,7 @@ from app.database.repositories.demo_control import DemoControlRepository
 from app.database.repositories.demo_control_current55_v2 import DemoControlRepositoryV2
 from app.database.repositories.submission_reporting import spool_identity
 from app.domain import native_closed_report_schema_v55 as policy55
+from app.domain import native_database_profile_v1 as profiles
 from app.domain.native_filled_flat_closure_schema_v55 import TRANSITION_REASON
 from app.domain.source_primitives import canonical, decode, sha
 from app.trade_evidence.outbox import OutboxPolicy
@@ -53,10 +54,8 @@ class NativeTerminalReportResumed0056V1:
     policy_sha256: str
     server_incarnation_sha256: str
     role_route_sha256: str
-    schema: Literal["ctcc.db0056.native_terminal_report_resume.v1"] = field(
-        default="ctcc.db0056.native_terminal_report_resume.v1", init=False
-    )
-    database_head: Literal["0056"] = field(default="0056", init=False)
+    schema: str = field(default="ctcc.db0056.native_terminal_report_resume.v1")
+    database_head: Literal["0056", "0057"] = field(default="0056")
     delivery_authority: Literal[False] = field(default=False, init=False)
     execution_authority: Literal[False] = field(default=False, init=False)
     admission: Literal["DENY"] = field(default="DENY", init=False)
@@ -280,6 +279,7 @@ async def _append_report(session, reservation, scope_row, cleanup_id, namespace)
 
 
 async def _read_resumed_report(session, spool, cleanup_id, namespace, roles):
+    profile = report56._profile_for_original_roles_v1(roles)
     report56._need(
         type(spool) is QualificationReportSpool
         and spool.eligible is True
@@ -302,6 +302,8 @@ async def _read_resumed_report(session, spool, cleanup_id, namespace, roles):
         pin(spool.policy_sha256),
         roles.server_incarnation_sha256,
         roles.role_route_sha256,
+        schema=profiles.schema(profile, "ctcc.db0056.native_terminal_report_resume.v1"),
+        database_head=profiles.head(profile),
     )
 
 
@@ -378,18 +380,20 @@ async def _resume_native_terminal_report_0056_v1(
     """
     try:
         cleanup_id = pin(cleanup_id)
+        profile = report56._profile_from_expected_identity(expected_roles)
         settings = get_settings()
         namespace = queue(settings.submission_outbox_queue_namespace)
         pins = report56._factory_pins(selected)
         factory, engine, names, _ = pins
         route = report56.locked._direct_tls_route(engine)
         roles = await report56._require_matching_roles(selected, expected_roles)
+        report56._need(report56._profile_for_original_roles_v1(roles) is profile)
         async with asyncio.timeout(35):
             async with (
                 factory() as session,
                 session.begin(),
                 report56._verified_terminal_writer(
-                    session, engine, roles, names, route
+                    session, engine, roles, names, route, **profiles.arguments(profile)
                 ) as (catalog, _),
             ):
                 report56._need(
@@ -411,7 +415,7 @@ async def _resume_native_terminal_report_0056_v1(
                 result = await _resume_held(session, cleanup_id, namespace, roles)
                 stable_catalog = (
                     await report56.writer56.observe_restricted_readwrite_writer_0056_v1(
-                        session
+                        session, **profiles.arguments(profile)
                     )
                 )
                 report56._need(stable_catalog == catalog)
@@ -423,6 +427,7 @@ async def _resume_native_terminal_report_0056_v1(
                     stable_catalog,
                     (roles.server_incarnation_sha256, roles.role_route_sha256),
                     lambda: report56._held(session, engine, transaction),
+                    **profiles.arguments(profile),
                 )
                 report56._need(
                     report56._factory_pins(selected) == pins
@@ -435,7 +440,12 @@ async def _resume_native_terminal_report_0056_v1(
                 transaction = await reader.begin()
                 try:
                     async with report56._verified_terminal_writer(
-                        reader, engine, roles, names, route
+                        reader,
+                        engine,
+                        roles,
+                        names,
+                        route,
+                        **profiles.arguments(profile),
                     ):
                         xid = await reader.scalar(_XID)
                         report56._need(

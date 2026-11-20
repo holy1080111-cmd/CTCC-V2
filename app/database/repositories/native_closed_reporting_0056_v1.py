@@ -29,7 +29,11 @@ from app.database.models.submission_reporting import (
     QualificationSubmissionOutcome,
 )
 from app.database.repositories import native_closed_reporting_v55 as historical
+from app.database.repositories.qualification_native_checkpoint_v2 import (
+    _profile_for_original_roles_v1,
+)
 from app.database.repositories.submission_reporting import _projection_lock_key
+from app.domain import native_database_profile_v1 as profiles
 from app.trade_evidence import outbox, post_submit, storage
 from app.trade_evidence.native_private_root_v2 import require_private_evidence_base_v2
 from app.trade_evidence.submission_reporting import pin, queue
@@ -68,10 +72,8 @@ class NativeTerminalLineage0056V1:
     projection_receipt_envelope_sha256: str | None
     server_incarnation_sha256: str
     role_route_sha256: str
-    schema: Literal["ctcc.db0056.native_terminal_lineage_observation.v1"] = field(
-        default="ctcc.db0056.native_terminal_lineage_observation.v1", init=False
-    )
-    database_head: Literal["0056"] = field(default="0056", init=False)
+    schema: str = field(default="ctcc.db0056.native_terminal_lineage_observation.v1")
+    database_head: Literal["0056", "0057"] = field(default="0056")
     local_outbox_verified: Literal[False] = field(default=False, init=False)
     delivery_authority: Literal[False] = field(default=False, init=False)
     execution_authority: Literal[False] = field(default=False, init=False)
@@ -86,10 +88,8 @@ class NativeTerminalLocalProjection0056V1:
     projection_receipt_envelope_sha256: str
     server_incarnation_sha256: str
     role_route_sha256: str
-    schema: Literal["ctcc.db0056.native_terminal_local_projection.v1"] = field(
-        default="ctcc.db0056.native_terminal_local_projection.v1", init=False
-    )
-    database_head: Literal["0056"] = field(default="0056", init=False)
+    schema: str = field(default="ctcc.db0056.native_terminal_local_projection.v1")
+    database_head: Literal["0056", "0057"] = field(default="0056")
     local_outbox_verified: Literal[True] = field(default=True, init=False)
     delivery_authority: Literal[False] = field(default=False, init=False)
     execution_authority: Literal[False] = field(default=False, init=False)
@@ -115,15 +115,31 @@ def _held(session, engine, transaction):
     )
 
 
-def _holds_observed_roles(roles, catalog, actor, names, route) -> None:
+def _holds_observed_roles(
+    roles, catalog, actor, names, route, *, profile=profiles.DB0056
+) -> None:
     _need(
         type(roles) is witness56.RestrictedNativeRoles0056WitnessV1
-        and roles.observation.database_head == "0056"
+        and _profile_for_original_roles_v1(roles) is profiles.checked(profile)
+        and type(catalog) is writer56.NativeWriter0056ObservationV1
+        and catalog.database_head == profiles.head(profile)
+        and catalog.schema
+        == profiles.schema(
+            profile, "ctcc.current0056.restricted_readwrite_writer_observation.v1"
+        )
+        and catalog.admission == "DENY"
+        and catalog.native_baseline_admission is False
+        and catalog.account_complete
+        is catalog.execution_authority
+        is catalog.startup_admission
+        is False
         and roles.observation.admission == "DENY"
         and roles.startup_admission is roles.execution_authority is False
         and catalog.native_definitions_sha256
         == roles.observation.inherited_native_definitions_sha256
-        and witness56.runtime_witness_0056(actor, names, (route,) * 3)
+        and witness56.runtime_witness_0056(
+            actor, names, (route,) * 3, **profiles.arguments(profile)
+        )
         == (roles.server_incarnation_sha256, roles.role_route_sha256)
     )
 
@@ -143,7 +159,10 @@ def _read_projection_digest(receipt, spool) -> str | None:
 
 
 @asynccontextmanager
-async def _verified_terminal_writer(session, engine, roles, names, route):
+async def _verified_terminal_writer(
+    session, engine, roles, names, route, *, profile=profiles.DB0056
+):
+    _need(_profile_for_original_roles_v1(roles) is profiles.checked(profile))
     _need(type(session) is AsyncSession and not session.identity_map)
     transaction = session.sync_session.get_transaction()
     _held(session, engine, transaction)
@@ -156,24 +175,52 @@ async def _verified_terminal_writer(session, engine, roles, names, route):
         await session.execute(text(setting))
     await session.execute(text("SET LOCAL synchronous_commit = 'on'"))
     _held(session, engine, transaction)
-    first = await writer56._session_identity(session, engine)
-    actor = await roles56._identity_at_0056(session, names[0])
+    first = await writer56._session_identity(
+        session, engine, **profiles.arguments(profile)
+    )
+    actor = await roles56._identity_at_0056(
+        session, names[0], **profiles.arguments(profile)
+    )
     _need(actor[3:6] == (first[5], first[6], first[8]))
-    catalog = await writer56.observe_restricted_readwrite_writer_0056_v1(session)
-    _holds_observed_roles(roles, catalog, actor, names, route)
-    await _exact_existing_acl(await session.connection(), names, actor[3])
+    catalog = await writer56.observe_restricted_readwrite_writer_0056_v1(
+        session, **profiles.arguments(profile)
+    )
+    _holds_observed_roles(
+        roles, catalog, actor, names, route, **profiles.arguments(profile)
+    )
+    if profile is profiles.DB0056:
+        await _exact_existing_acl(await session.connection(), names, actor[3])
+    else:
+        await profiles.require_exact_acl(
+            await session.connection(),
+            names,
+            actor[3],
+            profile=profile,
+            read_only=False,
+        )
     await roles56._require_no_effective_demo_fitted_execute(session, names)
     _need(await session.scalar(_ELIGIBILITY_ACCESS) is True)
     _held(session, engine, transaction)
     yield catalog, actor
-    _need(await writer56._session_identity(session, engine) == first)
-    _need(await roles56._identity_at_0056(session, names[0]) == actor)
+    _need(
+        await writer56._session_identity(session, engine, **profiles.arguments(profile))
+        == first
+    )
+    _need(
+        await roles56._identity_at_0056(
+            session, names[0], **profiles.arguments(profile)
+        )
+        == actor
+    )
     _held(session, engine, transaction)
 
 
 async def _read_held(session, engine, roles, names, route, spool_id, *, lock=False):
+    profile = _profile_for_original_roles_v1(roles)
     transaction = session.sync_session.get_transaction()
-    async with _verified_terminal_writer(session, engine, roles, names, route):
+    async with _verified_terminal_writer(
+        session, engine, roles, names, route, **profiles.arguments(profile)
+    ):
         if lock:
             _need(session.get_bind(clause=_PROJECTION_LOCK) is engine.sync_engine)
             _need(
@@ -199,6 +246,7 @@ async def _read_held(session, engine, roles, names, route, spool_id, *, lock=Fal
 
 
 async def _observe_held(session, engine, roles, names, route, spool_id):
+    profile = _profile_for_original_roles_v1(roles)
     spool, _, _, envelope = await _read_held(
         session, engine, roles, names, route, spool_id
     )
@@ -209,6 +257,10 @@ async def _observe_held(session, engine, roles, names, route, spool_id):
         envelope,
         roles.server_incarnation_sha256,
         roles.role_route_sha256,
+        schema=profiles.schema(
+            profile, "ctcc.db0056.native_terminal_lineage_observation.v1"
+        ),
+        database_head=profiles.head(profile),
     )
 
 
@@ -219,9 +271,11 @@ async def observe_terminal_lineage_0056_v1(selected, *, spool_id: str):
         pins = _factory_pins(selected)
         factory, engine, names, _ = pins
         route = locked._direct_tls_route(engine)
+        profile = await _profile_from_selected_head(selected)
         roles = await witness56.observe_restricted_native_roles_0056_witness_v1(
-            selected, source=_SOURCE
+            selected, source=_SOURCE, **profiles.arguments(profile)
         )
+        _need(_profile_for_original_roles_v1(roles) is profile)
         async with factory() as session:
             transaction = await session.begin()
             try:
@@ -263,12 +317,79 @@ def _configured_projection_queue(settings):
     return root, queue(settings.submission_outbox_queue_namespace)
 
 
+def _profile_from_expected_identity(expected):
+    _need(type(expected) is NativeRoleIdentity0056V2)
+    _need(
+        type(expected.schema) is str
+        and type(expected.database_oid) is type(expected.owner_oid) is int
+        and expected.database_oid > 0
+        and expected.owner_oid > 0
+        and all(
+            type(value) is str
+            and len(value) == 64
+            and all(c in "0123456789abcdef" for c in value)
+            for value in (
+                expected.stable_identity_sha256,
+                expected.server_incarnation_sha256,
+                expected.role_route_sha256,
+                expected.inherited_native_definitions_sha256,
+                expected.granted_inherited_acl_shape_sha256,
+            )
+        )
+    )
+    profile = (
+        profiles.DB0056
+        if expected.schema == "ctcc.native_only.restricted_role_identity0056.v2"
+        else profiles.DB0057
+        if expected.schema == "ctcc.native_only.restricted_role_identity0057.v2"
+        else None
+    )
+    _need(
+        profile is not None
+        and expected.deployment_reference_authenticated is False
+        and expected.startup_admission is expected.execution_authority is False
+        and expected.admission == "DENY"
+    )
+    return profile
+
+
+async def _profile_from_selected_head(selected):
+    """Read actual bounded metadata only; the full role/catalog replay follows."""
+    pins = _factory_pins(selected)
+    factory, engine, _, _ = pins
+    route = locked._direct_tls_route(engine)
+    query = text("SELECT version_num FROM public.alembic_version LIMIT 2")
+    async with asyncio.timeout(5), factory() as session:
+        _need(
+            type(session) is AsyncSession
+            and session.get_bind(clause=query) is engine.sync_engine
+        )
+        transaction = await session.begin()
+        try:
+            await session.execute(
+                text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+            )
+            await session.execute(text("SET LOCAL statement_timeout='1000ms'"))
+            rows = (await session.execute(query)).all()
+            _need(
+                len(rows) == 1
+                and type(rows[0][0]) is str
+                and rows[0][0] in ("0056", "0057")
+            )
+        finally:
+            await transaction.rollback()
+    _need(_factory_pins(selected) == pins and locked._direct_tls_route(engine) == route)
+    return profiles.DB0056 if rows[0][0] == "0056" else profiles.DB0057
+
+
 async def _require_matching_roles(selected, expected):
+    profile = _profile_from_expected_identity(expected)
     actual = await witness56.observe_restricted_native_roles_0056_witness_v1(
-        selected, source=_SOURCE
+        selected, source=_SOURCE, **profiles.arguments(profile)
     )
     _need(
         type(expected) is NativeRoleIdentity0056V2
+        and _profile_for_original_roles_v1(actual) is profile
         and actual.server_incarnation_sha256 == expected.server_incarnation_sha256
         and actual.role_route_sha256 == expected.role_route_sha256
         and actual.observation.inherited_native_definitions_sha256
@@ -297,6 +418,7 @@ async def _project_terminal_report_0056_v1(
         factory, engine, names, _ = pins
         route = locked._direct_tls_route(engine)
         roles = await _require_matching_roles(selected, expected_roles)
+        profile = _profile_for_original_roles_v1(roles)
         async with asyncio.timeout(30):
             async with factory() as session, session.begin():
                 spool, report, policy, envelope = await _read_held(
@@ -370,6 +492,10 @@ async def _project_terminal_report_0056_v1(
             envelope,
             roles.server_incarnation_sha256,
             roles.role_route_sha256,
+            schema=profiles.schema(
+                profile, "ctcc.db0056.native_terminal_local_projection.v1"
+            ),
+            database_head=profiles.head(profile),
         )
     except (asyncio.CancelledError, NativeTerminalReport0056Error):
         raise

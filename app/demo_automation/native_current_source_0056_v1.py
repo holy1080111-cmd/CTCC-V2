@@ -46,7 +46,7 @@ class NativeCurrentSource0056Error(ValueError):
 @dataclass(frozen=True, slots=True)
 class NativeCurrentSource0056ObservationV1:
     receipt_sha256: str
-    database_head: Literal["0056"] = field(default="0056", init=False)
+    database_head: Literal["0056", "0057"] = field(default="0056")
     admission: Literal["DENY"] = field(default="DENY", init=False)
     account_complete: Literal[False] = field(default=False, init=False)
     execution_authority: Literal[False] = field(default=False, init=False)
@@ -107,7 +107,7 @@ def _readback_control(before, after):
     )
 
 
-def _source_packet_document(operands, plan, plan_sha):
+def _source_packet_document(operands, plan, plan_sha, *, profile=profiles.DB0056):
     _need(
         type(operands) is current.CurrentAccountOperandsV4
         and type(operands.packet) is capture.DemoAccountPacket
@@ -129,8 +129,10 @@ def _source_packet_document(operands, plan, plan_sha):
         "native_current_0056_packet_changed",
     )
     return {
-        "schema": "ctcc.demo.db0056.current_page_chain_observation.v1",
-        "database_head": "0056",
+        "schema": profiles.schema(
+            profile, "ctcc.demo.db0056.current_page_chain_observation.v1"
+        ),
+        "database_head": profiles.head(profile),
         "admission": "DENY",
         "plan_sha256": plan_sha,
         "packet_sha256": operands.reference.packet_sha256,
@@ -161,6 +163,7 @@ def _source_document(operands, plan, plan_sha, before, after):
 
 
 async def _observe_qualification_ledger(factories, roles, plan):
+    profile = selectors._profile_for_original_roles_0056(roles)
     scope = LedgerScope(
         environment="demo",
         account_id=plan.expected_uid,
@@ -176,6 +179,7 @@ async def _observe_qualification_ledger(factories, roles, plan):
             await transaction.rollback()
         _need(
             type(observation) is ledger56.NativeLedgerPreflight0056V1
+            and observation.database_head == profiles.head(profile)
             and observation.emergency_stop is True
             and observation.stored_arm_present is False
             and observation.execution_authority is False
@@ -188,6 +192,7 @@ async def _observe_qualification_ledger(factories, roles, plan):
 def _qualification_source_document(operands, plan, plan_sha, before, after):
     _need(
         type(before) is type(after) is ledger56.NativeLedgerPreflight0056V1
+        and before.database_head in ("0056", "0057")
         and before == replace(after, observed_at=before.observed_at)
         and before.emergency_stop is True
         and before.stored_arm_present is False
@@ -197,7 +202,10 @@ def _qualification_source_document(operands, plan, plan_sha, before, after):
         ),
         "native_qualification_0056_local_state_changed",
     )
-    source = _source_packet_document(operands, plan, plan_sha)
+    profile = profiles.DB0056 if before.database_head == "0056" else profiles.DB0057
+    source = _source_packet_document(
+        operands, plan, plan_sha, **profiles.arguments(profile)
+    )
     packet = operands.packet
     request_started_at = min(page.request_started_at for page in packet.observations)
     _need(
@@ -230,7 +238,9 @@ def _qualification_source_document(operands, plan, plan_sha, before, after):
     )
     return {
         **source,
-        "schema": "ctcc.demo.db0056.current_qualification_preflight.v1",
+        "schema": profiles.schema(
+            profile, "ctcc.demo.db0056.current_qualification_preflight.v1"
+        ),
         "control_observation_semantics": "ENDPOINTS_ONLY",
         "local_ledger": checkpoint,
         "local_ledger_sha256": sha(canonical(checkpoint)),
@@ -363,7 +373,13 @@ def _publish(
             directory.read(name, 32768) == payload,
             "native_current_0056_receipt_changed",
         )
-    return NativeCurrentSource0056ObservationV1(sha(payload))
+    _need(
+        document.get("database_head") in ("0056", "0057"),
+        "native_current_0056_head_required",
+    )
+    return NativeCurrentSource0056ObservationV1(
+        sha(payload), database_head=document["database_head"]
+    )
 
 
 async def observe_configured_current_account_0056_v1(
