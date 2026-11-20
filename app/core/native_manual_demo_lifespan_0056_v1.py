@@ -14,7 +14,8 @@ _SOURCE = Path(__file__).resolve().parents[2]
 _DISABLED = tuple(
     name
     for name in original._MUST_BE_FALSE
-    if name not in {"okx_demo_allow_order_writes", "okx_demo_auto_execution"}
+    if name
+    not in {"okx_demo_allow_order_writes", "okx_demo_auto_execution", "okx_ws_enabled"}
 ) + ("ctcc_native_only_lifespan_v1", "ctcc_local_analysis_only_v1")
 
 
@@ -40,7 +41,11 @@ def require_manual_demo_settings_0056_v1(settings):
         and all(getattr(settings, name, None) is False for name in _DISABLED)
         and all(
             type(getattr(settings, name, None)) is bool
-            for name in ("okx_demo_allow_order_writes", "okx_demo_auto_execution")
+            for name in (
+                "okx_demo_allow_order_writes",
+                "okx_demo_auto_execution",
+                "okx_ws_enabled",
+            )
         )
     )
 

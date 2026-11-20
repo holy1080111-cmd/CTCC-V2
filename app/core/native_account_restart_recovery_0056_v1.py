@@ -167,13 +167,13 @@ async def recover_configured_account_restart_0056_v1(
     instrument_id: str, *, reconcile_only: bool
 ) -> NativeAccountRestartRecovery0056V1:
     """Use the original signed selector; external position checks stay separate."""
-    from app.demo_automation.native_source_only_v1 import _dispose, _settings
+    from app.demo_automation.native_source_only_v1 import _dispose
 
     _need(type(reconcile_only) is bool)
     selection = factories = result = None
     failure = False
     try:
-        settings = _settings(instrument_id)
+        settings = _configured_restart_settings_0056(instrument_id)
         client = OkxDemoPrivateRestClient(settings=settings)
         with client.pinned_read_session() as lease:
             selection = await selectors.select_configured_demo_source_identity_0056_v1(
@@ -200,3 +200,25 @@ async def recover_configured_account_restart_0056_v1(
                     _uncertain()
                 _need(False)
     return result
+
+
+def _configured_restart_settings_0056(instrument_id):
+    """Manual startup and read-only source observation retain distinct policies."""
+    from app.config.settings import get_settings
+    from app.core.native_manual_demo_lifespan_0056_v1 import (
+        require_manual_demo_settings_0056_v1,
+    )
+    from app.demo_automation import native_source_only_v1 as source_only
+
+    settings = get_settings()
+    if getattr(settings, "ctcc_native_demo_manual_lifespan_0056_v1", False) is True:
+        require_manual_demo_settings_0056_v1(settings)
+        _need(
+            settings.okx_demo_credentials_configured is True
+            and settings.okx_demo_rest_base_url == source_only._ORIGIN
+            and settings.okx_demo_read_max_retries == 0
+            and type(instrument_id) is str
+            and instrument_id in settings.okx_demo_allowed_symbol_list
+        )
+        return settings
+    return source_only._settings(instrument_id)

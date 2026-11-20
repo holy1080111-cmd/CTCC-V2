@@ -111,3 +111,31 @@ def test_manual_and_monitor_profiles_cannot_be_combined(monkeypatch):
     main.settings.ctcc_native_only_lifespan_v1 = True
     with pytest.raises(RuntimeError, match="runtime_profile_conflict"):
         main._build_app()
+
+
+@pytest.mark.asyncio
+async def test_manual_lifespan_never_launches_background_ws_or_workers(monkeypatch):
+    from app.core import native_manual_demo_lifespan_0056_v1 as startup
+
+    instance = app(monkeypatch, ready=False)
+    main.settings.okx_ws_enabled = True
+    start = AsyncMock()
+    stop = AsyncMock()
+    dispose = AsyncMock()
+    background_ws = AsyncMock()
+    outbox = AsyncMock()
+    monkeypatch.setattr(startup, "start_manual_demo_0056_v1", start)
+    monkeypatch.setattr(main.safe_demo_automation, "stop", stop)
+    monkeypatch.setattr(main.engine, "dispose", dispose)
+    monkeypatch.setattr(main.realtime_client, "start", background_ws)
+    monkeypatch.setattr(main.notion_outbox_runtime, "start", outbox)
+    async with main.lifespan(instance):
+        assert instance.state.native_manual_demo_recovery_confirmed is True
+        start.assert_awaited_once_with(
+            main.settings, main.AsyncSessionFactory, main.safe_demo_automation
+        )
+    assert instance.state.native_manual_demo_recovery_confirmed is False
+    stop.assert_awaited_once()
+    dispose.assert_awaited_once()
+    background_ws.assert_not_awaited()
+    outbox.assert_not_awaited()

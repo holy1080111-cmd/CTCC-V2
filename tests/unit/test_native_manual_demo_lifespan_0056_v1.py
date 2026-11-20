@@ -22,6 +22,7 @@ def settings(**changes):
                 "api_token_is_safe": True,
                 "okx_demo_allow_order_writes": False,
                 "okx_demo_auto_execution": False,
+                "okx_ws_enabled": False,
                 "okx_demo_scan_symbol_list": ["BTC-USDT-SWAP"],
             }
             | changes
@@ -55,6 +56,48 @@ def test_unknown_or_other_environment_denied(change):
 
 def test_default_off_writes_can_start_disarmed_manual_control():
     manual.require_manual_demo_settings_0056_v1(settings())
+
+
+def test_request_owned_ws_capability_does_not_require_a_background_service():
+    manual.require_manual_demo_settings_0056_v1(settings(okx_ws_enabled=True))
+
+
+@pytest.mark.parametrize(
+    "fault", [None, "origin", "credentials", "retry", "instrument", "mixed"]
+)
+def test_actual_account_restart_settings_accept_only_the_explicit_manual_policy(
+    monkeypatch, fault
+):
+    from app.config import settings as configured
+    from app.core import native_account_restart_recovery_0056_v1 as recovery
+    from app.demo_automation import native_source_only_v1 as source_only
+
+    config = settings()
+    config.okx_demo_credentials_configured = fault != "credentials"
+    config.okx_demo_rest_base_url = (
+        "https://unexpected.invalid" if fault == "origin" else source_only._ORIGIN
+    )
+    config.okx_demo_read_max_retries = 1 if fault == "retry" else 0
+    config.okx_demo_allowed_symbol_list = ["BTC-USDT-SWAP"]
+    if fault == "mixed":
+        config.ctcc_native_only_lifespan_v1 = True
+    monkeypatch.setattr(configured, "get_settings", lambda: config)
+
+    def readonly_must_not_be_reinterpreted(_instrument):
+        raise AssertionError("manual startup used the read-only source policy")
+
+    monkeypatch.setattr(source_only, "_settings", readonly_must_not_be_reinterpreted)
+    instrument = "ETH-USDT-SWAP" if fault == "instrument" else "BTC-USDT-SWAP"
+    if fault is None:
+        assert recovery._configured_restart_settings_0056(instrument) is config
+    else:
+        with pytest.raises(
+            (
+                recovery.NativeAccountRestartRecovery0056Error,
+                manual.NativeManualDemoStartup0056Error,
+            )
+        ):
+            recovery._configured_restart_settings_0056(instrument)
 
 
 def lab(monkeypatch):
