@@ -176,26 +176,31 @@ async def _profile(session, pins):
     functions = (
         await session.execute(
             text("""SELECT p.proname::text,p.proowner::bigint,
-      encode(sha256(convert_to(p.prosrc,'UTF8')),'hex'),p.prosecdef,p.proconfig,p.prokind,p.proleakproof
+      encode(sha256(convert_to(p.prosrc,'UTF8')),'hex'),p.prosecdef,p.proconfig,p.prokind::text,p.proleakproof
       FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
       WHERE n.nspname='public' AND p.proname=ANY(CAST(:names AS text[]))"""),
             {"names": list(expected_functions)},
         )
     ).all()
-    _need(
-        len(functions) == len(expected_functions)
-        and all(
-            tuple(item[1:])
-            == (
-                pins.owner_oid,
-                *expected_functions[item[0]],
-                ["search_path=pg_catalog, pg_temp"],
-                "f",
-                False,
-            )
-            for item in functions
+    _need(len(functions) == len(expected_functions))
+    for item in functions:
+        expected = (
+            pins.owner_oid,
+            *expected_functions[item[0]],
+            ["search_path=pg_catalog, pg_temp"],
+            "f",
+            False,
         )
-    )
+        for actual, required, field in zip(
+            item[1:],
+            expected,
+            ("owner", "source", "security_mode", "search_path", "kind", "leakproof"),
+            strict=True,
+        ):
+            if actual != required:
+                # Fixed catalog-field codes keep operational errors useful
+                # without logging private rows, IDs, SQL text or source bytes.
+                raise LiveLedgerDataError("native_live_function_" + field + "_changed")
     tables = (
         await session.execute(
             text("""SELECT c.relname::text,c.relowner::bigint,c.relkind::text,c.relrowsecurity,c.relforcerowsecurity
