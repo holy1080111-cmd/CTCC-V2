@@ -1,0 +1,53 @@
+name: DB0058 migration and Live DATA probe
+
+on:
+  push:
+    branches: [work/db0058-migration-probe]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  migration-probe:
+    if: github.ref == 'refs/heads/work/db0058-migration-probe'
+    name: DB0058 isolated migration probe ${{ matrix.cluster }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        cluster: [1, 2]
+    steps:
+      - name: Checkout exact diagnostic source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run bounded migration and DATA ledger proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          commit=$(git rev-parse HEAD)
+          test "$commit" = "$GITHUB_SHA"
+          tree=$(git rev-parse 'HEAD^{tree}')
+          archive="$RUNNER_TEMP/ctcc-source.tar"
+          git -c core.autocrlf=false -c core.eol=lf archive --format=tar --output="$archive" "$commit"
+          digest=$(sha256sum "$archive" | cut -d ' ' -f 1)
+          python3 -m scripts.run_db0058_migration_probe_v1 \
+            --archive "$archive" --archive-sha256 "$digest" \
+            --commit "$commit" --tree "$tree" \
+            --output "$RUNNER_TEMP/ctcc-migration58-probe"
+
+      - name: Preserve exact diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ctcc-db0058-migration-probe-${{ matrix.cluster }}-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/ctcc-source.tar
+            ${{ runner.temp }}/ctcc-migration58-probe/*.json
+            ${{ runner.temp }}/ctcc-migration58-probe/*.log
+            ${{ runner.temp }}/ctcc-migration58-probe/test-results/*.xml
+          if-no-files-found: error
+          retention-days: 30

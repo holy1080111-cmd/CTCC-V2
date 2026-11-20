@@ -61,6 +61,22 @@ class QualificationSubmissionOutcome(Base):
             unique=_CLOSE_INTENT_INDEX["unique"],
             postgresql_where=text(_CLOSE_INTENT_INDEX["predicate"]),
         ),
+        Index(
+            "qualification_native_protected_hold_once_v58",
+            "reservation_id",
+            unique=True,
+            postgresql_where=text(
+                "(capture_json::jsonb ->> 'version') = 'ctcc.native_protected_hold.v1'"
+            ),
+        ),
+        Index(
+            "qualification_native_protective_flat_once_v58",
+            "reservation_id",
+            unique=True,
+            postgresql_where=text(
+                "(capture_json::jsonb ->> 'version') = 'ctcc.native_protective_flat_closure.v1'"
+            ),
+        ),
     )
     outcome_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     reservation_id: Mapped[str] = mapped_column(

@@ -1,0 +1,13 @@
+"""Exact additive protected-hold and separate Live DATA ledger migration."""
+
+HEAD = "0058"
+PARENT = "0057"
+MIGRATION_PATH = "migrations/versions/0058_protected_hold_and_live_intent.py"
+MIGRATION_SHA256 = "3f2d3d6804ce7a31af372e72b3db28410294f80375da835554ce4686afae3989"
+MIGRATION_INVENTORY_SHA256 = (
+    "a985d5b0a2675bb5f23b94d051697e8ef32b07b2d4f44586a441a27c0fb44729"
+)
+MIGRATION_INVENTORY_COUNT = 59
+PARENT_INVENTORY_SHA256 = (
+    "9eb2582dd453d85c996a1f2d314325300459b9d40538469f64ef5c64debac42f"
+)

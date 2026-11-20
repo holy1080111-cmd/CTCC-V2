@@ -75,6 +75,12 @@ from app.database.models.native_leverage_configuration import (
     NativeLeverageConfigurationIntentV1,
     NativeLeverageConfigurationResultV1,
 )
+from app.database.models.native_live_ledger_v1 import (
+    NativeLiveControlV1,
+    NativeLiveIntentV1,
+    NativeLiveReservationV1,
+    NativeLiveTransitionV1,
+)
 from app.database.models.observability import DemoObservabilityEvent, DemoSoakSession
 from app.database.models.okx_demo import (
     OkxDemoAlgoOrderState,
@@ -197,6 +203,10 @@ __all__ = [
     "NativeLeverageConfigurationAttemptV1",
     "NativeLeverageConfigurationIntentV1",
     "NativeLeverageConfigurationResultV1",
+    "NativeLiveControlV1",
+    "NativeLiveIntentV1",
+    "NativeLiveReservationV1",
+    "NativeLiveTransitionV1",
     "OkxDemoAlgoOrderState",
     "OkxDemoBalanceState",
     "OkxDemoOrderState",
