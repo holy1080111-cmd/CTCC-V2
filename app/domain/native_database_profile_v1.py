@@ -11,10 +11,12 @@ from pathlib import Path
 class NativeDatabaseProfileV1(Enum):
     DB0056 = "0056"
     DB0057 = "0057"
+    DB0058 = "0058"
 
 
 DB0056 = NativeDatabaseProfileV1.DB0056
 DB0057 = NativeDatabaseProfileV1.DB0057
+DB0058 = NativeDatabaseProfileV1.DB0058
 
 
 def checked(profile: NativeDatabaseProfileV1) -> NativeDatabaseProfileV1:
@@ -25,6 +27,13 @@ def checked(profile: NativeDatabaseProfileV1) -> NativeDatabaseProfileV1:
 
 def head(profile: NativeDatabaseProfileV1) -> str:
     return checked(profile).value
+
+
+def from_head(value: str) -> NativeDatabaseProfileV1:
+    """Closed DATA dispatch only; the caller must verify original SQL custody."""
+    if type(value) is not str or value not in ("0056", "0057", "0058"):
+        raise ValueError("native_database_profile_unsupported") from None
+    return NativeDatabaseProfileV1(value)
 
 
 def schema(profile: NativeDatabaseProfileV1, previous: str) -> str:
@@ -57,7 +66,7 @@ def grant_plan(profile, names):
     plan = inherited + lifecycle
     if len(plan) != 42:
         raise ValueError("native_database_profile_acl_changed") from None
-    if profile is DB0057:
+    if profile in (DB0057, DB0058):
         from scripts import current0057_native_g12_acl_v1 as successor
 
         checked_previous, delta = successor._plans(*names)
@@ -87,6 +96,7 @@ async def require_exact_acl(
             frame_reader=names[2],
             expected_writer_oid=writer_oid,
             read_only=read_only,
+            **({"profile": profile} if profile is DB0058 else {}),
         )
 
 
@@ -97,10 +107,13 @@ def require_migration(profile, source: Path):
     pinned_migration(source)
     from scripts import current0056_migration_pin as previous
     from scripts import current0057_migration_pin as successor
+    from scripts import current0058_migration_pin as protective
     from scripts.verify_migration_identity import source_identity
 
     identity = source_identity(source)
-    expected = previous if identity.head == "0056" else successor
+    choices = {DB0056: previous, DB0057: successor, DB0058: protective}
+    actual = from_head(identity.head)
+    expected = choices[actual]
     files = sorted((source / "migrations").rglob("*.py"))
     inventory = {
         path.relative_to(source).as_posix(): hashlib.sha256(
@@ -108,27 +121,25 @@ def require_migration(profile, source: Path):
         ).hexdigest()
         for path in files
     }
-    prefix = {
-        path: digest
-        for path, digest in inventory.items()
-        if path != successor.MIGRATION_PATH
-    }
-    prefix_sha = hashlib.sha256(
-        json.dumps(prefix, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
     if (
-        identity.head not in {"0056", "0057"}
-        or identity.sha256 != expected.MIGRATION_INVENTORY_SHA256
+        identity.sha256 != expected.MIGRATION_INVENTORY_SHA256
         or len(files) != expected.MIGRATION_INVENTORY_COUNT
-        or (profile is DB0057 and identity.head != "0057")
-        or (
-            identity.head == "0057"
-            and (
-                inventory.get(successor.MIGRATION_PATH) != successor.MIGRATION_SHA256
-                or len(prefix) != previous.MIGRATION_INVENTORY_COUNT
-                or prefix_sha != previous.MIGRATION_INVENTORY_SHA256
-            )
-        )
+        or tuple(choices).index(actual) < tuple(choices).index(profile)
         or source_identity(source) != identity
     ):
         raise ValueError("native_database_profile_migration_changed") from None
+    prefix = dict(inventory)
+    for selected, parent in ((DB0058, DB0057), (DB0057, DB0056)):
+        if tuple(choices).index(actual) < tuple(choices).index(selected):
+            continue
+        pin, older = choices[selected], choices[parent]
+        if prefix.pop(pin.MIGRATION_PATH, None) != pin.MIGRATION_SHA256:
+            raise ValueError("native_database_profile_migration_changed") from None
+        digest = hashlib.sha256(
+            json.dumps(prefix, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        if (
+            len(prefix) != older.MIGRATION_INVENTORY_COUNT
+            or digest != older.MIGRATION_INVENTORY_SHA256
+        ):
+            raise ValueError("native_database_profile_migration_changed") from None
