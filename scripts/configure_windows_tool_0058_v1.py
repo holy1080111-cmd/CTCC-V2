@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ctypes
 import getpass
+import re
 import secrets
 import sys
 from pathlib import Path
@@ -69,6 +70,55 @@ def _path(label):
     return path
 
 
+def _new_notion_outbox(root):
+    from app.trade_evidence.native_private_root_v2 import (
+        mkdir_private_evidence_child_v2,
+    )
+    from app.trade_qualification.account_native_proof_storage import _root_context
+
+    with _root_context(root) as directory:
+        mkdir_private_evidence_child_v2(directory, "notion-outbox")
+    return root / "notion-outbox"
+
+
+def _link_existing_notion(values, root):
+    """Optional existing private locators for one NEW profile; no remote IO."""
+    values.update(notion_outbox_enabled=False, submission_outbox_enabled=False)
+    selected = input(
+        "報告同步：1 略過，2 連結這台電腦已核對的 Notion 設定（預設 1）："
+    ).strip()
+    package.need(selected in ("", "1", "2"))
+    if selected != "2":
+        return
+    destination_file = _path("既有 Notion 目的地設定檔路徑")
+    expected = input("這份目的地設定檔已核對的 SHA256：").strip().lower()
+    package.need(re.fullmatch(r"[a-f0-9]{64}", expected) is not None)
+    token_file = _path("既有 Notion 權杖檔路徑（不是權杖內容）")
+    package.need(destination_file != token_file)
+    from app.trade_evidence import notion_binding as binding
+    from app.trade_evidence import storage
+
+    # Close each private-file lease before the next independent read; the
+    # destination and token may share one protected parent on Windows.
+    with binding.private_file(destination_file) as fd:
+        raw = storage._read_fd(fd, 16384)
+    package.need(package.sha(raw) == expected)
+    # This frozen model verifies exactly four distinct property IDs/names and
+    # their title/rich_text roles. The independent worker must verify real GET
+    # binding afresh when it is explicitly activated.
+    binding.load_destination(destination_file, expected)
+    binding.load_private_token(token_file)
+    outbox = _new_notion_outbox(root)
+    values.update(
+        notion_outbox_destination_file=str(destination_file),
+        notion_outbox_destination_sha256=expected,
+        notion_outbox_token_file=str(token_file),
+        notion_outbox_root=str(outbox),
+        submission_outbox_root=str(outbox),
+    )
+    print("既有設定已連結；同步程式與報告佇列仍關閉，沒有送出任何內容。")
+
+
 def configure(package_root, identity, mode, port):
     from app.config.settings import Settings
     from app.config.windows_tool_profile_0058_v1 import SCHEMA, _values
@@ -118,6 +168,7 @@ def configure(package_root, identity, mode, port):
         package.need(selected_profile in ("", "1", "2"))
         values["ctcc_demo_high_vol_momentum_v2"] = selected_profile == "2"
         print("策略設定只會寫入新設定檔；仍需完整對帳、空倉檢查與人工啟動。")
+        _link_existing_notion(values, root)
     if mode == "live":
         print("Live 預設關閉。尚未配置專用 Live 角色及金鑰時，直接按 Enter。")
         filename = input("已審核的 Live 私人 runtime 設定檔路徑（可空白）：")
