@@ -36,7 +36,22 @@ REQUIRED_CASES = tuple(
         "test_actual58_forged_intent_authority_rolls_back_hold_and_journal",
         "test_actual58_postcommit_readback_failure_keeps_intent_and_never_retries",
         "test_actual58_estop_or_expiry_refuses_before_creating_any_hold",
-        "test_actual58_direct_sql_cannot_make_null_armed_or_unknown_caps",
+        *(
+            "test_actual58_direct_sql_cannot_make_null_armed_or_unknown_caps["
+            + mutation
+            + "]"
+            for mutation in (
+                "arm_expires_at=NULL",
+                "arm_id=NULL",
+                "per_trade_risk_cap=NULL",
+                "per_trade_risk_cap='NaN'::numeric",
+                "portfolio_risk_cap='NaN'::numeric",
+                "margin_cap='NaN'::numeric",
+                "micro_notional_cap='Infinity'::numeric",
+                "portfolio_risk_cap=0.1",
+                "margin_cap=-1",
+            )
+        ),
         "test_actual58_downgrade_refuses_retained_control_without_deleting_custody",
         "test_actual58_effective_maintain_drift_blocks_data_hold",
         "test_actual58_negative_procedures_cannot_arm_or_clear_estop",

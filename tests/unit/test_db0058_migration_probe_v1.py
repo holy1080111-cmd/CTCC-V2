@@ -2,6 +2,7 @@
 
 import io
 import tarfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -53,7 +54,7 @@ def test_probe_admits_actual58_prefix_without_claiming_full_acceptance(tmp_path)
     raw, files = probe.admit_archive(args)
     assert probe.sha(raw) == args.archive_sha256
     assert files[probe.pins.MIGRATION_PATH]["sha256"] == probe.pins.MIGRATION_SHA256
-    assert len(probe.REQUIRED_CASES) == 9
+    assert len(probe.REQUIRED_CASES) == 17
 
 
 @pytest.mark.parametrize("change", ["migration", "runner", "extra_migration"])
@@ -74,3 +75,29 @@ def test_probe_rejects_changed_external_source_pins(tmp_path, field):
     setattr(args, field, "f" * (40 if field in ("tree", "commit") else 64))
     with pytest.raises(ValueError):
         probe.admit_archive(args)
+
+
+@pytest.mark.parametrize("omitted", (None, *range(4, 13)))
+def test_parameterized_caps_each_require_their_own_passed_junit_case(tmp_path, omitted):
+    cases = tuple(
+        case for index, case in enumerate(probe.REQUIRED_CASES) if index != omitted
+    )
+    root = ET.Element("testsuites")
+    suite = ET.SubElement(
+        root, "testsuite", tests=str(len(cases)), failures="0", errors="0", skipped="0"
+    )
+    for module, name in cases:
+        ET.SubElement(suite, "testcase", classname=module, name=name)
+    path = tmp_path / "DECLARED_SYNTHETIC_CAP_RESULTS.xml"
+    path.write_bytes(ET.tostring(root, encoding="utf-8", xml_declaration=True))
+    if omitted is None:
+        checked = probe.shared.verify_pytest_report(
+            path, required_cases=probe.REQUIRED_CASES
+        )
+        assert checked["tests"] == checked["passed"] == 17
+    else:
+        # All retained cases pass; a missing single NULL/NaN/cap case still fails.
+        with pytest.raises(
+            ValueError, match="^pytest_required_execution_not_verified$"
+        ):
+            probe.shared.verify_pytest_report(path, required_cases=probe.REQUIRED_CASES)
