@@ -83,6 +83,14 @@ OWNER_UPGRADE_CASES = tuple(
         "test_actual0057_owner58_unreviewed_live_access_rolls_back_without_granting_or_commit",
     )
 )
+ORIGINAL_OCO_REPORT_CASES = tuple(
+    ("tests.integration.test_native_original_oco_reporting_0058_pg", name)
+    for name in (
+        "test_actual0058_original_oco_report_spool_replays_without_own_close_intent",
+        "test_actual0058_original_oco_reporting_guard_refuses_foreign_forensics",
+        "test_actual0058_original_oco_report_policy_refuses_rehashed_changed_analysis",
+    )
+)
 SUCCESSOR_CASES = (
     *base.SUCCESSOR_CASES,
     *live_cases.REQUIRED_CASES,
@@ -92,6 +100,7 @@ SUCCESSOR_CASES = (
     *BINDING_CASES,
     *ORIGINAL_OCO_CASES,
     *OWNER_UPGRADE_CASES,
+    *ORIGINAL_OCO_REPORT_CASES,
     (
         "tests.integration.test_native_protective_hold_schema_v58_pg",
         "test_actual0058_original_oco_predicate_compiles_and_missing_targets_never_resolve",
@@ -106,6 +115,7 @@ REQUIRED_CASES = (
     *BINDING_CASES,
     *ORIGINAL_OCO_CASES,
     *OWNER_UPGRADE_CASES,
+    *ORIGINAL_OCO_REPORT_CASES,
     SUCCESSOR_CASES[-1],
 )
 HISTORICAL_REPORTS = base.HISTORICAL_REPORTS

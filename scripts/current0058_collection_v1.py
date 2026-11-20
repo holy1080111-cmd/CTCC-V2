@@ -21,6 +21,7 @@ SUCCESSOR_PATHS = frozenset(
         "tests/integration/test_native_demo_profile_0058_pg.py",
         "tests/integration/test_native_submission_binding_0058_pg.py",
         "tests/integration/test_native_original_oco_public_0058_pg.py",
+        "tests/integration/test_native_original_oco_reporting_0058_pg.py",
         "tests/integration/test_native_protective_hold_schema_v58_pg.py",
         "tests/integration/test_g12_restricted_writer_0057_pg.py",
         "tests/integration/test_owned_history_profiles0057_pg.py",

@@ -2,7 +2,7 @@ name: DB0058 owner regression probe
 
 on:
   push:
-    branches: [work/db0058-owner-regression-probe]
+    branches: [work/db0058-owner-regression-probe, work/db0058-report-regression-probe]
   workflow_dispatch:
 
 permissions:
@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   owner-regression:
-    if: github.ref == 'refs/heads/work/db0058-owner-regression-probe'
+    if: github.ref == 'refs/heads/work/db0058-owner-regression-probe' || github.ref == 'refs/heads/work/db0058-report-regression-probe'
     name: Exact source PostgreSQL component 2
     runs-on: ubuntu-24.04
     timeout-minutes: 40

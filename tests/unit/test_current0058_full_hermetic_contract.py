@@ -184,6 +184,8 @@ def test_source58_selection_executes_every_old_and_new_required_case_exactly_onc
     assert len(full.live_cases.REQUIRED_FINANCIAL_CASES) == 11
     assert set(full.live_cases.REQUIRED_FINANCIAL_CASES) <= set(full.REQUIRED_CASES)
     assert len(full.BINDING_CASES) == 13
+    assert len(full.ORIGINAL_OCO_REPORT_CASES) == 3
+    assert set(full.ORIGINAL_OCO_REPORT_CASES) <= set(full.REQUIRED_CASES)
     assert all(
         full.collection.selected_for(
             "postgres", 2, module.replace(".", "/") + ".py::" + name
