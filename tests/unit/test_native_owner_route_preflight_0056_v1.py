@@ -7,12 +7,14 @@ import os
 import stat
 from dataclasses import replace
 from pathlib import Path
+from shutil import copy2, copytree
 from types import SimpleNamespace
 
 import certifi
 import pytest
 
 from app.domain import native_database_profile_v1 as profiles
+from scripts import manifest
 from scripts import native_owner_route_preflight_0056_v1 as subject
 from scripts.current_contract_source_scopes_v1 import (
     actual_current_source_scope as real_source_scope,
@@ -77,22 +79,46 @@ def test_exact_source_route_ca_and_secret_are_prepared_without_connection(
 
 
 def test_preflight_binds_actual_manifest_and_migration_source(
-    prepared_files, monkeypatch
+    prepared_files, monkeypatch, tmp_path
 ):
     pins, secret, ca, _ = prepared_files
-    manifest = subject._SOURCE_ROOT / "MANIFEST.sha256"
+    source = tmp_path / "source"
+    source.mkdir()
+    copy2(subject._SOURCE_ROOT / "alembic.ini", source / "alembic.ini")
+    copytree(
+        subject._SOURCE_ROOT / "migrations",
+        source / "migrations",
+        ignore=lambda _root, names: {"__pycache__"} & set(names),
+    )
+    manifest.write_manifest(source, source / "MANIFEST.sha256")
+    monkeypatch.setattr(subject, "_SOURCE_ROOT", source)
+    manifest_path = source / "MANIFEST.sha256"
     pins = replace(
-        pins, source_manifest_sha256=hashlib.sha256(manifest.read_bytes()).hexdigest()
+        pins,
+        source_manifest_sha256=hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
     )
     monkeypatch.setattr(subject, "actual_current_source_scope", real_source_scope)
-    with pytest.raises(subject.OwnerRoutePreflightError):
-        subject._prepare(pins, owner_dsn_file=secret, ca_file=ca)
+    historical = subject._prepare(pins, owner_dsn_file=secret, ca_file=ca)
+    assert historical.source_head == "0057" and pins.database_head == "0056"
     prepared = subject._prepare(
         pins, owner_dsn_file=secret, ca_file=ca, profile=profiles.DB0057
     )
     assert prepared.manifest_sha256 == pins.source_manifest_sha256
     assert prepared.migration_sha256 != _MIGRATION
     assert prepared.source_head == "0057"
+
+
+def test_default56_profile_cannot_prepare_physical57(prepared_files, monkeypatch):
+    pins, secret, ca, _ = prepared_files
+    monkeypatch.setattr(
+        subject,
+        "_private_owner_url",
+        lambda _: pytest.fail("physical57 reached historical owner input"),
+    )
+    with pytest.raises(subject.OwnerRoutePreflightError):
+        subject._prepare(
+            replace(pins, database_head="0057"), owner_dsn_file=secret, ca_file=ca
+        )
 
 
 @pytest.mark.parametrize("database_head", ["0056", "0057"])

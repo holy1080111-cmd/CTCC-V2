@@ -31,7 +31,11 @@ from app.database.native_pg_tls_v1 import (
     verified_native_pg_tls_context_v1,
 )
 from app.domain import native_database_profile_v1 as profiles
-from scripts.current_contract_source_scopes_v1 import actual_current_source_scope
+from scripts.current_contract_source_scopes_v1 import (
+    ContractSourceScopeV1,
+    actual_current_source_scope,
+    database0056_source_scope,
+)
 
 _SOURCE_ROOT = Path(__file__).resolve().parents[1]
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z", re.ASCII)
@@ -119,7 +123,24 @@ def _source_for_profile(profile):
     profiles.checked(profile)
     if profile is profiles.DB0056:
         with redirect_stdout(io.StringIO()):
-            return actual_current_source_scope(_SOURCE_ROOT)
+            current = actual_current_source_scope(_SOURCE_ROOT)
+            if current.actual_source_head == "0056":
+                return current
+            historical = database0056_source_scope(_SOURCE_ROOT)
+        if (
+            type(current) is not ContractSourceScopeV1
+            or type(historical) is not ContractSourceScopeV1
+            or current.actual_source_head != "0057"
+            or current.database_target != "0057"
+            or historical.actual_source_head != "0057"
+            or historical.database_target != "0056"
+            or historical.manifest_sha256 != current.manifest_sha256
+            or historical.actual_migration_sha256 != current.actual_migration_sha256
+            or historical.account_complete is not False
+            or historical.execution_authority is not False
+        ):
+            _deny()
+        return historical
     from scripts import manifest
     from scripts.verify_migration_identity import source_identity
 
@@ -205,7 +226,15 @@ def _prepare(
             _deny()
         source = _source_for_profile(profile)
         if (
-            source.actual_source_head != profiles.head(profile)
+            (
+                source.actual_source_head != profiles.head(profile)
+                and not (
+                    profile is profiles.DB0056
+                    and type(source) is ContractSourceScopeV1
+                    and source.actual_source_head == "0057"
+                    and source.database_target == "0056"
+                )
+            )
             or source.manifest_sha256 != pins.source_manifest_sha256
             or source.execution_authority is not False
         ):

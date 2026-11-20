@@ -292,6 +292,7 @@ async def test_postcommit_readback_failure_is_incomplete_not_second_upgrade(
     pins = _pins()
     route = SimpleNamespace(
         url="synthetic",
+        source_head="0056",
         manifest_sha256=pins.route.source_manifest_sha256,
         migration_sha256="f" * 64,
         route_sha256="1" * 64,

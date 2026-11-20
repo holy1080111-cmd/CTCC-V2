@@ -61,6 +61,16 @@ class LabOwnerMigration0056Result:
     startup_admission: Literal[False] = field(default=False, init=False)
     execution_authority: Literal[False] = field(default=False, init=False)
 
+    @property
+    def source_head(self):
+        from scripts import current0056_migration_pin as previous
+        from scripts import current0057_migration_pin as successor
+
+        for pin in (previous, successor):
+            if self.migration_sha256 == pin.MIGRATION_INVENTORY_SHA256:
+                return pin.HEAD
+        _need(False)
+
 
 def _need(condition: bool) -> None:
     if condition is not True:
@@ -83,9 +93,10 @@ def _prepare(owner_url: URL, ca_file: Path, ca_sha256: str, manifest_sha256: str
         and _HEX.fullmatch(manifest_sha256) is not None
     )
     tls = verified_native_pg_tls_context_v1(ca_file, ca_sha256)
-    scope = source_scopes.actual_current_source_scope(_SOURCE)
+    scope = source_scopes.database0056_source_scope(_SOURCE)
     _need(
-        scope.actual_source_head == scope.database_target == "0056"
+        scope.actual_source_head in {"0056", "0057"}
+        and scope.database_target == "0056"
         and scope.manifest_sha256 == manifest_sha256
         and scope.account_complete is scope.execution_authority is False
     )
@@ -95,7 +106,7 @@ def _prepare(owner_url: URL, ca_file: Path, ca_sha256: str, manifest_sha256: str
     config.set_main_option("script_location", str(_SOURCE / "migrations"))
     script = ScriptDirectory.from_config(config)
     _need(
-        tuple(script.get_heads()) == ("0056",)
+        tuple(script.get_heads()) == (scope.actual_source_head,)
         and script.get_revision("0056").down_revision == "0055"
     )
     return tls, scope, script
@@ -143,7 +154,7 @@ async def migrate_fresh_lab_owner_0056_v1(
                 await connection.run_sync(
                     source_scopes.verify_database_scope, _SOURCE, scope
                 )
-            _need(source_scopes.actual_current_source_scope(_SOURCE) == scope)
+            _need(source_scopes.database0056_source_scope(_SOURCE) == scope)
         return LabOwnerMigration0056Result(
             tls_context=tls,
             migration_sha256=scope.actual_migration_sha256,

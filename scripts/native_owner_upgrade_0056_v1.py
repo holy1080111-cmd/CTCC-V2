@@ -209,9 +209,10 @@ def _prepared(
     _verify_reviewed_archive(pins, archive_file)
     with redirect_stdout(io.StringIO()):
         before = scopes.database0055_source_scope(_SOURCE)
-        after = scopes.actual_current_source_scope(_SOURCE)
+        after = scopes.database0056_source_scope(_SOURCE)
     _need(
-        before.actual_source_head == after.actual_source_head == "0056"
+        before.actual_source_head == after.actual_source_head == route.source_head
+        and route.source_head in {"0056", "0057"}
         and before.database_target == "0055"
         and after.database_target == "0056"
         and before.manifest_sha256 == after.manifest_sha256 == route.manifest_sha256
@@ -223,7 +224,7 @@ def _prepared(
     config.set_main_option("script_location", str(_SOURCE / "migrations"))
     script = ScriptDirectory.from_config(config)
     _need(
-        tuple(script.get_heads()) == ("0056",)
+        tuple(script.get_heads()) == (route.source_head,)
         and script.get_revision("0056").down_revision == "0055"
     )
     return route, before, after, script
@@ -234,7 +235,7 @@ def _checked_preflight(value: dict, route, pins: OwnerRoutePinsV1) -> None:
         type(value) is dict
         and value.get("schema") == "ctcc.native_owner_0056.route_preflight.v1"
         and value.get("status") == "PASS"
-        and value.get("source_head") == "0056"
+        and value.get("source_head") == route.source_head
         and value.get("source_manifest_sha256") == route.manifest_sha256
         and value.get("migration_sha256") == route.migration_sha256
         and value.get("database_head") == pins.database_head
@@ -405,7 +406,7 @@ async def upgrade_owner_0055_to_0056_v1(
         raise NativeOwnerUpgradePostcommitIncomplete(
             "native_owner_0056_committed_readback_required"
         ) from None
-    return {
+    receipt = {
         "schema": "ctcc.native_owner_0056.migration_commit_readback.v1",
         "status": "PASS",
         "source_commit": pins.source_commit,
@@ -423,6 +424,13 @@ async def upgrade_owner_0055_to_0056_v1(
         "startup_admission": False,
         "execution_authority": False,
     }
+    if prepared[0].source_head == "0057":
+        receipt.update(
+            source_head="0057",
+            database_target="0056",
+            database_migration_prefix_sha256=prepared[2].historical_prefix_sha256,
+        )
+    return receipt
 
 
 class _PrivateParser(argparse.ArgumentParser):
