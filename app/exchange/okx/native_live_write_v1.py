@@ -35,6 +35,7 @@ from app.domain.native_live_legacy_safety_v1 import (
     require_legacy_live_negative_fence_v1,
 )
 from app.domain.source_primitives import (
+    ClockStamp,
     canonical,
     decode,
     sha,
@@ -65,6 +66,7 @@ _ACTIVE = ContextVar("ctcc_owned_live_physical_v1", default=None)
 _ORDER_PATH = "/api/v5/trade/order"
 _MAX_ENTRY_WIRE_V2 = 16 * 1024
 _MAX_ENTRY_WIRE_CHUNKS_V2 = 16
+_MAX_RESPONSE_READ_NS_V2 = 10_000_000_000
 _COORDINATOR = "app.okx_live.owned_qualification_v1"
 # This existing API-integrity cache has one source-owned mutable slot. Its
 # namespace binding never changes and therefore remains fully source guarded.
@@ -552,6 +554,88 @@ def _capture_preparation_prefix_v2(module):
     return tuple(pins)
 
 
+def _require_retained_response_identity_v2(gate, *, key):
+    """Original negative owner identity only; no current execution eligibility.
+
+    A complete already-submitted request may receive DATA after disarm, EStop,
+    revocation or qualification expiry. The original task/context, held database
+    transaction, source/configuration/credential/API/vendor and immutable intent
+    lineage must still match. This scope cannot reach any actual write method.
+    """
+    record = _require_held_gate_scope_v2(gate, key=key)
+    module, _calls = _require_api_integrity_v2(record["api"])
+    _need(module._NATIVE_GUARD is record["native_source_guard"])
+    check_saved_native_guard_identity_v2(record)
+    _require_preparation_prefix_v2(record, module)
+    facts = record["facts"]
+    qualification = module._QUALIFIED.get(record["owner"])
+    _need(
+        type(qualification) is dict
+        and qualification is record["preparation_qualification"]
+        and qualification["facts"] is facts
+        and qualification["spent"] is True
+        and type(qualification["revoked"]) is bool
+        and qualification["session"] is record["preparation_session"]
+    )
+    selected_state = module._OWNED.get(qualification["session"])
+    _need(
+        type(selected_state) is dict
+        and selected_state["source_owner"] is facts.source_owner
+        and selected_state["current_public_owner"] is facts.public_owner
+    )
+    # The ORIGINAL non-current session path checks task/cancellation, runtime,
+    # settings, credential lease, configured source and causal clocks. It does
+    # not replay math or require the old Arm/quote/deadline to remain eligible.
+    state = module._session(qualification["session"])
+    _need(state is selected_state)
+    cfg = module.runtime._replay_live_runtime_v1(
+        state["runtime"], key=module.runtime._KEY
+    )
+    _need(
+        cfg["writer_factory"] is facts.session_factory
+        and cfg["writer_pins"] is facts.role_pins
+    )
+    view = source._SOURCES.get(facts.source_owner)
+    _need(
+        type(view) is dict
+        and (
+            view["uid"],
+            view["main_uid"],
+            view["credential_session_sha256"],
+            view["source_revision_sha256"],
+        )
+        == (
+            facts.account_uid,
+            facts.main_uid,
+            facts.credential_session_sha256,
+            facts.intent_data.source_revision_sha256,
+        )
+    )
+    public = module.public._OWNERS.get(facts.public_owner)
+    _need(type(public) is dict)
+    module.public._owned(public)
+    params = public["params"]
+    _need(
+        params.invocation is state["invocation"]
+        and params.report_id == state["report_id"]
+        and params.instrument_id == facts.intent_data.instrument_id
+        and params.stage == "post_g12"
+    )
+    rid, raw, digest = exact_live_intent_document_v1(facts.intent_data)
+    _need(
+        (
+            rid,
+            raw,
+            digest,
+            facts.intent_readback,
+            facts.request_json,
+            facts.request_sha256,
+        )
+        == record["preparation_lineage"]
+    )
+    return record
+
+
 def _require_preparation_prefix_v2(record, module):
     # Validate the exact original prefix BEFORE invoking _session, which then
     # executes the genuine source guard itself. A foreign _session/_task/_need
@@ -962,7 +1046,7 @@ def _collect_entry_wire_v2(gate, data, *, key):
 def _complete_entry_wire_v2(gate, *, key):
     """Record successful vendor flushing, not a permit or exchange result."""
     _need(key is transport._TRANSPORT_KEY)
-    record = _require_preparation_scope_v2(gate, key=key)
+    record = _require_retained_response_identity_v2(gate, key=key)
     _need(
         record["entry_wire_state"] == "sending"
         and record["entry_chunk_offset"] == len(record["wire"])
@@ -970,19 +1054,29 @@ def _complete_entry_wire_v2(gate, *, key):
         and record["attempted"] is True,
         "native_live_entry_wire_incomplete",
     )
+    record["entry_response_started_at"] = _stamp()
     record["entry_wire_state"] = "complete"
 
 
 def _require_entry_response_ready_v2(gate, *, key):
-    # The immediately preceding full transport gate owns source/liveness checks.
-    # This additional DATA condition cannot authorize any network write.
+    """Bounded read DATA after successful full-wire flushing; never authority."""
     _need(key is transport._TRANSPORT_KEY)
-    record = _record(gate)
+    record = _require_retained_response_identity_v2(gate, key=key)
     _need(
         record["entry_wire_state"] == "complete"
         and record["accepted"] == len(record["wire"]) > 0,
         "native_live_entry_wire_incomplete",
     )
+    started = record["entry_response_started_at"]
+    _need(type(started) is ClockStamp, "native_live_entry_response_clock_invalid")
+    now = _stamp()
+    validate_stamps((started.model_dump(), now.model_dump()))
+    _need(
+        now.utc_ns - started.utc_ns <= _MAX_RESPONSE_READ_NS_V2
+        and now.monotonic_ns - started.monotonic_ns <= _MAX_RESPONSE_READ_NS_V2,
+        "native_live_entry_response_read_bound",
+    )
+    return record
 
 
 def _new_gate(record):
@@ -1041,6 +1135,7 @@ def _new_gate(record):
         entry_wire_state="collecting",
         entry_chunk_offset=0,
         entry_chunk_count=0,
+        entry_response_started_at=None,
         transport_taken=False,
         tls_ready=False,
         attempted=False,

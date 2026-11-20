@@ -424,7 +424,6 @@ class _TLSBytes(anyio.abc.ByteStream):
                     "native_live_transport_ssl_progress_invalid",
                 )
                 offset += accepted
-            _gate(self._gate)
             entry._complete_entry_wire_v2(self._gate, key=_TRANSPORT_KEY)
         except BaseException:
             # Captured private DATA cleanup invokes no mutable helper callback.
@@ -438,17 +437,25 @@ class _TLSBytes(anyio.abc.ByteStream):
             raise
 
     async def receive(self, max_bytes=65536):
-        _gate(self._gate)
         authority = _authority(self._gate)
         from app.exchange.okx import native_live_write_v1 as entry
 
         if authority is entry:
-            entry._require_entry_response_ready_v2(self._gate, key=_TRANSPORT_KEY)
+            record = entry._require_entry_response_ready_v2(
+                self._gate, key=_TRANSPORT_KEY
+            )
+            _require_entry_tls_response_binding_v2(self._native, self._gate, record)
+        else:
+            _gate(self._gate)
         value = await self._native.receive(max_bytes)
-        # New reads still require the live gate BEFORE their await. Once bytes
-        # have actually arrived they are DATA: retain and return them to the
-        # HTTP parser, even if the source expires at this response boundary.
-        # Another network read must independently pass the live gate again.
+        # A successful entry flush opens bounded response DATA, independently
+        # of the spent order's execution expiry. TLS control writes caused by
+        # receive still enter the unchanged full native write boundary.
+        if authority is entry:
+            record = entry._require_retained_response_identity_v2(
+                self._gate, key=_TRANSPORT_KEY
+            )
+            _require_entry_tls_response_binding_v2(self._native, self._gate, record)
         authority = _authority(self._gate)
 
         authority._retain_native_tls_data_v1(self._gate, value, key=_TRANSPORT_KEY)
@@ -472,6 +479,32 @@ class _TLSBytes(anyio.abc.ByteStream):
     @property
     def extra_attributes(self):
         return self._native.extra_attributes
+
+
+def _require_entry_tls_response_binding_v2(native, gate, record):
+    """Original TLS/socket owners only, without enabling a write or retry."""
+    _need(
+        type(native) is TLSStream
+        and type(native._ssl_object) is ssl.SSLObject
+        and native._ssl_object is record.get("ssl_object")
+        and native._ssl_object.context is record["tls_context"]
+        and type(record["tls_context"]) is ssl.SSLContext
+        and record["tls_context"].check_hostname
+        and record["tls_context"].verify_mode == ssl.CERT_REQUIRED
+        and record["tls_context"].minimum_version >= ssl.TLSVersion.TLSv1_2
+        and record["tls_context"].keylog_filename is None
+        and getattr(record["tls_context"], "_msg_callback", None) is None
+        and type(native.transport_stream) is SocketStream
+        and type(record["native_socket"]) is AnyIOStream
+        and native.transport_stream is record["native_socket"]._stream
+        and type(native.transport_stream._transport) is _RawTransport
+        and native.transport_stream._transport._gate is gate
+        and native.transport_stream._transport._native is record["socket_transport"],
+        "native_live_transport_response_owner_changed",
+    )
+    _unshadowed(native, {"send", "receive", "aclose", "_call_sslobject_method"})
+    _unshadowed(native._ssl_object, {"write", "read"})
+    _unshadowed(native.transport_stream, {"send", "receive", "aclose"})
 
 
 class _ConnectionStream(httpcore.AsyncNetworkStream):

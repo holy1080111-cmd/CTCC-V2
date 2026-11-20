@@ -90,6 +90,7 @@ def _buffer(
         return count
 
     monkeypatch.setattr(write, "_require_preparation_scope_v2", preparation)
+    monkeypatch.setattr(write, "_require_retained_response_identity_v2", preparation)
     monkeypatch.setattr(
         write, "_record", lambda current: record if current is gate else None
     )
