@@ -31,7 +31,7 @@ def test_runtime_profile_keeps_the_real_compiled_source_closure_intact():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("head", ["0055", "0056", "0057"])
+@pytest.mark.parametrize("head", ["0055", "0056", "0057", "0058"])
 @pytest.mark.parametrize("purpose", ["entry", "history", "recovery"])
 async def test_runtime_role_verification_failure_precedes_signed_get(
     monkeypatch, head, purpose
@@ -51,7 +51,7 @@ async def test_runtime_role_verification_failure_precedes_signed_get(
     head_read = AsyncMock(return_value=head)
     monkeypatch.setattr(selectors, "_observe_runtime_database_head_v2", head_read)
     refused = AsyncMock(side_effect=ValueError("fixture_role_refusal"))
-    if head in ("0056", "0057"):
+    if head in ("0056", "0057", "0058"):
         monkeypatch.setattr(selectors, "_source_roles_before_get_0056", refused)
     else:
         from app.core import native_role_preflight_v1 as roles55
@@ -74,7 +74,9 @@ async def test_runtime_role_verification_failure_precedes_signed_get(
     head_read.assert_awaited_once_with(factories)
     refused.assert_awaited_once_with(
         factories,
-        **profiles.arguments(profiles.DB0057 if head == "0057" else profiles.DB0056),
+        **profiles.arguments(
+            profiles.from_head(head) if head != "0055" else profiles.DB0056
+        ),
     )
     client.account_config_selector_v2.assert_not_awaited()
     factories.frame_reader_engine.dispose.assert_awaited_once()
@@ -82,7 +84,7 @@ async def test_runtime_role_verification_failure_precedes_signed_get(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("rows", [[], ["0055", "0056"], ["0058"], [None]])
+@pytest.mark.parametrize("rows", [[], ["0055", "0056"], ["0059"], [None]])
 async def test_runtime_head_requires_exactly_one_supported_sql_row(monkeypatch, rows):
     statements = []
 
