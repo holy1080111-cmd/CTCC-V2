@@ -113,28 +113,30 @@ OKX_LIVE_ALLOW_ORDER_WRITES=false
 OKX_LIVE_AUTO_EXECUTION=false
 ```
 
-Production writes require all of the following at the same time:
+The [dedicated manual Live tool](docs/native_live_manual_tool_v1.md) uses a
+separate source-owned path. Its legacy write flags above stay OFF. The current
+path requires all of the following:
 
-- `ENVIRONMENT=production`, `TRADING_MODE=live`, and `WEB_CONCURRENCY=1`;
-- an API token of at least 32 characters;
-- a dedicated OKX key with Read + Trade, no Withdraw, and an IP binding;
-- Live writes explicitly enabled in configuration;
-- no Paper or Demo automatic execution;
-- an authenticated runtime Arm with an exact confirmation phrase;
-- a flat account start with no position, pending order, or pending Algo order;
-- a protected SWAP market order within the symbol, size, notional, leverage,
-  lot-size, tick-size, exchange max-size, and loss-budget limits;
-- a short exchange-side request expiry on the actual order submission;
-- a new durable idempotency key that has never been reserved before.
+- an exact verified release/private profile and one loopback worker;
+- a protected local API token, dedicated Read + Trade key, no Withdraw and an IP binding;
+- genuine0058 restricted roles, TLS, account identity/modes and flat reconciliation;
+- the current exact human challenge, with one entry Arm lasting at most30 seconds;
+- original G1–G11, G12 publication/readback, new public/account data and fixed-candidate recheck;
+- atomic risk reservation, a committed durable intent and independent session readback;
+- one price-bound FOK within the isolated/net, instrument/size/tick/lot and micro limits;
+- current exchange protection/fill/account readback and durable disarm.
 
-A PostgreSQL advisory lock also serializes the entire Live write section across
-accidental duplicate API instances connected to the same database.
+The manual micro path caps leverage at3 and order notional at25 USDT; smaller
+configured caps still apply. Its separate120-second controlled-close permission
+requires its own exact human confirmation. No scheduler or restarted process
+reconstructs either permission. Account/Control locks and one-shot durable claims
+remain held through the physical boundary. An ambiguous commit or exchange
+response keeps the risk hold and intent; no automatic resubmission occurs.
 
-An Arm is held only in the API process, expires in at most 15 minutes (5 minutes
-by default), allows exactly one order submission, and is never restored after a
-restart. A write transport error is not retried. If an order may have reached
-OKX but its result is ambiguous, CTCC engages Emergency Stop and does not submit
-again.
+The [archived v1.6.9 guide](docs/live_execution_v1.6.9.md) retains the earlier
+market-order and5–15-minute Arm design for historical deployments. The current
+manual tool's final configured deployment and real-case acceptance remain
+separate requirements; Gate3 and real cases are deferred by the current scope.
 
 Missing protection or untracked exposure never causes CTCC to silently close a
 real position. The operator must reconcile the exchange and choose an explicit
@@ -144,7 +146,7 @@ For Demo automation, attached TP/SL parameters or order-detail echoes are not
 treated as proof of protection. CTCC requires the active pending Algo returned
 by OKX to match its unique protection client ID, instrument, mark-trigger
 prices, and covered size, and repeats that check on later reconciliations.
-The runtime watchdog refreshes automation tracking after its exchange
+The retained legacy runtime watchdog refreshes automation tracking after its exchange
 reconciliation round-trip. Only an actively running submission receives the
 bounded reconciliation grace; genuine untracked exposure outside that window,
 or exposure that remains untracked after expiry, still engages Emergency Stop.

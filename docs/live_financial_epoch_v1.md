@@ -1,9 +1,12 @@
 # Live financial source and prospective risk epoch
 
-This is engineering source. The epoch schema is an additive SPEC and is not
-installed by the current migration merely because these modules exist. Actual
-isolated PostgreSQL acceptance and explicit owner migration/model registration
-remain required. No venue call, operator Arm or real-money acceptance is implied.
+The [current0058 source migration](live_financial_main0058_migration.md) installs
+the financial epoch tables and functions, with both models registered in current
+metadata. The [reviewed owner upgrade](native_owner_upgrade_0058_v1.md) preserves
+existing state and requires exact source/schema/TLS/role pins. Installation on
+the user's preserved database remains a separate deployment operation; module
+imports and source-specific SQL tests do not establish installed readiness,
+venue execution, an operator Arm or real-money acceptance.
 
 The Live reader keeps the existing production GET lease, exact account UID and
 main-UID relationship, native TLS custody, raw bytes, page chains and no retry,
