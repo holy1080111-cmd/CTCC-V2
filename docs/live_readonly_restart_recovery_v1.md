@@ -39,7 +39,10 @@ canceled zero-fill FOK plus complete fresh fills/account evidence can resolve
 the original hold through the existing signed SQL protocol. An exact protected
 position is recognized as `PROTECTED_HOLD`; risk remains reserved, economics is
 unknown, and qualification is not reestablished. A filled-flat original OCO
-without verified exit lineage remains `UNCERTAIN`.
+without verified exit lineage remains `UNCERTAIN`. The dedicated
+[original OCO terminal collector](live_original_oco_restart_recovery_v1.md)
+can establish that lineage using retained authenticated original IDs and new
+complete raw entry/algo/child/fill/global-flat observations.
 
 The existing source-owned HMAC boundary independently reopens raw custody,
 replays current source and history operands, and binds the new proof to the

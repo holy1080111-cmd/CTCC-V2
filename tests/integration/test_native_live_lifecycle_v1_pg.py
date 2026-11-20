@@ -5,6 +5,7 @@ file, live credentials, venue source, Arm or execution acceptance is claimed.
 The published synthetic HMAC key exercises the real SQL verifier only.
 """
 
+import asyncio
 import hashlib
 import hmac
 from datetime import UTC, datetime, timedelta
@@ -347,3 +348,148 @@ async def test_actual58_live_recovery_journal_preserves_db_intent_recorded_time(
     assert first.reservation_state == second.reservation_state == "reserved"
     assert first.proofs == second.proofs == ()
     assert first.execution_authority is second.execution_authority is False
+
+
+@pytest.mark.parametrize(
+    "source_case", ["complete", "changed_after", "partial_exit", "missing_terminal"]
+)
+async def test_actual58_original_oco_terminal_source_drives_signed_resolution_or_hold(
+    lifecycle_lab,
+    monkeypatch,
+    source_case,
+):
+    """Actual SQL/HMAC, explicitly synthetic Live raw DTOs; no venue authority."""
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from app.okx_live import original_oco_recovery_v1 as oco
+    from app.okx_live.reconciliation_facts_v1 import LiveReconciliationHistoryV1
+    from tests import native_live_postsubmit_fixtures_v1 as raw_fixture
+    from tests.unit.test_native_live_original_oco_recovery_v1 import scenario
+
+    lab = lifecycle_lab
+    rid, _, _ = exact_live_intent_document_v1(lab[2])
+    _, protected, protected_signature = _proof(
+        lab,
+        outcome="PROTECTED_HOLD",
+        entry_order_id="123",
+        protection_algo_id="456",
+        protection_verified=True,
+        full_account_verified=True,
+        fills_complete=True,
+        fixture_purpose="synthetic_original_protected_id_sql_binding_only",
+    )
+    assert await _append(lab, protected, protected_signature) == sha(protected)
+    async with lab[3]() as session, session.begin():
+        retained = (
+            await session.execute(
+                text(
+                    "SELECT proof_json,signature FROM public.native_live_lifecycle_proofs_v1 WHERE reservation_id=:rid ORDER BY sequence"
+                ),
+                {"rid": rid},
+            )
+        ).one()
+    assert retained[0].encode("ascii") == protected
+    assert hmac.compare_digest(
+        hmac.digest(lab[6], spec.DOMAIN + protected, hashlib.sha256).hex(), retained[1]
+    )
+    expected_entry, expected_algo = oco.expected_original_bindings_v1(
+        SimpleNamespace(proofs=(protected,))
+    )
+    async with lab[0].connect() as connection:
+        recorded = await connection.scalar(
+            text(
+                "SELECT created_at FROM public.native_live_intents_v1 WHERE reservation_id=:rid"
+            ),
+            {"rid": rid},
+        )
+    delta = recorded - datetime(1970, 1, 1, tzinfo=UTC)
+    recorded_ns = (
+        delta.days * 86400 + delta.seconds
+    ) * 1_000_000_000 + delta.microseconds * 1000
+    base = ((recorded_ns + 999999) // 1_000_000) * 1_000_000
+    # Declare the NEW synthetic wire's measured-time template before creating
+    # any DTO. There is no venue packet, retained receipt or source retagging.
+    with monkeypatch.context() as construction:
+        construction.setattr(raw_fixture, "BASE", base)
+        value, capture, args = scenario(original_intent=lab[2])
+    assert value is lab[2]
+    args.update(
+        history=LiveReconciliationHistoryV1(recorded),
+        expected_entry_order_id=expected_entry,
+        expected_algo_id=expected_algo,
+    )
+    if source_case == "changed_after":
+        row = decode(capture.protection_after.raw_body)["data"][0]
+        row["slTriggerPx"] = "98"
+        capture = replace(
+            capture,
+            protection_after=raw_fixture.rewrite(capture.protection_after, [row]),
+        )
+    elif source_case == "partial_exit":
+        row = decode(capture.exit_order.raw_body)["data"][0]
+        row["accFillSz"] = "0.5"
+        capture = replace(
+            capture,
+            exit_order=raw_fixture.rewrite(capture.exit_order, [row]),
+            exit_order_after=raw_fixture.rewrite(capture.exit_order_after, [row]),
+        )
+    elif source_case == "missing_terminal":
+        capture = replace(capture, exit_fills=capture.exit_fills[:1])
+    assessed = oco.assess_original_live_oco_terminal_v1(value, capture, **args)
+    assert assessed.execution_authority is assessed.resolution_authority is False
+    # Let the declared synthetic timeline pass; no original intent/Control
+    # deadline, lease or native source clock is reset or extended.
+    await asyncio.sleep(0.6)
+    expected = "RECONCILED_FLAT" if source_case == "complete" else "UNCERTAIN"
+    assert assessed.outcome == expected
+    complete = expected == "RECONCILED_FLAT"
+    _, raw, signature = _proof(
+        lab,
+        outcome=expected,
+        sequence=2,
+        previous_sha256=sha(protected),
+        credential_continuity="fresh_recovery_lease_uid_reverified",
+        full_account_verified=complete,
+        fills_complete=complete,
+        flat_verified=complete,
+        unknown_exposure=not complete,
+        raw_bank_sha256=assessed.raw_bank_sha256,
+        submission_sha256="2" * 64,
+        account_config_before_sha256=capture.config_before.receipt_sha256,
+        account_config_after_sha256=capture.config_after.receipt_sha256,
+        entry_order_id=assessed.order_id,
+        entry_order_state="filled" if complete else None,
+        entry_filled_contracts=str(assessed.filled_contracts) if complete else None,
+        exit_filled_contracts=str(assessed.exit_filled_contracts) if complete else None,
+        exit_kind=assessed.exit_kind,
+        exit_lineage_verified=assessed.exit_lineage_verified,
+        exit_source_sha256=assessed.exit_source_sha256,
+        protection_client_id=value.protection_client_id,
+        position_count=0 if complete else None,
+        pending_order_count=0 if complete else None,
+        pending_algo_count=0 if complete else None,
+        submission_started=None,
+        submission_attempted=complete,
+        fixture_purpose="synthetic_live_raw_and_hmac_sql_only",
+    )
+    assert await _append(lab, raw, signature) == sha(raw)
+    async with lab[0].connect() as connection:
+        state = (
+            await connection.execute(
+                text(
+                    "SELECT state,resolution_sha256 FROM public.native_live_reservations_v1 WHERE reservation_id=:rid"
+                ),
+                {"rid": rid},
+            )
+        ).one()
+        assert tuple(state) == (
+            ("reconciled", sha(raw)) if complete else ("reserved", None)
+        )
+        assert (
+            await connection.execute(
+                text(
+                    "SELECT armed,emergency_stop,arm_id,arm_expires_at FROM public.native_live_controls_v1"
+                )
+            )
+        ).one() == (False, True, None, None)

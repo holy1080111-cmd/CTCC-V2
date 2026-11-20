@@ -189,6 +189,7 @@ def _require_complete_entry_flow_v1():
 def _require_lifecycle_source_modules_v1():
     from app.okx_live import (
         lifecycle_custody_v1,
+        original_oco_recovery_v1,
         owned_recovery_v1,
         postfill_economics_v1,
         postsubmit_capture_v1,
@@ -200,6 +201,7 @@ def _require_lifecycle_source_modules_v1():
     for module in (
         lifecycle_custody_v1,
         owned_recovery_v1,
+        original_oco_recovery_v1,
         postfill_economics_v1,
         postsubmit_capture_v1,
         reconciliation_facts_v1,
@@ -258,11 +260,14 @@ def _verify_source_for_signing_v1(owner, *, key_owner):
         from app.exchange.okx.live_trade_read_page_v1 import (
             verify_live_trade_read_page_v1,
         )
+        from app.okx_live import original_oco_recovery_v1 as original_oco
         from app.okx_live.lifecycle_custody_v1 import read_live_lifecycle_blob_v1
         from app.okx_live.postfill_economics_v1 import (
             assess_fixed_live_fill_economics_v1,
         )
         from app.okx_live.reconciliation_facts_v1 import assess_live_postsubmit_facts_v1
+
+        extra = original_oco.extra_terminal_pages_v1(capture) if recovery else ()
 
         lease = state["lease"]
         lease.verify_current()
@@ -286,6 +291,7 @@ def _verify_source_for_signing_v1(owner, *, key_owner):
             *capture.current_pages,
             *(() if capture.protection is None else (capture.protection,)),
             capture.config_after,
+            *extra,
         ):
             _need(page.synthetic_mock is False)
             _need(
@@ -306,10 +312,15 @@ def _verify_source_for_signing_v1(owner, *, key_owner):
             capture.order,
             *capture.fills,
             *(() if capture.protection is None else (capture.protection,)),
+            *extra,
         ):
             verify_live_trade_read_page_v1(page, lease=lease)
-        observed = assess_live_postsubmit_facts_v1(
-            state["intent"], **_capture_arguments(state, capture)
+        observed = (
+            original_oco.assess_recovery_capture_v1(state, capture)
+            if recovery
+            else assess_live_postsubmit_facts_v1(
+                state["intent"], **_capture_arguments(state, capture)
+            )
         )
         _need(observed == state["assessed_facts"])
         handoff = state["handoff"]
@@ -547,8 +558,21 @@ def _proof_document(state, *, capture, facts, economics, failure_code=None):
         )
     )
     zero = facts is not None and facts.outcome == "ZERO_FILL_FLAT"
+    terminal = (
+        facts is not None
+        and facts.outcome == "RECONCILED_FLAT"
+        and facts.exit_kind == "original_oco"
+        and facts.exit_lineage_verified is True
+    )
+    flat = zero or terminal
     outcome = (
-        "ZERO_FILL_FLAT" if zero else "PROTECTED_HOLD" if protected else "UNCERTAIN"
+        "ZERO_FILL_FLAT"
+        if zero
+        else "RECONCILED_FLAT"
+        if terminal
+        else "PROTECTED_HOLD"
+        if protected
+        else "UNCERTAIN"
     )
     if "proof_observed" not in state:
         state["proof_observed"] = (
@@ -600,16 +624,20 @@ def _proof_document(state, *, capture, facts, economics, failure_code=None):
         "account_config_after_sha256": capture.config_after.receipt_sha256
         if capture
         else None,
-        "full_account_verified": capture is not None and (zero or protected),
-        "fills_complete": zero or protected,
-        "flat_verified": zero,
-        "unknown_exposure": not (zero or protected),
-        "position_count": 0 if zero else None,
+        "full_account_verified": capture is not None and (flat or protected),
+        "fills_complete": flat or protected,
+        "flat_verified": flat,
+        "unknown_exposure": not (flat or protected),
+        "position_count": 0 if flat else None,
         "position_count_semantics": "nonzero_global_position_rows",
-        "pending_order_count": 0 if zero else None,
-        "pending_algo_count": 0 if zero else None,
+        "pending_order_count": 0 if flat else None,
+        "pending_algo_count": 0 if flat else None,
         "entry_order_id": facts.order_id if facts else None,
-        "entry_order_state": "canceled" if zero else "filled" if protected else None,
+        "entry_order_state": "canceled"
+        if zero
+        else "filled"
+        if protected or terminal
+        else None,
         "entry_filled_contracts": str(facts.filled_contracts)
         if facts and facts.filled_contracts is not None
         else None,
@@ -620,6 +648,15 @@ def _proof_document(state, *, capture, facts, economics, failure_code=None):
         "failure_code": failure_code,
         "source_fact_codes": list(facts.codes) if facts else None,
     }
+    if terminal:
+        proof.update(
+            exit_kind="original_oco",
+            exit_lineage_verified=True,
+            exit_order_id=facts.exit_order_id,
+            exit_filled_contracts=str(facts.exit_filled_contracts),
+            exit_source_sha256=facts.exit_source_sha256,
+            protection_algo_id=facts.protection_algo_id,
+        )
     if state.get("recovery_history") is not None:
         history = state["recovery_history"]
         proof["recovery_history"] = {

@@ -249,10 +249,9 @@ async def _recover_with_scope(owner):
     )
     from app.exchange.okx.live_account_current_chain_v1 import _check_config
     from app.exchange.okx.live_read_lease_v1 import OkxLivePinnedGetClientV1
+    from app.okx_live import original_oco_recovery_v1 as capture_source
     from app.okx_live import owned_lifecycle_v1 as lifecycle
-    from app.okx_live import postsubmit_capture_v1 as capture_source
     from app.okx_live.lifecycle_custody_v1 import publish_live_lifecycle_blob_v1
-    from app.okx_live.reconciliation_facts_v1 import assess_live_postsubmit_facts_v1
 
     state, scope = _scope(owner)
     client = OkxLivePinnedGetClientV1(settings=scope.settings)
@@ -288,12 +287,10 @@ async def _recover_with_scope(owner):
             capture = assessed = None
             failure = None
             try:
-                capture = await capture_source.capture_owned_live_postsubmit_pages_v1(
-                    owner, key=capture_source._CAPTURE_KEY_V1
+                capture = await capture_source.capture_recovery_pages_v1(
+                    owner, key=capture_source._CAPTURE_KEY
                 )
-                assessed = assess_live_postsubmit_facts_v1(
-                    state["intent"], **lifecycle._capture_arguments(state, capture)
-                )
+                assessed = capture_source.assess_recovery_capture_v1(state, capture)
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001 -- no private response or exception text escapes.

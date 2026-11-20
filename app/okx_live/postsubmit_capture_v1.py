@@ -146,7 +146,12 @@ async def capture_owned_live_postsubmit_pages_v1(owner, *, key):
         select_live_trade_read_v1(
             "order",
             instrument_id=intent.instrument_id,
-            client_order_id=intent.client_order_id,
+            **(
+                {"order_id": state["recovery_entry_order_id"]}
+                if state.get("recovery_history") is not None
+                and state.get("recovery_entry_order_id") is not None
+                else {"client_order_id": intent.client_order_id}
+            ),
         ),
     )
     verify_live_trade_read_page_v1(order, lease=lease)

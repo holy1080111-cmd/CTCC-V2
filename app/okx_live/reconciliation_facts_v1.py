@@ -243,6 +243,11 @@ class LiveReconciliationFactsV1:
     entry_fees_usdt: Decimal | None = None
     protection_algo_id: str | None = None
     raw_bank_sha256: str | None = None
+    exit_order_id: str | None = None
+    exit_filled_contracts: Decimal | None = None
+    exit_source_sha256: str | None = None
+    exit_kind: str | None = None
+    exit_lineage_verified: bool = False
     execution_authority: bool = field(default=False, init=False)
     resolution_authority: bool = field(default=False, init=False)
     source_authenticity_verified: bool = field(default=False, init=False)
