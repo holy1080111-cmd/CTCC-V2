@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import certifi
 import pytest
 
+from app.domain import native_database_profile_v1 as profiles
 from scripts import native_owner_route_preflight_0056_v1 as subject
 from scripts.current_contract_source_scopes_v1 import (
     actual_current_source_scope as real_source_scope,
@@ -84,9 +85,62 @@ def test_preflight_binds_actual_manifest_and_migration_source(
         pins, source_manifest_sha256=hashlib.sha256(manifest.read_bytes()).hexdigest()
     )
     monkeypatch.setattr(subject, "actual_current_source_scope", real_source_scope)
-    prepared = subject._prepare(pins, owner_dsn_file=secret, ca_file=ca)
+    with pytest.raises(subject.OwnerRoutePreflightError):
+        subject._prepare(pins, owner_dsn_file=secret, ca_file=ca)
+    prepared = subject._prepare(
+        pins, owner_dsn_file=secret, ca_file=ca, profile=profiles.DB0057
+    )
     assert prepared.manifest_sha256 == pins.source_manifest_sha256
     assert prepared.migration_sha256 != _MIGRATION
+    assert prepared.source_head == "0057"
+
+
+@pytest.mark.parametrize("database_head", ["0056", "0057"])
+def test_explicit_successor_keeps_actual_parent_or_successor_route_head(
+    prepared_files, monkeypatch, database_head
+):
+    pins, secret, ca, _ = prepared_files
+    pins = replace(pins, database_head=database_head)
+    seen = []
+
+    def source(profile):
+        assert profile is profiles.DB0057
+        seen.append(profile)
+        return subject._CurrentSource("0057", _MANIFEST, _MIGRATION)
+
+    monkeypatch.setattr(subject, "_source_for_profile", source)
+    monkeypatch.setattr(
+        subject,
+        "create_async_engine",
+        lambda *a, **k: pytest.fail("No connection during prepare"),
+    )
+    prepared = subject._prepare(
+        pins, owner_dsn_file=secret, ca_file=ca, profile=profiles.DB0057
+    )
+    assert prepared.source_head == "0057"
+    assert pins.database_head == database_head
+    assert prepared.tls.check_hostname is True
+    assert prepared.tls.verify_mode == 2
+    assert seen == [profiles.DB0057]
+
+
+@pytest.mark.parametrize("profile, head", [("0057", "0057"), (profiles.DB0057, "0055")])
+def test_successor_cannot_be_selected_by_string_or_unsupported_parent(
+    prepared_files, monkeypatch, profile, head
+):
+    pins, secret, ca, _ = prepared_files
+    monkeypatch.setattr(
+        subject,
+        "_private_owner_url",
+        lambda _: pytest.fail("Malformed profile must refuse before private DSN"),
+    )
+    with pytest.raises(subject.OwnerRoutePreflightError):
+        subject._prepare(
+            replace(pins, database_head=head),
+            owner_dsn_file=secret,
+            ca_file=ca,
+            profile=profile,
+        )
 
 
 @pytest.mark.parametrize(

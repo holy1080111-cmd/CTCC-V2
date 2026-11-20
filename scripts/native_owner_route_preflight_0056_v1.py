@@ -29,6 +29,7 @@ from app.database.native_pg_tls_v1 import (
     reviewed_native_pg_tls_route_v1,
     verified_native_pg_tls_context_v1,
 )
+from app.domain import native_database_profile_v1 as profiles
 from scripts.current_contract_source_scopes_v1 import actual_current_source_scope
 
 _SOURCE_ROOT = Path(__file__).resolve().parents[1]
@@ -81,7 +82,7 @@ class OwnerRoutePinsV1:
     owner: str
     database_oid: int
     owner_oid: int
-    database_head: Literal["0055", "0056"]
+    database_head: Literal["0055", "0056", "0057"]
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -105,11 +106,49 @@ def _private_owner_url(path: Path) -> URL:
     return reviewed_native_pg_tls_route_v1(raw.decode("utf-8"))
 
 
+@dataclass(frozen=True, slots=True)
+class _CurrentSource:
+    actual_source_head: str
+    manifest_sha256: str
+    actual_migration_sha256: str
+    execution_authority: Literal[False] = field(default=False, init=False)
+
+
+def _source_for_profile(profile):
+    profiles.checked(profile)
+    if profile is profiles.DB0056:
+        with redirect_stdout(io.StringIO()):
+            return actual_current_source_scope(_SOURCE_ROOT)
+    from scripts import manifest
+    from scripts.verify_migration_identity import source_identity
+
+    profiles.require_migration(profile, _SOURCE_ROOT)
+    identity = source_identity(_SOURCE_ROOT)
+    path = _SOURCE_ROOT / "MANIFEST.sha256"
+    raw = path.read_bytes()
+    if (
+        not 0 < len(raw) <= 2_000_000
+        or b"\r" in raw
+        or not raw.endswith(b"\n")
+        or manifest.read_manifest(path) != manifest.build_manifest(_SOURCE_ROOT)
+        or path.read_bytes() != raw
+        or source_identity(_SOURCE_ROOT) != identity
+        or identity.head != profiles.head(profile)
+    ):
+        _deny()
+    return _CurrentSource(identity.head, _sha(raw), identity.sha256)
+
+
 def _prepare(
-    pins: OwnerRoutePinsV1, *, owner_dsn_file: Path, ca_file: Path
+    pins: OwnerRoutePinsV1,
+    *,
+    owner_dsn_file: Path,
+    ca_file: Path,
+    profile=profiles.DB0056,
 ) -> _Prepared:
     """Validate external pins, actual source and private transport before SQL."""
     try:
+        profiles.checked(profile)
         if (
             type(pins) is not OwnerRoutePinsV1
             or not all(
@@ -131,13 +170,15 @@ def _prepare(
             or pins.database_oid <= 0
             or type(pins.owner_oid) is not int
             or pins.owner_oid <= 0
-            or pins.database_head not in ("0055", "0056")
+            or pins.database_head
+            not in (
+                ("0055", "0056") if profile is profiles.DB0056 else ("0056", "0057")
+            )
         ):
             _deny()
-        with redirect_stdout(io.StringIO()):
-            source = actual_current_source_scope(_SOURCE_ROOT)
+        source = _source_for_profile(profile)
         if (
-            source.actual_source_head != "0056"
+            source.actual_source_head != profiles.head(profile)
             or source.manifest_sha256 != pins.source_manifest_sha256
             or source.execution_authority is not False
         ):
@@ -207,11 +248,20 @@ async def _read_one(engine, pins: OwnerRoutePinsV1) -> tuple[str, int, int]:
 
 
 async def preflight_owner_route_0056_v1(
-    pins: OwnerRoutePinsV1, *, owner_dsn_file: Path, ca_file: Path
+    pins: OwnerRoutePinsV1,
+    *,
+    owner_dsn_file: Path,
+    ca_file: Path,
+    profile=profiles.DB0056,
 ) -> dict[str, object]:
     """Two fresh physical read-only owner observations; no schema admission."""
     try:
-        before = _prepare(pins, owner_dsn_file=owner_dsn_file, ca_file=ca_file)
+        before = _prepare(
+            pins,
+            owner_dsn_file=owner_dsn_file,
+            ca_file=ca_file,
+            **profiles.arguments(profile),
+        )
         engine = create_async_engine(
             before.url,
             poolclass=NullPool,
@@ -224,9 +274,15 @@ async def preflight_owner_route_0056_v1(
                 _deny()
         finally:
             await engine.dispose()
-        after = _prepare(pins, owner_dsn_file=owner_dsn_file, ca_file=ca_file)
+        after = _prepare(
+            pins,
+            owner_dsn_file=owner_dsn_file,
+            ca_file=ca_file,
+            **profiles.arguments(profile),
+        )
         if (
             after.url != before.url
+            or after.source_head != before.source_head
             or after.manifest_sha256 != before.manifest_sha256
             or after.migration_sha256 != before.migration_sha256
             or after.route_sha256 != before.route_sha256
@@ -237,7 +293,7 @@ async def preflight_owner_route_0056_v1(
     except Exception:  # noqa: BLE001 -- redact SQL/driver/owner details
         _deny()
     return {
-        "schema": "ctcc.native_owner_0056.route_preflight.v1",
+        "schema": profiles.schema(profile, "ctcc.native_owner_0056.route_preflight.v1"),
         "status": "PASS",
         "source_head": before.source_head,
         "source_manifest_sha256": before.manifest_sha256,
