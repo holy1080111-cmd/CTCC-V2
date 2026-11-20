@@ -8,6 +8,7 @@ import json
 from contextlib import asynccontextmanager
 from cProfile import Profile
 from pstats import Stats
+from types import FunctionType
 
 import pytest
 
@@ -210,7 +211,8 @@ async def test_actual_entry_guard_per_function_profile(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "mutation", ("old_math", "old_raw", "old_source", "old_receipt", "old_geometry")
+    "mutation",
+    ("old_math", "old_raw", "old_source", "old_receipt", "old_geometry", "old_event"),
 )
 async def test_pre_g12_original_proof_rejects_changed_original_without_current_repair(
     monkeypatch, tmp_path, market, mutation
@@ -238,8 +240,13 @@ async def test_pre_g12_original_proof_rejects_changed_original_without_current_r
                 # A copied DTO/hash has no original source registry record.
                 assert replacement not in q.entry_original._PROOFS
                 q.entry_original._PROOFS.pop(proof)
-            else:
+            elif mutation == "old_geometry":
                 object.__setattr__(worker.state["initial_math"].result, "stop_loss", 1)
+            else:
+                original = worker.state["initial_math"].detection.trigger
+                object.__setattr__(
+                    original, "trigger_price", original.trigger_price + 1
+                )
             yield stage
 
     monkeypatch.setattr(q, "_post_g12_public_stage_v2", changed)
@@ -264,5 +271,24 @@ async def test_original_math_proof_cannot_be_minted_by_a_caller_frame(
                 worker.session, key=q._ENTRY_ORIGINAL_MATH_KEY_V2
             )
         assert worker.session not in q.entry_original._SESSIONS
+    finally:
+        worker.close()
+
+
+@pytest.mark.asyncio
+async def test_same_worker_code_in_foreign_globals_cannot_mint_original_proof(
+    monkeypatch, tmp_path, market
+):
+    worker = WorkerFixture(monkeypatch, tmp_path, market)
+    original = q._ENTRY_RUN_BODY_SOURCE_V1
+    foreign = FunctionType(original.__code__, dict(vars(q)), original.__name__)
+    try:
+        with pytest.raises(
+            ValueError, match="native_live_original_math_proof_unavailable"
+        ):
+            await foreign(worker.session)
+        assert worker.session not in q.entry_original._SESSIONS
+        assert "publication" not in worker.state
+        assert "physical-seam" not in worker.operations
     finally:
         worker.close()

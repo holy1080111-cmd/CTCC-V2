@@ -16,8 +16,11 @@ mutable public source order. Its initial full mathematical replay runs before
 G12, with a private same-task/original-frame proof bound to the new publication.
 The current R7 mathematics still runs in full. Current observations are never
 used to repair a failed original candidate. One positive original-worker long
-case and a separate actual-guard profile case passed; the new broad original-
-proof mutation cases are authored but not yet executed at this checkpoint.
+case and a separate actual-guard profile case passed at that checkpoint. The
+subsequent combined staged/binary/original-worker/custody/time/quote target
+passed **85 tests with zero skips**, including both directions and original
+event, geometry, raw/source, copied-receipt, foreign-globals, final model/raw,
+artifact, stop, expiry and unknown-commit failures.
 
 The first staged run still failed the optimistic native-clock budget: an
 explicit synthetic stress loop of 32 guards took 5.326 seconds and its last
@@ -27,6 +30,27 @@ harness remains necessary. Per-function profiling located the largest cost in
 the fresh exact-input DAG traversal; the scalar/edge hot-loop followup passed
 its 8 alias/capacity/callback tests and an original-worker guard profile. It does
 not establish a usable five-second entry or configured/venue acceptance.
+
+The binary encoder followup streams typed length-framed schema/node/edge
+records into SHA256, retaining only per-call identities and expanded costs.
+It avoids creating a tracked list/tuple for every encoded node and explicitly
+breaks its private recursive function cell on success and failure. Process GC
+is never disabled or tuned. Both expanded payload capacity and the actual
+encoded-wire byte count are bounded. The 32-guard stress loop fell to
+2.867–2.935 seconds, but its last quote age was still **6.963–7.038 seconds**;
+this remains a stress-budget failure, not an actual normal-route measurement.
+
+Genuine Pydantic fields are read from the defining class's own raw
+`__pydantic_fields__` dictionary; no inherited `model_fields` getter is invoked.
+Dataclasses read a native dictionary descriptor and then actual dictionary
+values, or exact first-MRO native member descriptors for slots. A property
+cannot become an extraction callback. This final extraction followup passed
+**14 pure tests**; an independent retained synthetic worker graph comparison
+proved identical field-object identities for **236 dataclasses / 896 fields**.
+Its three pure traversal observations were 0.064–0.071 seconds. This measurement
+excludes source admission, SQL, physical TLS and venue execution, and grants
+no authority. The original-worker full-path target above preceded only this
+value-preserving extraction followup; actual physical-route timing is pending.
 
 This private continuation preserves the existing initial G1–G11, six-file G12
 publication/readback, new post-publication account/public capture, and full fixed
