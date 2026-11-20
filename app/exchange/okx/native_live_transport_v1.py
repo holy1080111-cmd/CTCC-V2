@@ -237,6 +237,22 @@ def _gate(value):
     return value
 
 
+def _preparation_gate_v2(value):
+    """Original entry ownership/liveness only; never a write permit.
+
+    The close family retains its existing full boundary. Every entry SSL and
+    native socket method still performs the full check at the actual write.
+    """
+    authority = _authority(value)
+    from app.exchange.okx import native_live_write_v1 as entry
+
+    if authority is entry:
+        authority._require_preparation_scope_v2(value, key=_TRANSPORT_KEY)
+        _require_vendor_bindings_v1()
+        return value
+    return _gate(value)
+
+
 def _authority(value):
     """Closed source-defined gate families; never a caller callback or DTO."""
     from app.exchange.okx import native_live_write_v1 as entry
@@ -332,12 +348,16 @@ class _RawTransport:
         _need(
             type(abort) is _CapturedAbort, "native_live_transport_cleanup_unconfirmed"
         )
-        self._native, self._gate, self._abort = native, _gate(gate), abort
+        self._native, self._gate, self._abort = (
+            native,
+            _preparation_gate_v2(gate),
+            abort,
+        )
 
     def write(self, data):
         # B: SocketStream.send invokes this after its cancellation checkpoint.
         # This is a synchronous guard immediately adjacent to native IO.
-        return _gate(self._gate).raw_write(self._native, data)
+        return _preparation_gate_v2(self._gate).raw_write(self._native, data)
 
     def __getattr__(self, name):
         return getattr(self._native, name)
@@ -360,15 +380,17 @@ class _TLSBytes(anyio.abc.ByteStream):
         _unshadowed(native, {"send", "receive", "aclose", "_call_sslobject_method"})
         _unshadowed(native._ssl_object, {"write", "read"})
         _need(ssl.SSLObject.write is _SSL_WRITE, "native_live_transport_ssl_changed")
-        self._native, self._gate = native, _gate(gate)
+        self._native, self._gate = native, _preparation_gate_v2(gate)
 
     async def send(self, item):
         def write(data):
             # A: every SSL write, including WantRead/WantWrite continuations,
             # replays the same one-shot invocation after any internal await.
-            return _gate(self._gate).ssl_write(self._native._ssl_object, data)
+            return _preparation_gate_v2(self._gate).ssl_write(
+                self._native._ssl_object, data
+            )
 
-        _gate(self._gate)
+        _preparation_gate_v2(self._gate)
         await _TLS_CALL(self._native, write, item)
         _gate(self._gate)
 
@@ -411,13 +433,17 @@ class _ConnectionStream(httpcore.AsyncNetworkStream):
             type(native._stream).send is _SOCKET_SEND,
             "native_live_transport_send_changed",
         )
-        self._native, self._gate, self._started = native, _gate(gate), False
+        self._native, self._gate, self._started = (
+            native,
+            _preparation_gate_v2(gate),
+            False,
+        )
         native._stream._transport = _RawTransport(
             native._stream._transport, gate, abort
         )
 
     async def start_tls(self, ssl_context, server_hostname=None, timeout=None):
-        gate = _gate(self._gate)
+        gate = _preparation_gate_v2(self._gate)
         _need(
             not self._started
             and server_hostname == gate.host
@@ -433,7 +459,7 @@ class _ConnectionStream(httpcore.AsyncNetworkStream):
         self._started = True
         try:
             native = await self._native.start_tls(ssl_context, server_hostname, timeout)
-            gate = _gate(self._gate)
+            gate = _preparation_gate_v2(self._gate)
             _need(
                 type(native) is AnyIOStream and type(native._stream) is TLSStream,
                 "native_live_transport_native_tls_required",
@@ -447,7 +473,7 @@ class _ConnectionStream(httpcore.AsyncNetworkStream):
             # Re-read actual Control/scope/intent on the SAME locked database
             # session after the TLS network await, before any HTTP bytes.
             await gate.tls_ready_after_locked_readback()
-            _gate(self._gate)
+            _preparation_gate_v2(self._gate)
             return AnyIOStream(_TLSBytes(native._stream, gate))
         except BaseException:
             # Cancellation is BaseException. Abort rather than attempt a
@@ -472,7 +498,11 @@ class _Backend(httpcore.AsyncNetworkBackend):
     __slots__ = ("_abort", "_connected", "_gate", "_native")
 
     def __init__(self, gate):
-        self._gate, self._connected, self._native = _gate(gate), False, None
+        self._gate, self._connected, self._native = (
+            _preparation_gate_v2(gate),
+            False,
+            None,
+        )
         self._abort = _CapturedAbort(gate)
 
     def abort(self):
@@ -487,7 +517,7 @@ class _Backend(httpcore.AsyncNetworkBackend):
     async def connect_tcp(
         self, host, port, timeout=None, local_address=None, socket_options=None
     ):
-        gate = _gate(self._gate)
+        gate = _preparation_gate_v2(self._gate)
         _need(
             not self._connected
             and host == gate.host
@@ -508,7 +538,7 @@ class _Backend(httpcore.AsyncNetworkBackend):
             self._gate, self, native, key=_TRANSPORT_KEY
         )
         try:
-            _gate(self._gate)
+            _preparation_gate_v2(self._gate)
             return _ConnectionStream(native, self._gate, self._abort)
         except BaseException:
             # The raw native socket has no HTTP plaintext buffered here.
@@ -573,7 +603,7 @@ class _Transport(httpx.AsyncBaseTransport):
 
     def __init__(self, gate, *, key):
         _need(key is _TRANSPORT_KEY, "native_live_transport_constructor_denied")
-        gate = _gate(gate)
+        gate = _preparation_gate_v2(gate)
         self._gate = gate
         self._backend = _Backend(gate)
         self._pool = httpcore.AsyncConnectionPool(
@@ -587,7 +617,7 @@ class _Transport(httpx.AsyncBaseTransport):
         )
 
     async def handle_async_request(self, request):
-        gate = _gate(self._gate)
+        gate = _preparation_gate_v2(self._gate)
         gate.take_transport(request)
         core = httpcore.Request(
             method=request.method,
@@ -637,4 +667,4 @@ def _create_transport_v1(gate, *, key):
     authority = _authority(gate)
 
     _need(key is authority._INTENT_KEY, "native_live_transport_source_key_required")
-    return _Transport(_gate(gate), key=_TRANSPORT_KEY)
+    return _Transport(_preparation_gate_v2(gate), key=_TRANSPORT_KEY)

@@ -398,7 +398,11 @@ class PhysicalWorkerFixture(WorkerFixture):
         monkeypatch.setattr(AsyncSession, "scalar", scalar)
         monkeypatch.setattr(physical, "_stamp", self.stamp)
         monkeypatch.setattr(physical, "_new_gate", new_gate)
-        monkeypatch.setattr(physical, "_COORDINATOR_BINDINGS", None)
+        original_cache = physical._COORDINATOR_BINDINGS[0]
+        physical._COORDINATOR_BINDINGS[0] = None
+        self.stack.callback(
+            physical._COORDINATOR_BINDINGS.__setitem__, 0, original_cache
+        )
         monkeypatch.setattr(physical, "submit_owned_live_fok_v1", _REAL_SUBMIT)
         material = q.source._LiveCredentialMaterialV1(
             ("synthetic-no-key", "synthetic-no-secret", "synthetic-no-passphrase"),

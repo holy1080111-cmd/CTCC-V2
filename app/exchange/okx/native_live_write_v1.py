@@ -23,7 +23,7 @@ from weakref import WeakKeyDictionary, ref
 import h11
 import httpx
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, AsyncSessionTransaction
 
 from app.database.repositories import native_live_ledger_v1 as ledger
 from app.domain.native_live_intent_v1 import (
@@ -49,6 +49,10 @@ from app.exchange.okx.live_account_config_observation_v1 import (
 )
 from app.exchange.okx.private_rest import build_signature
 from app.okx_live import trusted_source_bridge_v1 as source
+from app.trade_qualification.native_continuation_guard_v1 import (
+    check_saved_native_guard_v1,
+    save_native_guard_v1,
+)
 
 _QUALIFICATION_SOURCE_KEY_V1 = object()
 _CREDENTIAL_SOURCE_KEY_V1 = object()
@@ -60,7 +64,11 @@ _NEGATIVE_TASKS = set()
 _ACTIVE = ContextVar("ctcc_owned_live_physical_v1", default=None)
 _ORDER_PATH = "/api/v5/trade/order"
 _COORDINATOR = "app.okx_live.owned_qualification_v1"
-_COORDINATOR_BINDINGS = None
+# This existing API-integrity cache has one source-owned mutable slot. Its
+# namespace binding never changes and therefore remains fully source guarded.
+# It contains no qualification, clock, risk or execution result.
+_COORDINATOR_BINDINGS = [None]
+_COORDINATOR_CELL_IDENTITY = _COORDINATOR_BINDINGS
 _COORDINATOR_PATH = (
     Path(__file__).resolve().parents[3] / "app/okx_live/owned_qualification_v1.py"
 )
@@ -84,8 +92,12 @@ def _need(condition, code="native_live_physical_authority_unavailable"):
 
 
 def _coordinator_api():
-    global _COORDINATOR_BINDINGS
-
+    _need(
+        type(_COORDINATOR_BINDINGS) is list
+        and _COORDINATOR_BINDINGS is _COORDINATOR_CELL_IDENTITY
+        and len(_COORDINATOR_BINDINGS) == 1,
+        "native_live_coordinator_cell_changed",
+    )
     try:
         module = importlib.import_module(_COORDINATOR)
     except Exception:  # noqa: BLE001 -- no optional fallback can authorize a write.
@@ -94,7 +106,9 @@ def _coordinator_api():
     calls = tuple(getattr(module, name, None) for name in _API)
     _need(
         all(
-            type(call) is FunctionType and call.__module__ == _COORDINATOR
+            type(call) is FunctionType
+            and type(call.__module__) is str
+            and call.__module__ == _COORDINATOR
             for call in calls
         )
         and type(getattr(module, "LiveQualifiedExecutionFactsV1", None)) is type
@@ -107,8 +121,23 @@ def _coordinator_api():
     raw = _COORDINATOR_PATH.read_bytes()
     _need(0 < len(raw) <= 2 * 1024 * 1024)
     digest = sha(raw)
-    if _COORDINATOR_BINDINGS is not None:
-        original, actual_digest = _COORDINATOR_BINDINGS
+    cached = _COORDINATOR_BINDINGS[0]
+    if cached is not None:
+        _need(
+            type(cached) is tuple and len(cached) == 2,
+            "native_live_coordinator_cache_changed",
+        )
+        original, actual_digest = cached
+        _need(
+            type(original) is tuple
+            and len(original) == 4
+            and type(original[1]) is tuple
+            and len(original[1]) == len(_API)
+            and type(original[2]) is tuple
+            and len(original[2]) == len(_API)
+            and type(actual_digest) is str,
+            "native_live_coordinator_cache_changed",
+        )
         _need(
             actual_digest == digest
             and original[0] is module
@@ -138,21 +167,37 @@ def _coordinator_api():
         for call in calls
     )
     original = module, calls, pins, module.LiveQualifiedExecutionFactsV1
-    _COORDINATOR_BINDINGS = original, digest
+    _COORDINATOR_BINDINGS[0] = original, digest
     return original
 
 
-def _api_call(api, index, owner, **kwargs):
+def _require_api_integrity_v2(api):
+    _need(type(api) is tuple and len(api) == 4)
     module, calls, pins, kind = api
+    _need(
+        type(module) is ModuleType
+        and type(calls) is tuple
+        and len(calls) == len(_API)
+        and type(pins) is tuple
+        and len(pins) == len(_API)
+    )
     actual, current, _, actual_kind = _coordinator_api()
     _need(
         actual is module
         and actual_kind is kind
         and all(a is b for a, b in zip(calls, current, strict=True))
     )
-    for call, (code, defaults, kwdefaults, closure, cells, builtins, namespace) in zip(
-        calls, pins, strict=True
-    ):
+    for call, pin in zip(calls, pins, strict=True):
+        _need(type(pin) is tuple and len(pin) == 7)
+        code, defaults, kwdefaults, closure, cells, builtins, namespace = pin
+        _need(
+            type(cells) is tuple
+            and type(namespace) is tuple
+            and all(
+                type(item) is tuple and len(item) == 2 and type(item[0]) is str
+                for item in namespace
+            )
+        )
         _need(
             call.__code__ is code
             and call.__defaults__ is defaults
@@ -165,6 +210,11 @@ def _api_call(api, index, owner, **kwargs):
             )
             and all(call.__globals__.get(name) is value for name, value in namespace)
         )
+    return module, calls
+
+
+def _api_call(api, index, owner, **kwargs):
+    _module, calls = _require_api_integrity_v2(api)
     return calls[index](owner, key=_QUALIFICATION_SOURCE_KEY_V1, **kwargs)
 
 
@@ -373,20 +423,113 @@ def _record(gate):
     return record
 
 
-def _require_physical_gate_v1(gate, *, key):
+def _require_held_gate_scope_v2(gate, *, key):
+    """Structural ownership only; never an execution qualification result."""
     _need(key is transport._TRANSPORT_KEY)
     record = _record(gate)
     _need(
         _ACTIVE.get() is gate
         and record["phase"] in ("prepared", "attempted")
         and type(record["session"]) is AsyncSession
+        and type(record["transaction"]) is AsyncSessionTransaction
         and record["session"].in_transaction()
         and record["session"].sync_session.get_transaction()
         is record["transaction"].sync_transaction
         and _HELD.get(record["session"]) is record
         and record.get("legacy_fence_held") is True
+        and record.get("consumed") is True
     )
     _require_vendor_state_v1()
+    return record
+
+
+def _require_preparation_scope_v2(gate, *, key):
+    """Current owner/configuration liveness for non-dispatch preparation DATA.
+
+    This never reuses a positive mathematical qualification. Every plaintext
+    and native socket write still invokes the full, current authority below.
+    """
+    record = _require_held_gate_scope_v2(gate, key=key)
+    module, _calls = _require_api_integrity_v2(record["api"])
+    _need(module._NATIVE_GUARD is record["native_source_guard"])
+    check_saved_native_guard_v1(record)
+    facts = record["facts"]
+    qualification = module._QUALIFIED.get(record["owner"])
+    _need(
+        type(qualification) is dict
+        and qualification is record["preparation_qualification"]
+        and qualification["facts"] is facts
+        and qualification["spent"] is True
+        and qualification["revoked"] is False
+        and qualification["session"] is record["preparation_session"]
+    )
+    selected_state = module._OWNED.get(qualification["session"])
+    _need(
+        type(selected_state) is dict
+        and selected_state["source_owner"] is facts.source_owner
+        and selected_state["current_public_owner"] is facts.public_owner
+    )
+    state = module._session(qualification["session"], current=True)
+    _need(
+        state is selected_state
+        and state["active"] is True
+        and "inhibit_code" not in state
+        and state["source_owner"] is facts.source_owner
+        and state["current_public_owner"] is facts.public_owner
+    )
+    cfg = module.runtime._replay_live_runtime_v1(
+        state["runtime"], key=module.runtime._KEY
+    )
+    _need(
+        cfg["writer_factory"] is facts.session_factory
+        and cfg["writer_pins"] is facts.role_pins
+    )
+    view = source._SOURCES.get(facts.source_owner)
+    _need(
+        type(view) is dict
+        and (
+            view["uid"],
+            view["main_uid"],
+            view["credential_session_sha256"],
+            view["source_revision_sha256"],
+        )
+        == (
+            facts.account_uid,
+            facts.main_uid,
+            facts.credential_session_sha256,
+            facts.intent_data.source_revision_sha256,
+        )
+    )
+    public = module.public._OWNERS.get(facts.public_owner)
+    _need(type(public) is dict)
+    module.public._owned(public)
+    params = public["params"]
+    _need(
+        params.invocation is state["invocation"]
+        and params.report_id == state["report_id"]
+        and params.instrument_id == facts.intent_data.instrument_id
+        and params.stage == "post_g12"
+    )
+    rid, raw, digest = exact_live_intent_document_v1(facts.intent_data)
+    _need(
+        (
+            rid,
+            raw,
+            digest,
+            facts.intent_readback,
+            facts.request_json,
+            facts.request_sha256,
+        )
+        == record["preparation_lineage"]
+        and state["control"] == record["control"]
+        and module._decode_control(state["control_readback"]) == state["control"]
+    )
+    ledger._control(record["control"], facts.intent_data, utc_from_ns(_stamp().utc_ns))
+    return record
+
+
+def _require_physical_gate_v1(gate, *, key):
+    record = _require_held_gate_scope_v2(gate, key=key)
     _same_facts(record["facts"], _facts(record["owner"], record["api"], spent=True))
     now = utc_from_ns(_stamp().utc_ns)
     ledger._control(record["control"], record["facts"].intent_data, now)
@@ -414,7 +557,7 @@ def _retained(gate, key):
 
 
 def _capture_abort_pins_v1(gate):
-    record = _require_physical_gate_v1(gate, key=transport._TRANSPORT_KEY)
+    record = _require_preparation_scope_v2(gate, key=transport._TRANSPORT_KEY)
     types = tuple(
         (kind, call)
         for kind, name, call in transport._VENDOR_BINDINGS_V1
@@ -589,23 +732,23 @@ class _PhysicalLiveWriteGateV1:
     @property
     def host(self):
         return urlsplit(
-            _require_physical_gate_v1(self, key=transport._TRANSPORT_KEY)["origin"]
+            _require_preparation_scope_v2(self, key=transport._TRANSPORT_KEY)["origin"]
         ).hostname
 
     @property
     def tls_context(self):
-        return _require_physical_gate_v1(self, key=transport._TRANSPORT_KEY)[
+        return _require_preparation_scope_v2(self, key=transport._TRANSPORT_KEY)[
             "tls_context"
         ]
 
     def take_transport(self, request):
-        record = _require_physical_gate_v1(self, key=transport._TRANSPORT_KEY)
+        record = _require_preparation_scope_v2(self, key=transport._TRANSPORT_KEY)
         _need(not record["transport_taken"] and request is record["request"])
         _bind_request(record, request)
         record["transport_taken"] = True
 
     def bind_tls_peer(self, native_ssl):
-        record = _require_physical_gate_v1(self, key=transport._TRANSPORT_KEY)
+        record = _require_preparation_scope_v2(self, key=transport._TRANSPORT_KEY)
         _need(
             type(native_ssl) is ssl.SSLObject
             and native_ssl.context is record["tls_context"]
@@ -619,7 +762,7 @@ class _PhysicalLiveWriteGateV1:
         )
 
     async def tls_ready_after_locked_readback(self):
-        record = _require_physical_gate_v1(self, key=transport._TRANSPORT_KEY)
+        record = _require_preparation_scope_v2(self, key=transport._TRANSPORT_KEY)
         _need(not record["tls_ready"])
         await _held_readback(record)
         _require_physical_gate_v1(self, key=transport._TRANSPORT_KEY)
@@ -713,6 +856,28 @@ def _new_gate(record):
     _need(len(_GATES) < 16, "native_live_retained_response_capacity")
     _need(_HELD.get(record["session"]) is record and record.get("consumed") is True)
     _same_facts(record["facts"], _facts(record["owner"], record["api"], spent=True))
+    module, _calls = _require_api_integrity_v2(record["api"])
+    qualified = module._QUALIFIED.get(record["owner"])
+    _need(
+        type(qualified) is dict
+        and qualified["facts"] is record["facts"]
+        and qualified["spent"] is True
+        and qualified["revoked"] is False
+    )
+    # Only source-integrity and immutable lineage are pinned. No mathematical
+    # PASS, clock freshness, risk eligibility or write permission is cached.
+    save_native_guard_v1(record, module._NATIVE_GUARD)
+    rid, raw, digest = exact_live_intent_document_v1(record["facts"].intent_data)
+    record["preparation_qualification"] = qualified
+    record["preparation_session"] = qualified["session"]
+    record["preparation_lineage"] = (
+        rid,
+        raw,
+        digest,
+        record["facts"].intent_readback,
+        record["facts"].request_json,
+        record["facts"].request_sha256,
+    )
     _need(
         not os.environ.get("SSL_CERT_FILE")
         and not os.environ.get("SSL_CERT_DIR")

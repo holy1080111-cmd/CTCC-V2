@@ -1754,6 +1754,11 @@ _install(
         ledger.function_specs.lifecycle,
         financial,
         source,
+        # The physical namespace has a fixed-identity API cache cell. Its
+        # legitimate contents may populate, while helpers, methods, constants,
+        # source guard aliases and native transport callbacks remain pinned.
+        physical,
+        physical.transport,
         public,
         # Closed Global public read/capture graph: the sole reader, canonical
         # wire/packet validators, projection and their native clock/root
