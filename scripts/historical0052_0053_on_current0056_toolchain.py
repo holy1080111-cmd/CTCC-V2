@@ -53,7 +53,7 @@ def _source(root, target):
         _deny()
     scope = getter(root)
     if (
-        scope.actual_source_head not in {"0056", "0057"}
+        scope.actual_source_head not in {"0056", "0057", "0058"}
         or scope.database_target != target
     ):
         _deny()

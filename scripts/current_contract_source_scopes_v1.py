@@ -14,6 +14,7 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 
 from scripts import current0057_migration_pin as source57
+from scripts import current0058_migration_pin as source58
 from scripts import manifest
 from scripts.current0056_migration_pin import (
     HEAD as SOURCE56_HEAD,
@@ -36,6 +37,10 @@ _PREFIX = {
         source57.MIGRATION_INVENTORY_SHA256,
         source57.MIGRATION_INVENTORY_COUNT,
     ),
+    source58.HEAD: (
+        source58.MIGRATION_INVENTORY_SHA256,
+        source58.MIGRATION_INVENTORY_COUNT,
+    ),
 }
 _TAIL = {
     "0053": (
@@ -55,6 +60,7 @@ _TAIL = {
     ),
     SOURCE56_HEAD: (MIGRATION_PATH, MIGRATION_SHA256, "0055"),
     source57.HEAD: (source57.MIGRATION_PATH, source57.MIGRATION_SHA256, "0056"),
+    source58.HEAD: (source58.MIGRATION_PATH, source58.MIGRATION_SHA256, "0057"),
 }
 _SUPPORTED = {
     "0052": frozenset(("0052",)),
@@ -64,6 +70,9 @@ _SUPPORTED = {
     SOURCE56_HEAD: frozenset(("0052", "0053", "0054", "0055", SOURCE56_HEAD)),
     source57.HEAD: frozenset(
         ("0052", "0053", "0054", "0055", SOURCE56_HEAD, source57.HEAD)
+    ),
+    source58.HEAD: frozenset(
+        ("0052", "0053", "0054", "0055", SOURCE56_HEAD, source57.HEAD, source58.HEAD)
     ),
 }
 
@@ -185,6 +194,11 @@ def database0055_source_scope(root):
 def database0056_source_scope(root):
     """Keep actual DB0056 distinct under exact supported source56/source57."""
     return _scope(root, "0056")
+
+
+def database0057_source_scope(root):
+    """Keep physical DB0057 separate under exact source57/source58 inventories."""
+    return _scope(root, "0057")
 
 
 def current0054_source_scope(root):
