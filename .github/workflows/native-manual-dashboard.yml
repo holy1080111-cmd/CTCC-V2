@@ -2,7 +2,7 @@ name: Native manual dashboard
 
 on:
   push:
-    branches: ['develop/**']
+    branches: [work/db0056-n324-fixture-acceptance]
   pull_request:
     branches: [main, 'develop/**']
   workflow_dispatch:
@@ -12,6 +12,7 @@ permissions:
 
 jobs:
   browser-contract:
+    if: github.ref == 'refs/heads/work/db0056-n324-fixture-acceptance'
     name: Manual dashboard DOM and security contract
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -19,6 +20,7 @@ jobs:
       - name: Checkout exact source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 2
           persist-credentials: false
 
       - name: Validate the original dashboard script without starting a service
@@ -26,6 +28,11 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          commit=2b5f7e94998a5efffa1316370b97c5a4f113890e
+          test "$(git rev-parse HEAD^)" = "$commit"
+          test "$(git rev-parse "$commit^{tree}")" = 214794554f58f1a01a8b7f43b06349ebb064179d
+          test "$(git diff --name-only "$commit" HEAD)" = $'.github/workflows/db0056-fitted-catalog-diagnostic.yml\n.github/workflows/native-manual-dashboard.yml\nMANIFEST.sha256'
+          git checkout --detach "$commit"
           python3.12 -m venv "$RUNNER_TEMP/ctcc-ui-venv"
           py="$RUNNER_TEMP/ctcc-ui-venv/bin/python"
           "$py" -m pip --isolated install --require-hashes --only-binary=:all: \
@@ -36,6 +43,7 @@ jobs:
           mkdir "$out"
           git -c core.autocrlf=false -c core.eol=lf archive --format=tar \
             --output="$out/exact-source.tar" HEAD
+          test "$(sha256sum "$out/exact-source.tar" | cut -d ' ' -f 1)" = e4b22eb63606f86d1eee7251091dd133ca20e0e9359cf4ace10742003072bac2
           "$py" -B -m scripts.render_native_manual_demo_dashboard \
             --symbol BTC-USDT-SWAP --symbol ETH-USDT-SWAP \
             --max-leverage 20 --max-contracts 1 --execution-enabled \
