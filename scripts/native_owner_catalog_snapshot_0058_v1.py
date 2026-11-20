@@ -14,7 +14,13 @@ WITH relations AS (
  SELECT c.*,n.nspname FROM pg_catalog.pg_class c
  JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public'
 ), entries AS (
- SELECT 'relation' AS kind,
+ SELECT 'schema' AS kind,to_jsonb(n)-'oid' AS value
+ FROM pg_catalog.pg_namespace n WHERE n.nspname='public'
+ UNION ALL
+ SELECT 'database',to_jsonb(d)-ARRAY['oid','datfrozenxid','datminmxid']
+ FROM pg_catalog.pg_database d WHERE d.datname=current_database()
+ UNION ALL
+ SELECT 'relation',
  (to_jsonb(c)-ARRAY['oid','relfilenode','relpages','reltuples','relallvisible',
  'relfrozenxid','relminmxid','reltype','reltoastrelid','relrewrite']) ||
  jsonb_build_object('type_name',NULLIF(c.reltype,0)::regtype::text,
@@ -57,7 +63,8 @@ WITH relations AS (
  SELECT 'function',jsonb_build_object('name',p.proname,
  'arguments',pg_catalog.pg_get_function_identity_arguments(p.oid),
  'definition',CASE WHEN p.prokind='a' THEN p.prosrc ELSE pg_catalog.pg_get_functiondef(p.oid) END,
- 'aggregate',(SELECT to_jsonb(a)-'aggfnoid' FROM pg_catalog.pg_aggregate a WHERE a.aggfnoid=p.oid),
+ 'aggregate',(SELECT (to_jsonb(a)-'aggfnoid')||jsonb_build_object('function',to_jsonb(p)-'oid')
+ FROM pg_catalog.pg_aggregate a WHERE a.aggfnoid=p.oid),
  'owner',p.proowner,'acl',p.proacl,'kind',p.prokind)
  FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
  WHERE n.nspname='public'
