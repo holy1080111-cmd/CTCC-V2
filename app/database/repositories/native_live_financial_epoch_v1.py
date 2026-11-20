@@ -659,7 +659,7 @@ def _facts_from_original_sample_v1(rows, sample):
         document["sequence"],
         datetime.fromisoformat(document["peak_window_started_at"]),
         rows.observed_at,
-        rows.observed_at,
+        rows.available_at,
         rows.cutoff,
         rows.history_start,
         rows.observed_at,

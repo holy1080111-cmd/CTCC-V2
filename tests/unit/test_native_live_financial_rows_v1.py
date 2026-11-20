@@ -178,7 +178,15 @@ def _view(*, mutation=None):
         "history_pages": tuple(pages),
         "current_pages": (
             SimpleNamespace(
-                selector=SimpleNamespace(stream="balance"), raw_body=balance
+                selector=SimpleNamespace(stream="balance"),
+                raw_body=balance,
+                stamps=(
+                    ClockStamp(
+                        utc_ns=bridge._utc_ns(NOW - timedelta(seconds=1)),
+                        monotonic_ns=999,
+                    ),
+                )
+                * 4,
             ),
         ),
         "current_readback": SimpleNamespace(
@@ -197,6 +205,8 @@ def _view(*, mutation=None):
 def test_raw_financial_rows_reconcile_fill_bill_mirrors_signed_fee_and_funding_without_double_counting():
     value = subject._derive_original_financial_rows_v1(_view())
     assert value.equity == Decimal(100) and value.available_margin == Decimal(100)
+    assert value.observed_at == NOW - timedelta(seconds=1)
+    assert value.available_at == NOW
     assert sum(item.gross_pnl + item.signed_fee for item in value.fills) == Fraction(
         98, 100
     )

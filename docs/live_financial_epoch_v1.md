@@ -83,6 +83,9 @@ The canonical Live qualification coordinator must separately combine the
 source-owned financial facts with G1–G12, fresh recheck, current risk, durable
 intent and explicit operator one-shot Arm.
 
+The balance observation, epoch genesis and HWM sample time are the original
+balance-page body-completion time. Availability is separately the final whole
+capture completion; neither timestamp is replaced with validation time.
 Facts expose the actual availability time, record cutoff and exact timestamped
 cashflows so the final gate can recompute UTC-day/rolling-seven-day loss at its
 own current time. A new eight-day query window is recommended; the gate must

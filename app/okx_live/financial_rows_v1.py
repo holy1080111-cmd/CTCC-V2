@@ -130,6 +130,7 @@ class LiveFinancialRowsDataV1:
     main_uid: str
     credential_session_sha256: str
     observed_at: datetime
+    available_at: datetime
     history_start: datetime
     cutoff: datetime
     equity: Decimal
@@ -409,11 +410,12 @@ def _derive_original_financial_rows_v1(view):
                 cutoff_ms=cutoff_ms,
             )
         )
-    observed = utc_from_ns(view["current_completed"].utc_ns)
+    observed = utc_from_ns(balance_pages[0].stamps[3].utc_ns)
+    available_at = utc_from_ns(view["current_completed"].utc_ns)
     cutoff = utc_from_ns(cutoff_ms * 1_000_000)
     _need(
         view["plan"].history_start <= observed - timedelta(days=7)
-        and cutoff <= observed
+        and cutoff <= observed <= available_at
     )
     receipt = canonical(
         {
@@ -423,6 +425,7 @@ def _derive_original_financial_rows_v1(view):
             "raw_bank_sha256": view["raw_bank_sha256"],
             "financial_tail_sha256": sha(view["financial_tail_json"]),
             "observed_at": observed.isoformat(),
+            "available_at": available_at.isoformat(),
             "history_start": view["plan"].history_start.isoformat(),
             "cutoff": cutoff.isoformat(),
             "fills": [sha(item.source_row_json) for item in fills],
@@ -445,6 +448,7 @@ def _derive_original_financial_rows_v1(view):
         view["main_uid"],
         view["credential_session_sha256"],
         observed,
+        available_at,
         view["plan"].history_start,
         cutoff,
         equity_decimal,
