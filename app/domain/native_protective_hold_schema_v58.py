@@ -168,7 +168,7 @@ _END = r"""
       IF row_value->>'ordId' IS DISTINCT FROM expected_query->>'ordId'
          OR row_value->>'instId' IS DISTINCT FROM expected->>'instId' OR row_value->>'instType' IS DISTINCT FROM 'SWAP'
          OR row_value->>'posSide' IS DISTINCT FROM expected->>'posSide'
-         OR row_value->>'side' IS DISTINCT FROM CASE prefix WHEN 'entry' THEN expected->>'side' ELSE opposite END
+         OR row_value->>'side' IS DISTINCT FROM (CASE prefix WHEN 'entry' THEN expected->>'side' ELSE opposite END)
          OR row_value->>'feeCcy' IS DISTINCT FROM r.settlement_currency
          OR row_value->>'tradeId' !~ '^[1-9][0-9]{0,39}$' OR row_value->>'billId' !~ '^[1-9][0-9]{0,39}$' THEN RETURN false; END IF;
       amount := public.qualification_native_number_v55(row_value->'fillSz');
