@@ -93,7 +93,9 @@ def live_source(monkeypatch, market, tmp_path):
 
     def request(stage="initial", **changes):
         barrier = (
-            ClockStamp.model_validate(clock.stamp()) if stage == "post_g12" else None
+            ClockStamp.model_validate(clock.stamp())
+            if stage in ("post_g12", "controlled_exit")
+            else None
         )
         params = subject.LivePublicCaptureParametersV1(
             root=root,
@@ -103,10 +105,19 @@ def live_source(monkeypatch, market, tmp_path):
             stage=stage,
             expires_at=utc_from_ns(clock.base) + timedelta(seconds=20),
             expires_monotonic_ns=20_000_000_000,
-            candidate_sha256="a" * 64 if stage == "post_g12" else None,
+            candidate_sha256="a" * 64
+            if stage in ("post_g12", "controlled_exit")
+            else None,
             publication_barrier=barrier,
-            publication_receipt_sha256="b" * 64 if stage == "post_g12" else None,
-            public_policy_sha256=subject.POLICY_SHA256,
+            publication_receipt_sha256="b" * 64
+            if stage in ("post_g12", "controlled_exit")
+            else None,
+            public_policy_sha256=subject.CLOSE_POLICY_SHA256
+            if stage == "controlled_exit"
+            else subject.POLICY_SHA256,
+            request_not_before=ClockStamp.model_validate(clock.stamp())
+            if stage == "controlled_exit"
+            else None,
         )
         params = replace(params, **changes)
         opaque = object()
@@ -121,7 +132,7 @@ def live_source(monkeypatch, market, tmp_path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("stage", ["initial", "post_g12"])
+@pytest.mark.parametrize("stage", ["initial", "post_g12", "controlled_exit"])
 async def test_owned_capture_reopens_unchanged_production_raw_and_projects_live(
     live_source, stage, market
 ):
@@ -172,6 +183,18 @@ async def test_owned_capture_reopens_unchanged_production_raw_and_projects_live(
     receipt = decode(value.receipt_json)
     assert receipt == decode(parent.content[subject._FILE])
     assert receipt["raw_packet_relabelled"] is False
+    if stage == "controlled_exit":
+        assert (
+            receipt["schema_version"]
+            == "ctcc.native_live.production_public_close_envelope.v1"
+        )
+        assert receipt["policy_sha256"] == subject.CLOSE_POLICY_SHA256
+        assert receipt["request_not_before"] == params.request_not_before.model_dump()
+        assert value.publication_barrier == params.publication_barrier
+    else:
+        assert receipt["schema_version"] == subject._SCHEMA
+        assert receipt["policy_sha256"] == subject.POLICY_SHA256
+        assert "request_not_before" not in receipt
     assert receipt["execution_authority"] is False
     assert receipt["raw_file_count"] == len(value.raw_files)
     assert receipt["raw_total_bytes"] == sum(len(item.raw) for item in value.raw_files)
@@ -193,9 +216,13 @@ async def test_owned_capture_reopens_unchanged_production_raw_and_projects_live(
     ]
     for stamp in starts:
         assert all(stamp[field] > receipt["capture_started"][field] for field in stamp)
-        if stage == "post_g12":
+        if stage in ("post_g12", "controlled_exit"):
             assert all(
                 stamp[field] > receipt["publication_barrier"][field] for field in stamp
+            )
+        if stage == "controlled_exit":
+            assert all(
+                stamp[field] > receipt["request_not_before"][field] for field in stamp
             )
     assert receipt["http_request_count"] == len(harness.requests)
     assert receipt["ws_connection_count"] == len(harness.connections) == 1
@@ -297,6 +324,51 @@ async def test_post_g12_requires_original_candidate_barrier_receipt(
     with pytest.raises(subject.LivePublicSourceError):
         await subject.capture_owned_live_public_v1(opaque, key=key)
     assert not parent.content and not harness.requests
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "change",
+    (
+        {"request_not_before": None},
+        {"candidate_sha256": None},
+        {"publication_barrier": None},
+        {"publication_receipt_sha256": None},
+        {"public_policy_sha256": subject.POLICY_SHA256},
+    ),
+)
+async def test_exit_capture_requires_distinct_policy_and_both_original_and_new_barriers(
+    live_source, change
+):
+    _, parent, _, harness, key, request = live_source
+    opaque, _ = request("controlled_exit", **change)
+    with pytest.raises(subject.LivePublicSourceError):
+        await subject.capture_owned_live_public_v1(opaque, key=key)
+    assert not parent.content and not harness.requests and not harness.connections
+
+
+def test_exit_preserves_older_original_g12_barrier_as_history_without_stretching_clock_batch(
+    tmp_path,
+):
+    base = 1_795_132_800_000_000_000
+    original = ClockStamp(utc_ns=base, monotonic_ns=1_000_000_000_000)
+    new = ClockStamp(utc_ns=base + 90_000_000_000, monotonic_ns=1_090_000_000_000)
+    params = subject.LivePublicCaptureParametersV1(
+        root=tmp_path,
+        report_id="original-report",
+        instrument_id="BTC-USDT-SWAP",
+        invocation=object(),
+        stage="controlled_exit",
+        expires_at=utc_from_ns(base + 120_000_000_000),
+        expires_monotonic_ns=1_120_000_000_000,
+        candidate_sha256="a" * 64,
+        publication_barrier=original,
+        publication_receipt_sha256="b" * 64,
+        public_policy_sha256=subject.CLOSE_POLICY_SHA256,
+        request_not_before=new,
+    )
+    checked = subject._parameters(params)
+    assert checked.publication_barrier == original and checked.request_not_before == new
 
 
 @pytest.mark.asyncio

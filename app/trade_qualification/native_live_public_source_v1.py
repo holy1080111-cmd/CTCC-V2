@@ -97,6 +97,18 @@ POLICY_BYTES = canonical(
     }
 )
 POLICY_SHA256 = sha(POLICY_BYTES)
+CLOSE_POLICY_BYTES = canonical(
+    {
+        "schema_version": "ctcc.native_live.controlled_exit_public_policy.v1",
+        "ancestor_policy_sha256": POLICY_SHA256,
+        "purpose": "controlled_exit",
+        "original_publication_preserved": True,
+        "new_request_barrier_required": True,
+        "original_candidate_preserved": True,
+        "execution_authority": False,
+    }
+)
+CLOSE_POLICY_SHA256 = sha(CLOSE_POLICY_BYTES)
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -114,6 +126,7 @@ class LivePublicCaptureParametersV1:
     publication_barrier: ClockStamp | None
     publication_receipt_sha256: str | None
     public_policy_sha256: str
+    request_not_before: ClockStamp | None = None
 
 
 class OwnedLivePublicSourceV1:
@@ -213,13 +226,17 @@ def _parameters(value):
     _need(
         value.invocation is not None
         and type(value.stage) is str
-        and value.stage in {"initial", "post_g12"}
+        and value.stage in {"initial", "post_g12", "controlled_exit"}
     )
     _need(type(value.expires_at) is datetime and value.expires_at.tzinfo is UTC)
     _need(type(value.expires_monotonic_ns) is int and value.expires_monotonic_ns > 0)
+    expected_policy = (
+        CLOSE_POLICY_SHA256 if value.stage == "controlled_exit" else POLICY_SHA256
+    )
     _need(
-        value.public_policy_sha256 == POLICY_SHA256
+        value.public_policy_sha256 == expected_policy
         and sha(POLICY_BYTES) == POLICY_SHA256
+        and sha(CLOSE_POLICY_BYTES) == CLOSE_POLICY_SHA256
     )
     _need(
         value.candidate_sha256 is None
@@ -227,7 +244,7 @@ def _parameters(value):
         and _HEX.fullmatch(value.candidate_sha256) is not None
     )
     barrier = _barrier(value.publication_barrier)
-    if value.stage == "post_g12":
+    if value.stage in ("post_g12", "controlled_exit"):
         _need(
             barrier is not None
             and value.candidate_sha256 is not None
@@ -236,11 +253,24 @@ def _parameters(value):
         )
     else:
         _need(barrier is None and value.publication_receipt_sha256 is None)
+    request_barrier = _barrier(value.request_not_before)
+    if value.stage == "controlled_exit":
+        _need(
+            request_barrier is not None
+            and barrier is not None
+            and request_barrier["utc_ns"] > barrier["utc_ns"]
+            and request_barrier["monotonic_ns"] > barrier["monotonic_ns"]
+        )
+    else:
+        _need(request_barrier is None)
     return replace(
         value,
         publication_barrier=None
         if barrier is None
         else ClockStamp.model_validate(barrier),
+        request_not_before=None
+        if request_barrier is None
+        else ClockStamp.model_validate(request_barrier),
     )
 
 
@@ -475,8 +505,14 @@ async def capture_owned_live_public_v1(request, *, key):
     try:
         started = _current(state)
         barrier = _barrier(params.publication_barrier)
-        if barrier is not None:
-            _after(started, barrier)
+        request_barrier = _barrier(params.request_not_before)
+        # The original G12 barrier is immutable history for an exit. Clock
+        # continuity remains bounded around this NEW measured request barrier.
+        effective_barrier = (
+            request_barrier if params.stage == "controlled_exit" else barrier
+        )
+        if effective_barrier is not None:
+            _after(started, effective_barrier)
         not_before = started
         policy = _market_policy()
         _need(collectors._digest(policy) == _WIRE_POLICY_SHA256)
@@ -524,7 +560,9 @@ async def capture_owned_live_public_v1(request, *, key):
             )
             receipt = canonical(
                 {
-                    "schema_version": _SCHEMA,
+                    "schema_version": "ctcc.native_live.production_public_close_envelope.v1"
+                    if params.stage == "controlled_exit"
+                    else _SCHEMA,
                     "capture_id": uuid4().hex,
                     "environment": "live",
                     "source_environment": packet.environment,
@@ -535,7 +573,12 @@ async def capture_owned_live_public_v1(request, *, key):
                     "candidate_sha256": params.candidate_sha256,
                     "publication_receipt_sha256": params.publication_receipt_sha256,
                     "publication_barrier": barrier,
-                    "policy_sha256": POLICY_SHA256,
+                    "policy_sha256": params.public_policy_sha256,
+                    **(
+                        {"request_not_before": request_barrier}
+                        if params.stage == "controlled_exit"
+                        else {}
+                    ),
                     "plan_sha256": captured.plan_sha256,
                     "journal_sha256": captured.journal_sha256,
                     "packet_sha256": packet.bundle_sha256,

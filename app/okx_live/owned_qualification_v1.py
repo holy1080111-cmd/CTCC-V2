@@ -61,6 +61,7 @@ _PUBLIC_SOURCE_KEY_V1 = object()
 _SESSION_KEY = object()
 _OWNED = WeakKeyDictionary()
 _PUBLIC_REQUESTS = WeakKeyDictionary()
+_CLOSE_PUBLIC_REQUESTS = WeakKeyDictionary()
 _CONTROL_REQUESTS = WeakKeyDictionary()
 _QUALIFIED = WeakKeyDictionary()
 _CHALLENGES = {}
@@ -130,6 +131,10 @@ class OwnedLiveOperatorSessionV1(_Opaque):
 
 
 class _PublicRequest(_Opaque):
+    __slots__ = ()
+
+
+class _ClosePublicRequest(_Opaque):
     __slots__ = ()
 
 
@@ -386,7 +391,34 @@ async def _control(session, action):
 
 
 def _consume_live_public_request_v1(request, *, key):
-    _need(key is public._COORDINATOR_REQUEST_KEY_V1 and type(request) is _PublicRequest)
+    _need(key is public._COORDINATOR_REQUEST_KEY_V1)
+    if type(request) is _ClosePublicRequest:
+        _NATIVE_GUARD()
+        from app.okx_live import owned_lifecycle_v1 as lifecycle
+
+        record = _CLOSE_PUBLIC_REQUESTS.pop(request, None)
+        _need(type(record) is tuple and len(record) == 3)
+        owner, handle, parameters = record
+        consent = _replay_spent_owned_live_close_permission_v1(
+            owner, handle, key=lifecycle._CLOSE_PERMISSION_KEY_V1
+        )
+        qualified, state = _close_consent_record_v1(
+            owner, handle, used=True, key=lifecycle._CLOSE_PERMISSION_KEY_V1
+        )
+        _need(
+            qualified["close_public_used"] is True
+            and parameters.stage == "controlled_exit"
+            and parameters.invocation is state["invocation"]
+            and parameters.expires_at == consent.expires_at
+            and parameters.expires_monotonic_ns == consent.expiry_monotonic_ns
+            and parameters.public_policy_sha256 == public.CLOSE_POLICY_SHA256
+            and parameters.candidate_sha256 == state["snapshot"].candidate_sha256
+            and parameters.publication_barrier
+            == state["publication"].publication_barrier
+            and parameters.publication_receipt_sha256 == sha(state["publication_json"])
+        )
+        return parameters
+    _need(type(request) is _PublicRequest)
     record = _PUBLIC_REQUESTS.pop(request, None)
     _need(type(record) is tuple and len(record) == 2)
     session, parameters = record
@@ -437,6 +469,46 @@ async def _public(session, stage):
         )
     finally:
         _PUBLIC_REQUESTS.pop(request, None)
+
+
+async def _capture_owned_live_close_public_v1(owner, physical_handle, *, key):
+    """One NEW anonymous-public capture under the distinct close consent."""
+    _NATIVE_GUARD()
+    record, state = _close_consent_record_v1(owner, physical_handle, used=True, key=key)
+    _need(record["close_public_used"] is False)
+    record["close_public_used"] = True
+    consent = record["close_permission_facts"]
+    _need(consent == _close_consent_facts_v1(record, state))
+    _publication(state)
+    cfg = runtime._replay_live_runtime_v1(state["runtime"], key=runtime._KEY)
+    root = _private_child(cfg["public_root"], state["report_id"] + "_controlled_exit")
+    parameters = public.LivePublicCaptureParametersV1(
+        root,
+        state["report_id"],
+        state["instrument_id"],
+        state["invocation"],
+        "controlled_exit",
+        consent.expires_at,
+        consent.expiry_monotonic_ns,
+        state["snapshot"].candidate_sha256,
+        state["publication"].publication_barrier,
+        sha(state["publication_json"]),
+        public.CLOSE_POLICY_SHA256,
+        request_not_before=_stamp(),
+    )
+    request = object.__new__(_ClosePublicRequest)
+    _CLOSE_PUBLIC_REQUESTS[request] = owner, physical_handle, parameters
+    try:
+        captured = await public.capture_owned_live_public_v1(
+            request, key=_PUBLIC_SOURCE_KEY_V1
+        )
+        state["public_owners"].append(captured)
+        _replay_spent_owned_live_close_permission_v1(owner, physical_handle, key=key)
+        return captured, public._replay_owned_live_public_v1(
+            captured, key=_PUBLIC_SOURCE_KEY_V1
+        )
+    finally:
+        _CLOSE_PUBLIC_REQUESTS.pop(request, None)
 
 
 async def _financial(session):
@@ -1226,6 +1298,7 @@ async def run_owned_live_operator_once_v1(session):
             "postsubmit_used": False,
             "close_permission_used": False,
             "close_permission_facts": None,
+            "close_public_used": False,
         }
         state["qualified_owner"] = qualified
         _qualified(qualified, spent=False)

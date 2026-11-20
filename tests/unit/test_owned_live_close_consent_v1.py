@@ -99,3 +99,17 @@ async def test_saved_consent_data_and_actual_module_key_cannot_create_close_owne
             with pytest.raises(subject.OwnedLiveQualificationError):
                 call(owner, object(), key=lifecycle._CLOSE_PERMISSION_KEY_V1)
     assert not subject._QUALIFIED
+
+
+@pytest.mark.asyncio
+async def test_constructor_or_saved_params_cannot_mint_close_public_request():
+    request = object.__new__(subject._ClosePublicRequest)
+    with pytest.raises(subject.OwnedLiveQualificationError):
+        subject._consume_live_public_request_v1(
+            request, key=subject.public._COORDINATOR_REQUEST_KEY_V1
+        )
+    with pytest.raises(subject.OwnedLiveQualificationError):
+        await subject._capture_owned_live_close_public_v1(
+            object(), object(), key=lifecycle._CLOSE_PERMISSION_KEY_V1
+        )
+    assert not subject._CLOSE_PUBLIC_REQUESTS
