@@ -10,10 +10,11 @@ import pytest
 from scripts import current_contract_source_scopes_v1 as scopes
 from scripts import manifest
 from scripts import native_owner_upgrade_0056_v1 as upgrade
+from tests.historical_source_prefix_v1 import trim_synthetic_migration_tree
 from tests.unit.test_native_owner_upgrade_0056_v1 import _pins
 
 
-@pytest.mark.parametrize("head", ["0056", "0057"])
+@pytest.mark.parametrize("head", ["0056", "0057", "0058"])
 def test_upgrade_preparation_keeps_fixed_database55_to56_under_real_source_graph(
     tmp_path, monkeypatch, head
 ):
@@ -25,8 +26,7 @@ def test_upgrade_preparation_keeps_fixed_database55_to56_under_real_source_graph
         source / "migrations",
         ignore=lambda _root, names: {"__pycache__"} & set(names),
     )
-    if head == "0056":
-        (source / "migrations/versions/0057_g12_restricted_writer.py").unlink()
+    trim_synthetic_migration_tree(source, source_root=upgrade._SOURCE, target=head)
     manifest.write_manifest(source, source / "MANIFEST.sha256")
     current = scopes.actual_current_source_scope(source)
     route = SimpleNamespace(
@@ -62,7 +62,7 @@ def test_upgrade_preparation_keeps_fixed_database55_to56_under_real_source_graph
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("head", ["0056", "0057"])
+@pytest.mark.parametrize("head", ["0056", "0057", "0058"])
 async def test_upgrade_receipt_does_not_project_actual57_source_as56(monkeypatch, head):
     pins = _pins()
     route = SimpleNamespace(
@@ -117,8 +117,8 @@ async def test_upgrade_receipt_does_not_project_actual57_source_as56(monkeypatch
         and result["database_head_after"] == "0056"
     )
     assert result["grants_installed"] is result["execution_authority"] is False
-    if head == "0057":
-        assert result["source_head"] == "0057" and result["database_target"] == "0056"
+    if head in {"0057", "0058"}:
+        assert result["source_head"] == head and result["database_target"] == "0056"
         assert result["database_migration_prefix_sha256"] == scopes._PREFIX["0056"][0]
     else:
         assert "source_head" not in result and "database_target" not in result

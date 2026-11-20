@@ -55,10 +55,12 @@ async def test_fresh_current0053_fixture_has_real_source_and_database_head(
     assert observed["native_baseline_admission"] is False
     assert observed["runtime_admission"] is False
     assert observed["account_complete"] is observed["execution_authority"] is False
-    if source_scope.actual_source_head in {"0055", "0056"}:
+    if source_scope.actual_source_head in {"0055", "0056", "0057", "0058"}:
         operation = {
             "0055": source55.read_historical0052_migration_on_current0055,
             "0056": source56.read_historical0052_migration_on_current0056,
+            "0057": source56.read_historical0052_migration_on_current0056,
+            "0058": source56.read_historical0052_migration_on_current0056,
         }[source_scope.actual_source_head]
         async with original_frame_database.connect() as connection:
             readback = await operation(connection)
@@ -81,7 +83,7 @@ async def test_fresh_current0053_fixture_has_real_source_and_database_head(
                 await historical52.read_historical0052_migration_on_current0054(
                     connection
                 )
-            if source_scope.actual_source_head == "0056":
+            if source_scope.actual_source_head in {"0056", "0057", "0058"}:
                 with pytest.raises(source55.Current0055ReadbackError):
                     await source55.read_historical0052_migration_on_current0055(
                         connection
@@ -111,11 +113,13 @@ async def test_current0053_capture_keeps_real0053_head_and_historical0052_compon
             "0054": historical53.capture_historical0053_owner_on_current0054,
             "0055": source55.capture_historical0053_owner_on_current0055,
             "0056": source56.capture_historical0053_owner_on_current0056,
+            "0057": source56.capture_historical0053_owner_on_current0056,
+            "0058": source56.capture_historical0053_owner_on_current0056,
         }[source_scope.actual_source_head]
         document, raw = await operation(connection)
     assert raw and document["source_head"] == source_scope.actual_source_head
     assert document["database_head"] == "0053"
-    if source_scope.actual_source_head in {"0055", "0056"}:
+    if source_scope.actual_source_head in {"0055", "0056", "0057", "0058"}:
         assert document["schema"] == (
             f"ctcc.source{source_scope.actual_source_head}_historical0053."
             "owner_observation.v1"
@@ -170,6 +174,8 @@ async def test_real_current0053_migration_readback_composes_separate_owner_contr
         "0054": historical53.read_historical0053_migration_on_current0054,
         "0055": source55.read_historical0053_migration_on_current0055,
         "0056": source56.read_historical0053_migration_on_current0056,
+        "0057": source56.read_historical0053_migration_on_current0056,
+        "0058": source56.read_historical0053_migration_on_current0056,
     }[source_scope.actual_source_head]
     async with original_frame_database_0053.connect() as connection:
         if owner.PG17_NATIVE_BASELINE_STATUS == "PENDING_GENUINE_NATIVE_PG17_CAPTURE":
@@ -180,12 +186,18 @@ async def test_real_current0053_migration_readback_composes_separate_owner_contr
                 await operation(connection)
         else:
             result = await operation(connection)
-            if source_scope.actual_source_head in {"0054", "0055", "0056"}:
+            if source_scope.actual_source_head in {
+                "0054",
+                "0055",
+                "0056",
+                "0057",
+                "0058",
+            }:
                 assert (
                     result["source_head"] == source_scope.actual_source_head
                     and result["database_head"] == "0053"
                 )
-                if source_scope.actual_source_head in {"0055", "0056"}:
+                if source_scope.actual_source_head in {"0055", "0056", "0057", "0058"}:
                     assert result["schema"] == (
                         f"ctcc.source{source_scope.actual_source_head}_historical0053."
                         "migration_readback.v1"
@@ -232,18 +244,18 @@ async def test_strict_current0053_capture_never_relabels_source0054(
 ):
     source_scope = source_scopes.historical0053_source_scope(ROOT)
     async with original_frame_database_0053.connect() as connection:
-        if source_scope.actual_source_head in {"0054", "0055", "0056"}:
+        if source_scope.actual_source_head in {"0054", "0055", "0056", "0057", "0058"}:
             with pytest.raises(capture.Current0053CaptureError):
                 await capture.capture_current0053_owner(connection)
         else:
             document, _ = await capture.capture_current0053_owner(connection)
             assert document["source_head"] == document["database_head"] == "0053"
             assert document["native_baseline_admission"] is False
-        if source_scope.actual_source_head in {"0055", "0056"}:
+        if source_scope.actual_source_head in {"0055", "0056", "0057", "0058"}:
             with pytest.raises(historical53.Historical0053ScopeError):
                 await historical53.capture_historical0053_owner_on_current0054(
                     connection
                 )
-        if source_scope.actual_source_head == "0056":
+        if source_scope.actual_source_head in {"0056", "0057", "0058"}:
             with pytest.raises(source55.Current0055ReadbackError):
                 await source55.capture_historical0053_owner_on_current0055(connection)

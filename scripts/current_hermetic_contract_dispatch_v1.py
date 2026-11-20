@@ -47,7 +47,7 @@ def _archive_head(archive):
             if revision is not None:
                 revisions.append(int(revision.group(1)))
     head = max(revisions, default=0)
-    if head > 57 or (head >= 54 and revisions.count(head) != 1):
+    if head > 58 or (head >= 54 and revisions.count(head) != 1):
         raise ValueError("hermetic_contract_dispatch_migration_unsupported")
     return head
 
@@ -73,7 +73,9 @@ def dispatch_captured_hermetic(archive_bytes):
         head = _archive_head(archive)
     if head < 54:
         return None
-    if head == 57:
+    if head == 58:
+        from scripts.verify_current0058_full_hermetic import main
+    elif head == 57:
         from scripts.verify_current0057_full_hermetic import main
     elif head == 56:
         from scripts.verify_current0056_hermetic import main
@@ -151,7 +153,9 @@ def maybe_dispatch_union(argv):
         return None
     if len(heads) != 1:
         raise ValueError("hermetic_contract_dispatch_mixed_migration_heads")
-    if heads == {57}:
+    if heads == {58}:
+        from scripts.verify_current0058_linux_union import main
+    elif heads == {57}:
         from scripts.verify_current0057_linux_union import main
     elif heads == {56}:
         from scripts.verify_current0056_linux_union import main

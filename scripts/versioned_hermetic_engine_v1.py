@@ -27,9 +27,14 @@ from scripts.verify_current0056_hermetic import _PG_TLS_READY
 
 class HermeticProfileV1(Enum):
     CURRENT0057 = "0057"
+    CURRENT0058 = "0058"
 
 
 def contract_for(profile):
+    if profile is HermeticProfileV1.CURRENT0058:
+        from scripts import current0058_full_hermetic_contract_v1
+
+        return current0058_full_hermetic_contract_v1
     if profile is not HermeticProfileV1.CURRENT0057:
         raise ValueError("hermetic_closed_profile_required") from None
     from scripts import current0057_full_hermetic_contract_v1
@@ -39,14 +44,15 @@ def contract_for(profile):
 
 def test_command(contract, mode, index):
     junit, selected = contract.component_report_paths(mode, index)
+    option = "--ctcc-current" + str(int(contract.HEAD))
     return (
         *_PYTEST,
         "-p",
-        "scripts.current0057_collection_v1",
-        "--ctcc-current57-suite=" + mode,
-        *(("--ctcc-current57-index=" + str(index),) if index is not None else ()),
-        "--ctcc-current57-collection=/validation-results/" + Path(selected).name,
-        *(("--ctcc-current57-progress",) if mode == "postgres" else ()),
+        contract.collection.__name__,
+        option + "-suite=" + mode,
+        *((option + "-index=" + str(index),) if index is not None else ()),
+        option + "-collection=/validation-results/" + Path(selected).name,
+        *((option + "-progress",) if mode == "postgres" else ()),
         "--junitxml=/validation-results/" + Path(junit).name,
         "tests",
     )
@@ -367,7 +373,6 @@ def _run(contract, args, index, raw, files, root):
                 timeout=120,
             )
             contract.previous.verify_root_trust(root, args.suite, index)
-        from scripts.current0057_g12_measurement_v1 import ENV
         from scripts.devval_campaign_physical_catalog_v1 import HERMETIC_CATALOG_ENV
 
         extra = (
@@ -384,11 +389,7 @@ def _run(contract, args, index, raw, files, root):
                 if contract.requires_historical(args.suite, index)
                 else ()
             ),
-            *(
-                ("-e", ENV + "=/validation-results")
-                if contract.requires_g12(args.suite, index)
-                else ()
-            ),
+            *contract.measurement_environment(args.suite, index),
         )
         container(
             contract.component_test_stage(args.suite, index),

@@ -65,8 +65,9 @@ class LabOwnerMigration0056Result:
     def source_head(self):
         from scripts import current0056_migration_pin as previous
         from scripts import current0057_migration_pin as successor
+        from scripts import current0058_migration_pin as current
 
-        for pin in (previous, successor):
+        for pin in (previous, successor, current):
             if self.migration_sha256 == pin.MIGRATION_INVENTORY_SHA256:
                 return pin.HEAD
         _need(False)
@@ -95,7 +96,7 @@ def _prepare(owner_url: URL, ca_file: Path, ca_sha256: str, manifest_sha256: str
     tls = verified_native_pg_tls_context_v1(ca_file, ca_sha256)
     scope = source_scopes.database0056_source_scope(_SOURCE)
     _need(
-        scope.actual_source_head in {"0056", "0057"}
+        scope.actual_source_head in {"0056", "0057", "0058"}
         and scope.database_target == "0056"
         and scope.manifest_sha256 == manifest_sha256
         and scope.account_complete is scope.execution_authority is False

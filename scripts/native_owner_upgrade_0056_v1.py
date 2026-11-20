@@ -212,7 +212,7 @@ def _prepared(
         after = scopes.database0056_source_scope(_SOURCE)
     _need(
         before.actual_source_head == after.actual_source_head == route.source_head
-        and route.source_head in {"0056", "0057"}
+        and route.source_head in {"0056", "0057", "0058"}
         and before.database_target == "0055"
         and after.database_target == "0056"
         and before.manifest_sha256 == after.manifest_sha256 == route.manifest_sha256
@@ -424,9 +424,9 @@ async def upgrade_owner_0055_to_0056_v1(
         "startup_admission": False,
         "execution_authority": False,
     }
-    if prepared[0].source_head == "0057":
+    if prepared[0].source_head in {"0057", "0058"}:
         receipt.update(
-            source_head="0057",
+            source_head=prepared[0].source_head,
             database_target="0056",
             database_migration_prefix_sha256=prepared[2].historical_prefix_sha256,
         )

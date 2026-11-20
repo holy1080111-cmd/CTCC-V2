@@ -28,6 +28,7 @@ from app.trade_qualification.g12_invocation_custody import (
     G12InvocationCustodyRepository,
 )
 from scripts import current0057_native_g12_acl_v1 as profile
+from scripts import current_contract_source_scopes_v1 as scopes
 from tests.integration.test_g12_invocation_custody_repository import (
     _claim,
     _publication,
@@ -45,7 +46,10 @@ def _migrate(connection, target):
     config.set_main_option("path_separator", "os")
     config.set_main_option("script_location", str(ROOT / "migrations"))
     script = ScriptDirectory.from_config(config)
-    assert script.get_heads() == ["0057"]
+    scope = scopes.database0057_source_scope(ROOT)
+    assert scope.actual_source_head in {"0057", "0058"}
+    assert scope.database_target == "0057"
+    assert script.get_heads() == [scope.actual_source_head]
     current = MigrationContext.configure(connection).get_current_heads()
     downgrade = current == ("0057",) and target == "0056"
     migration = MigrationContext.configure(

@@ -180,7 +180,8 @@ def _prepare(pins, dsn, ca, archive):
     config.set_main_option("script_location", str(ROOT / "migrations"))
     script = ScriptDirectory.from_config(config)
     _need(
-        tuple(script.get_heads()) == ("0057",)
+        prepared.source_head in {"0057", "0058"}
+        and tuple(script.get_heads()) == (prepared.source_head,)
         and script.get_revision("0057").down_revision == "0056"
     )
     return prepared, script
@@ -194,7 +195,7 @@ def _checked_preflight(observation, pins, prepared):
     expected = {
         "schema": "ctcc.native_owner_0057.route_preflight.v1",
         "status": "PASS",
-        "source_head": "0057",
+        "source_head": prepared.source_head,
         "source_manifest_sha256": prepared.manifest_sha256,
         "migration_sha256": prepared.migration_sha256,
         "database_head": pins.route.database_head,
@@ -218,7 +219,8 @@ def _same_source(left, right):
         left.url == right.url
         and left.manifest_sha256 == right.manifest_sha256
         and left.migration_sha256 == right.migration_sha256
-        and left.source_head == right.source_head == "0057"
+        and left.source_head == right.source_head
+        and left.source_head in {"0057", "0058"}
         and left.route_sha256 == right.route_sha256
     )
 

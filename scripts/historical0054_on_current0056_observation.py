@@ -22,7 +22,10 @@ SCHEMA = "ctcc.source0056_historical0054.owner_observation.v1"
 
 def _scope(root: Path):
     value = scopes.database0054_source_scope(root)
-    if value.actual_source_head != "0056" or value.database_target != "0054":
+    if (
+        value.actual_source_head not in {"0056", "0057", "0058"}
+        or value.database_target != "0054"
+    ):
         raise ValueError("source0056_historical0054_scope_required")
     return value
 
@@ -59,8 +62,8 @@ async def capture_historical0054_owner_on_current0056(
     ):
         raise ValueError("source0056_historical0054_observation_changed")
     document = {
-        "schema": SCHEMA,
-        "source_head": "0056",
+        "schema": f"ctcc.source{original.actual_source_head}_historical0054.owner_observation.v1",
+        "source_head": original.actual_source_head,
         "database_head": "0054",
         "source_scope": before,
         "owner_catalog": first,
@@ -87,8 +90,9 @@ def verify_historical0054_owner_on_current0056(
         or type(raw) is not bytes
         or not 0 < len(raw) <= 16 * 1024 * 1024
         or raw != canonical(document) + b"\n"
-        or document["schema"] != SCHEMA
-        or document["source_head"] != "0056"
+        or document["schema"]
+        != f"ctcc.source{scope.actual_source_head}_historical0054.owner_observation.v1"
+        or document["source_head"] != scope.actual_source_head
         or document["database_head"] != "0054"
         or document["source_scope"]
         != {

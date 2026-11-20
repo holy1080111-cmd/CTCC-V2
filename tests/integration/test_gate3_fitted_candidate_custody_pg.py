@@ -794,7 +794,7 @@ def _migrate_runtime_custody_head(connection):
     config.set_main_option("script_location", str(_SOURCE_ROOT / "migrations"))
     script = ScriptDirectory.from_config(config)
     scope = source_scopes.database0056_source_scope(_SOURCE_ROOT)
-    assert scope.actual_source_head in {"0056", "0057"}
+    assert scope.actual_source_head in {"0056", "0057", "0058"}
     assert scope.database_target == "0056"
     assert script.get_current_head() == scope.actual_source_head
     assert script.get_revision("0056").down_revision == "0055"

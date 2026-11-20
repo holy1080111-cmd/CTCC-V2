@@ -44,7 +44,8 @@ def verify_union(profile, artifacts, *, commit, tree, manifest_sha256):
     need(bool(required) and len(required) == len(contract.REQUIRED_CASES))
     full, common, selected_union, runs, components = None, None, set(), set(), []
     counts = {case: 0 for case in required}
-    actual57 = None
+    actual_profile = None
+    extra_summary = {}
     for mode, index, name in specs:
         attachment = artifacts / name
         root, archive = attachment / "ctcc-validation", attachment / "ctcc-source.tar"
@@ -59,7 +60,8 @@ def verify_union(profile, artifacts, *, commit, tree, manifest_sha256):
                 "full_nodeids",
                 "selected_nodeids",
                 "historical0056",
-                "actual0057_g12",
+                contract.PROFILE_RESULT_KEY,
+                *contract.EXTRA_RESULT_KEYS,
             }
         )
         identity, nodes, selected = (
@@ -67,6 +69,9 @@ def verify_union(profile, artifacts, *, commit, tree, manifest_sha256):
             verified["full_nodeids"],
             verified["selected_nodeids"],
         )
+        extras = contract.union_extras(verified, mode, index)
+        need(type(extras) is dict and not extra_summary.keys() & extras.keys())
+        extra_summary.update(extras)
         need(identity == read_evidence_json(contract._read(root, "identity.json")))
         need(
             identity["suite"] == mode
@@ -76,7 +81,7 @@ def verify_union(profile, artifacts, *, commit, tree, manifest_sha256):
         )
         need(
             identity["runner_contract"] == contract.RUNNER_CONTRACT
-            and identity["source_contract_head"] == "0057"
+            and identity["source_contract_head"] == contract.HEAD
             and identity["run_id"] not in runs
         )
         runs.add(identity["run_id"])
@@ -91,7 +96,7 @@ def verify_union(profile, artifacts, *, commit, tree, manifest_sha256):
             files["MANIFEST.sha256"]["sha256"] == manifest_sha256
             and identity["migration"]["source_head"]
             == identity["migration"]["database_head"]
-            == "0057"
+            == contract.HEAD
         )
         same = (
             pin,
@@ -130,19 +135,13 @@ def verify_union(profile, artifacts, *, commit, tree, manifest_sha256):
         ).items():
             counts[case] += count
         if mode == "postgres" and index == 2:
-            measurements = verified["actual0057_g12"]
+            measurements = verified[contract.PROFILE_RESULT_KEY]
             need(
                 type(measurements) is list
                 and len(measurements) == len(contract.g12.CASES)
             )
-            actual57 = {
-                key: measurements[0][key]
-                for key in (
-                    "database_head",
-                    "cluster_system_identifier_sha256",
-                    "inherited_native_definitions_sha256",
-                    "g12_definitions_sha256",
-                )
+            actual_profile = {
+                key: measurements[0][key] for key in contract.PROFILE_METADATA_KEYS
             }
         components.append(
             {
@@ -168,10 +167,12 @@ def verify_union(profile, artifacts, *, commit, tree, manifest_sha256):
         and len(selected_union) == len(full)
         and all(count == 1 for count in counts.values())
     )
-    need(actual57 is not None and actual57["database_head"] == "0057")
+    need(
+        actual_profile is not None and actual_profile["database_head"] == contract.HEAD
+    )
     return {
-        "schema": "ctcc.current0057.linux_hermetic_union.v1",
-        "source_contract_head": "0057",
+        "schema": f"ctcc.current{contract.HEAD}.linux_hermetic_union.v1",
+        "source_contract_head": contract.HEAD,
         "runner_contract": contract.RUNNER_CONTRACT,
         "commit": commit,
         "tree": tree,
@@ -184,12 +185,12 @@ def verify_union(profile, artifacts, *, commit, tree, manifest_sha256):
         "selected_cases": len(selected_union),
         "passed_cases": sum(row["passed_cases"] for row in components),
         "skipped_cases": sum(row["skipped_cases"] for row in components),
-        "required_current57_cases": len(counts),
+        f"required_current{int(contract.HEAD)}_cases": len(counts),
         "postgres_component_count": 3,
         "shard_count": 8,
-        "actual0057_g12": actual57,
+        contract.PROFILE_RESULT_KEY: actual_profile,
         "components": components,
         "hermetic_regression": "PASS",
         "execution_authority": False,
         "trading_acceptance": False,
-    }
+    } | extra_summary

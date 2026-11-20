@@ -11,6 +11,7 @@ import pytest
 from scripts import current0057_full_hermetic_contract_v1 as contract
 from scripts import versioned_hermetic_engine_v1 as engine
 from scripts import versioned_hermetic_union_v1 as union
+from tests.historical_source_prefix_v1 import historical_migration_paths
 
 COMMIT, TREE, MANIFEST, ARCHIVE = "a" * 40, "b" * 40, "c" * 64, "d" * 64
 
@@ -50,7 +51,7 @@ def components(tmp_path, monkeypatch):
             "sha256": contract.digest(path.read_bytes()),
             "size": path.stat().st_size,
         }
-        for path in (source / "migrations").rglob("*.py")
+        for path in historical_migration_paths(source, target="0057")
     }
     files["MANIFEST.sha256"] = {"sha256": MANIFEST}
     mapping = contract.canonical(files)

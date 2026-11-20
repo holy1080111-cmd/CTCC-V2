@@ -557,7 +557,7 @@ async def _capture_database0054_owner(connection):
         )
         historical54.verify_historical0054_owner_on_current0055(document, raw, ROOT)
         return document, raw
-    if scope.actual_source_head == "0056":
+    if scope.actual_source_head in {"0056", "0057", "0058"}:
         (
             document,
             raw,

@@ -15,12 +15,13 @@ from scripts import current0057_hermetic_contract as contract
 from scripts import current0057_migration_pin as pins
 from scripts import verify_current0057_g12_smoke_pair as pair
 from scripts import verify_current0057_hermetic as runner
+from tests.historical_source_prefix_v1 import historical_migration_paths
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
 def _files():
-    paths = [*ROOT.joinpath("migrations").rglob("*.py")]
+    paths = list(historical_migration_paths(ROOT, target="0057"))
     paths.extend(
         ROOT / name
         for name in (

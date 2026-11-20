@@ -35,6 +35,7 @@ from scripts.current_contract_source_scopes_v1 import (
     ContractSourceScopeV1,
     actual_current_source_scope,
     database0056_source_scope,
+    database0057_source_scope,
 )
 
 _SOURCE_ROOT = Path(__file__).resolve().parents[1]
@@ -122,18 +123,24 @@ class _CurrentSource:
 def _source_for_profile(profile):
     profiles.checked(profile)
     if profile is profiles.DB0056:
+        head = profiles.head(profile)
         with redirect_stdout(io.StringIO()):
             current = actual_current_source_scope(_SOURCE_ROOT)
-            if current.actual_source_head == "0056":
+            if current.actual_source_head == head:
                 return current
-            historical = database0056_source_scope(_SOURCE_ROOT)
+            historical = (
+                database0056_source_scope
+                if profile is profiles.DB0056
+                else database0057_source_scope
+            )(_SOURCE_ROOT)
         if (
             type(current) is not ContractSourceScopeV1
             or type(historical) is not ContractSourceScopeV1
-            or current.actual_source_head != "0057"
-            or current.database_target != "0057"
-            or historical.actual_source_head != "0057"
-            or historical.database_target != "0056"
+            or current.actual_source_head
+            not in ({"0057", "0058"} if profile is profiles.DB0056 else {"0058"})
+            or current.database_target != current.actual_source_head
+            or historical.actual_source_head != current.actual_source_head
+            or historical.database_target != head
             or historical.manifest_sha256 != current.manifest_sha256
             or historical.actual_migration_sha256 != current.actual_migration_sha256
             or historical.account_complete is not False
@@ -144,6 +151,12 @@ def _source_for_profile(profile):
     from scripts import manifest
     from scripts.verify_migration_identity import source_identity
 
+    historical57 = None
+    if profile is profiles.DB0057:
+        with redirect_stdout(io.StringIO()):
+            measured_scope = database0057_source_scope(_SOURCE_ROOT)
+        if measured_scope.actual_source_head == "0058":
+            historical57 = measured_scope
     profiles.require_migration(profile, _SOURCE_ROOT)
     identity = source_identity(_SOURCE_ROOT)
     path = _SOURCE_ROOT / "MANIFEST.sha256"
@@ -180,10 +193,25 @@ def _source_for_profile(profile):
         or manifest.read_manifest(path) != manifest.build_manifest(_SOURCE_ROOT)
         or path.read_bytes() != raw
         or source_identity(_SOURCE_ROOT) != identity
-        or identity.head != profiles.head(profile)
+        or identity.head
+        != (
+            historical57.actual_source_head
+            if historical57 is not None
+            else profiles.head(profile)
+        )
         or file_identity(path.lstat()) != file_identity(before)
     ):
         _deny()
+    if historical57 is not None:
+        if (
+            historical57.database_target != "0057"
+            or historical57.manifest_sha256 != _sha(raw)
+            or historical57.actual_migration_sha256 != identity.sha256
+            or historical57.account_complete is not False
+            or historical57.execution_authority is not False
+        ):
+            _deny()
+        return historical57
     return _CurrentSource(identity.head, _sha(raw), identity.sha256)
 
 
@@ -197,6 +225,8 @@ def _prepare(
     """Validate external pins, actual source and private transport before SQL."""
     try:
         profiles.checked(profile)
+        if profile not in {profiles.DB0056, profiles.DB0057}:
+            _deny()
         if (
             type(pins) is not OwnerRoutePinsV1
             or not all(
@@ -229,10 +259,11 @@ def _prepare(
             (
                 source.actual_source_head != profiles.head(profile)
                 and not (
-                    profile is profiles.DB0056
+                    profile in {profiles.DB0056, profiles.DB0057}
                     and type(source) is ContractSourceScopeV1
-                    and source.actual_source_head == "0057"
-                    and source.database_target == "0056"
+                    and source.actual_source_head
+                    in ({"0057", "0058"} if profile is profiles.DB0056 else {"0058"})
+                    and source.database_target == profiles.head(profile)
                 )
             )
             or source.manifest_sha256 != pins.source_manifest_sha256

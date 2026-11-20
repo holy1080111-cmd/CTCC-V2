@@ -9,6 +9,7 @@ import pytest
 from scripts import current0056_fitted_catalog_measurement_v1 as fitted
 from scripts import current0057_hermetic_contract as current
 from scripts import historical0056_on_current0057_observation_v1 as observation
+from tests.historical_source_prefix_v1 import historical_migration_paths
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -21,7 +22,7 @@ def _inputs():
         "scripts/current0057_g12_measurement_v1.py",
         *(
             path.relative_to(ROOT).as_posix()
-            for path in (ROOT / "migrations").rglob("*.py")
+            for path in historical_migration_paths(ROOT, target="0057")
         ),
     }
     files = {

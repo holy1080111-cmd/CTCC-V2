@@ -9,6 +9,7 @@ from scripts import current_contract_source_scopes_v1 as scopes
 from scripts import historical0052_0053_on_current0056_toolchain as source56
 from scripts import manifest
 from scripts.verify_migration_identity import source_identity
+from tests.historical_source_prefix_v1 import trim_synthetic_migration_tree
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -24,9 +25,7 @@ def source_tree(tmp_path):
     # These unchanged historical contract tests intentionally use a real
     # source56 graph. Successor57/current and explicit56-in57 cases are tested
     # separately; no observed source/database head is rewritten.
-    successor = tmp_path / scopes._TAIL["0057"][0]
-    if successor.exists():
-        successor.unlink()
+    trim_synthetic_migration_tree(tmp_path, source_root=ROOT, target="0056")
     return tmp_path
 
 
@@ -148,3 +147,43 @@ def test_source57_historical56_scope_rejects_any_changed_prefix_or_successor(
     _manifest(source_tree)
     with pytest.raises(scopes.ContractSourceScopeError):
         scopes.database0056_source_scope(source_tree)
+
+
+def _restore_current58(source_tree):
+    for revision in ("0057", "0058"):
+        relative = scopes._TAIL[revision][0]
+        copy2(ROOT / relative, source_tree / relative)
+    _manifest(source_tree)
+
+
+def test_actual58_preserves_distinct_database56_and57_prefixes(source_tree):
+    _restore_current58(source_tree)
+    actual = scopes.actual_current_source_scope(source_tree)
+    prior56 = scopes.database0056_source_scope(source_tree)
+    prior57 = scopes.database0057_source_scope(source_tree)
+    assert actual.actual_source_head == actual.database_target == "0058"
+    assert {scope.actual_source_head for scope in (actual, prior56, prior57)} == {
+        "0058"
+    }
+    assert prior56.database_target == "0056" and prior57.database_target == "0057"
+    assert prior56.historical_prefix_sha256 == scopes._PREFIX["0056"][0]
+    assert prior57.historical_prefix_sha256 == scopes._PREFIX["0057"][0]
+    assert (
+        len({scope.historical_prefix_sha256 for scope in (actual, prior56, prior57)})
+        == 3
+    )
+    assert all(
+        scope.actual_migration_sha256 == scopes._PREFIX["0058"][0]
+        and scope.execution_authority is False
+        for scope in (actual, prior56, prior57)
+    )
+
+
+@pytest.mark.parametrize("revision", ["0055", "0056", "0057", "0058"])
+def test_source58_cannot_hide_prefix_or_current_migration_drift(source_tree, revision):
+    _restore_current58(source_tree)
+    path = source_tree / scopes._TAIL[revision][0]
+    path.write_bytes(path.read_bytes() + b"\n# synthetic drift\n")
+    _manifest(source_tree)
+    with pytest.raises(scopes.ContractSourceScopeError):
+        scopes.database0057_source_scope(source_tree)

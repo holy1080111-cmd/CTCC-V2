@@ -38,9 +38,18 @@ async def record_profile_if_requested(owner, selected, *, case):
     )
     identity = read_evidence_json(_IDENTITY.read_bytes())
     files_raw = _FILES.read_bytes()
-    source = contract.source_identity(
-        identity, read_evidence_json(files_raw), files_raw
-    )
+    if type(identity) is dict and identity.get("source_contract_head") == "0058":
+        from scripts.historical0057_on_current0058_observation_v1 import (
+            historical_source_identity,
+        )
+
+        source = historical_source_identity(
+            identity, read_evidence_json(files_raw), files_raw
+        )
+    else:
+        source = contract.source_identity(
+            identity, read_evidence_json(files_raw), files_raw
+        )
     from app.domain import collector_current_0056_inherited_catalog_v1 as inherited
     from app.domain import g12_custody_catalog_0057_v1 as g12
     from app.domain import native_database_profile_v1 as profiles

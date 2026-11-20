@@ -9,13 +9,14 @@ from pathlib import Path
 import pytest
 
 from scripts import current0057_full_hermetic_contract_v1 as contract
+from tests.historical_source_prefix_v1 import historical_migration_paths
 
 
 @pytest.fixture
 def declared_synthetic_component(tmp_path, monkeypatch):
     source = Path(__file__).resolve().parents[2]
     paths = [
-        *(source / "migrations").rglob("*.py"),
+        *historical_migration_paths(source, target="0057"),
         *(
             source / name
             for name in (

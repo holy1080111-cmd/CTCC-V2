@@ -99,13 +99,13 @@ def test_preflight_binds_actual_manifest_and_migration_source(
     )
     monkeypatch.setattr(subject, "actual_current_source_scope", real_source_scope)
     historical = subject._prepare(pins, owner_dsn_file=secret, ca_file=ca)
-    assert historical.source_head == "0057" and pins.database_head == "0056"
+    assert historical.source_head == "0058" and pins.database_head == "0056"
     prepared = subject._prepare(
         pins, owner_dsn_file=secret, ca_file=ca, profile=profiles.DB0057
     )
     assert prepared.manifest_sha256 == pins.source_manifest_sha256
     assert prepared.migration_sha256 != _MIGRATION
-    assert prepared.source_head == "0057"
+    assert prepared.source_head == "0058"
 
 
 def test_default56_profile_cannot_prepare_physical57(prepared_files, monkeypatch):

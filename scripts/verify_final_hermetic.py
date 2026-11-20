@@ -3916,7 +3916,7 @@ def main():
         args.postgres_component_index is not None
         and (
             type(args.postgres_component_index) is not int
-            # The captured source57 dispatcher alone may admit its third
+            # The captured source57/58 dispatcher alone may admit its third
             # component. Every historical/default profile keeps two owners.
             or not 0 <= args.postgres_component_index <= POSTGRES_COMPONENT_COUNT
         )

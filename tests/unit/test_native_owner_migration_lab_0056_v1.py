@@ -14,9 +14,10 @@ from sqlalchemy.engine import make_url
 from app.database.native_pg_tls_v1 import NativePgTlsError
 from scripts import manifest
 from tests import native_owner_migration_lab_0056_v1 as subject
+from tests.historical_source_prefix_v1 import trim_synthetic_migration_tree
 
 
-@pytest.fixture(params=["0056", "0057"])
+@pytest.fixture(params=["0056", "0057", "0058"])
 def inputs(tmp_path, request, monkeypatch):
     source = tmp_path / "source"
     source.mkdir()
@@ -26,8 +27,9 @@ def inputs(tmp_path, request, monkeypatch):
         source / "migrations",
         ignore=lambda _root, names: {"__pycache__"} & set(names),
     )
-    if request.param == "0056":
-        (source / "migrations/versions/0057_g12_restricted_writer.py").unlink()
+    trim_synthetic_migration_tree(
+        source, source_root=subject._SOURCE, target=request.param
+    )
     manifest.write_manifest(source, source / "MANIFEST.sha256")
     monkeypatch.setattr(subject, "_SOURCE", source)
     payload = Path(certifi.where()).read_bytes()
@@ -50,7 +52,7 @@ def test_exact_lab_source_and_ca_prepare_without_database(inputs):
     tls, scope, script = subject._prepare(**inputs)
     assert type(tls) is ssl.SSLContext
     assert tls.verify_mode == ssl.CERT_REQUIRED and tls.check_hostname is True
-    assert scope.actual_source_head in {"0056", "0057"}
+    assert scope.actual_source_head in {"0056", "0057", "0058"}
     assert scope.database_target == "0056"
     assert scope.manifest_sha256 == inputs["manifest_sha256"]
     assert tuple(script.get_heads()) == (scope.actual_source_head,)

@@ -128,7 +128,13 @@ def _reviewed_portable(observed: owner_pregrant.NativeOwnerPregrant0056Diagnosti
     )
     from scripts.verify_migration_identity import source_identity
 
-    if source_identity(_SOURCE).head == "0057":
+    if source_identity(_SOURCE).head == "0058":
+        from scripts.historical0056_owner_source_on_0058_v1 import (
+            verify_historical_owner56_reference_on_source58,
+        )
+
+        reference = verify_historical_owner56_reference_on_source58(_SOURCE, observed)
+    elif source_identity(_SOURCE).head == "0057":
         from scripts.historical0056_owner_source_on_0057_v1 import (
             verify_historical_owner56_reference_on_source57,
         )

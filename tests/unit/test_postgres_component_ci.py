@@ -355,8 +355,8 @@ def test_actual_post_common_finally_refuses_unknown_cleanup_and_retains_failure_
 
 def test_pg2_owns_every_whole_module_and_keeps_both_stateful_anchors_on_zero():
     owned = [selection.postgres_paths(index) for index in range(2)]
-    assert len(selection.POSTGRES_TEST_PATHS) == 95
-    assert [len(paths) for paths in owned] == [40, 55]
+    assert len(selection.POSTGRES_TEST_PATHS) == 105
+    assert [len(paths) for paths in owned] == [46, 59]
     assert selection.DEVVAL_CUSTODY_TEST_PATH in owned[1]
     assert selection.FITTED_CUSTODY_TEST_PATH in owned[1]
     assert selection.DEVVAL_PREDICTION_DIAGNOSTIC_TEST_PATH in owned[1]
@@ -968,7 +968,7 @@ def test_actual_junit_join_keeps_parameter_and_class_identity_after_valid_baseli
     [
         ("postgres", None, None),
         ("postgres", -1, None),
-        ("postgres", 2, None),
+        ("postgres", 3, None),
         ("full", 0, None),
         ("shard", 1, 0),
     ],

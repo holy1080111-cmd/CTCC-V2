@@ -33,14 +33,18 @@ def profile(raw, *, commit, tree, archive_sha256):
         if stream.pax_headers.get("comment") != commit or archive_tree(stream) != tree:
             raise ValueError("hermetic_workflow_exact_git_required")
         head, files = _archive_head(stream), archive_files(stream)
-    if head == 57:
+    if head == 58:
+        from scripts.current0058_hermetic_contract_v1 import migration_digest
+
+        migration_digest(files)
+    elif head == 57:
         from scripts.current0057_hermetic_contract import migration_digest
 
         migration_digest(files)
     return {
         "schema": "ctcc.hermetic_workflow_profile.v1",
         "source_head": f"{head:04}",
-        "postgres_components": [0, 1, 2] if head == 57 else [0, 1],
+        "postgres_components": [0, 1, 2] if head in {57, 58} else [0, 1],
         "shard_indices": list(range(8)),
         "validation_admission": False,
     }

@@ -40,7 +40,7 @@ def test_changed_archive_denies_before_importing_a_new_runner(tmp_path):
         )
 
 
-@pytest.mark.parametrize("head", ["0054", "0055", "0056", "0057"])
+@pytest.mark.parametrize("head", ["0054", "0055", "0056", "0057", "0058"])
 @pytest.mark.parametrize("inline", [False, True])
 def test_reviewed_head_routes_to_matching_runner_and_preserves_its_rejection(
     tmp_path, monkeypatch, head, inline
@@ -67,7 +67,7 @@ def test_reviewed_head_routes_to_matching_runner_and_preserves_its_rejection(
     monkeypatch.setattr(Path, "read_bytes", replace_after_read)
     monkeypatch.setitem(
         sys.modules,
-        f"scripts.verify_current{head}{'_full' if head == '0057' else ''}_hermetic",
+        f"scripts.verify_current{head}{'_full' if head in {'0057', '0058'} else ''}_hermetic",
         SimpleNamespace(main=reject),
     )
     argv = (
@@ -248,7 +248,7 @@ def test_union_rejects_unadmitted_archive_before_catalog_replay(
     assert called == []
 
 
-@pytest.mark.parametrize("head", ["0054", "0055", "0056", "0057"])
+@pytest.mark.parametrize("head", ["0054", "0055", "0056", "0057", "0058"])
 @pytest.mark.parametrize("markers", ["removed", "relabeled52"])
 def test_union_cannot_fall_back_to52_by_changing_identity_markers(
     tmp_path, monkeypatch, head, markers

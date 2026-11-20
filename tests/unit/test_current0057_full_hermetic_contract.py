@@ -14,6 +14,7 @@ from scripts import hermetic_workflow_profile_v1 as workflow
 from scripts import verify_current0057_full_hermetic as runner
 from scripts import versioned_hermetic_engine_v1 as engine
 from scripts import versioned_hermetic_union_v1 as union
+from tests.historical_source_prefix_v1 import historical_migration_paths
 
 
 def _nodes():
@@ -322,7 +323,7 @@ def test_workflow_routing_preserves56_two_components_and57_three_after_exact_inv
     root = Path(__file__).resolve().parents[2]
     migrations = {
         path.relative_to(root).as_posix(): path.read_bytes()
-        for path in (root / "migrations").rglob("*.py")
+        for path in historical_migration_paths(root, target="0057")
     }
     raw57, tree57 = _archive("0057", migrations)
     current = workflow.profile(
