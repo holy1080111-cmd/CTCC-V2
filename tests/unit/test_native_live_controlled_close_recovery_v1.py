@@ -488,6 +488,98 @@ def test_independent_record_fingerprint_detects_mutated_retained_data():
     assert subject.records_sha256_v1(record) != original
 
 
+def test_minimal_sql_only_protected_seed_cannot_substitute_for_complete_source_binding():
+    from app.okx_live import original_oco_recovery_v1 as original
+    from app.okx_live import reconciliation_facts_v1 as facts
+
+    intent, capture, args = scenario()
+    complete = args["journal"]
+    assert original.expected_original_bindings_v1(complete) == ("123", "456")
+    assert (
+        subject.assess_controlled_close_recovery_v1(intent, capture, **args).outcome
+        == "RECONCILED_FLAT"
+    )
+    minimal_document = decode(complete.proofs[0])
+    del minimal_document["full_account_verified"]
+    del minimal_document["fills_complete"]
+    minimal = SimpleNamespace(
+        **{**vars(complete), "proofs": (canonical(minimal_document),)}
+    )
+    with pytest.raises(facts.LiveReconciliationFactsError):
+        original.expected_original_bindings_v1(minimal)
+    result = subject.assess_controlled_close_recovery_v1(
+        intent, capture, **{**args, "journal": minimal}
+    )
+    assert result.outcome == "UNCERTAIN" and result.exit_lineage_verified is False
+
+
+def test_complete_synthetic_sql_identity_seed_is_selected_before_constructing_new_raw():
+    """The real PG IDs differ from the small pure fixture, never from a retag."""
+    intent, _, original = scenario()
+    previous = original["records"]
+    protected = decode(original["journal"].proofs[0])
+    protected.update(entry_order_id="123456", protection_algo_id="987654")
+    protected_raw = canonical(protected)
+    document = decode(previous.intent.document_json)
+    document.update(
+        entry_order_id="123456",
+        protection_algo_id="987654",
+        protected_proof_sha256=sha(protected_raw),
+    )
+    parent_raw = canonical(document)
+    parent = replace(
+        previous.intent, document_json=parent_raw, document_sha256=sha(parent_raw)
+    )
+    close_doc = decode(previous.close.document_json)
+    close_doc["close_intent_sha256"] = parent.document_sha256
+    close_raw = canonical(close_doc)
+    close = replace(
+        previous.close,
+        intent=parent,
+        document_json=close_raw,
+        document_sha256=sha(close_raw),
+    )
+    cancel_doc = decode(previous.cancel.document_json)
+    cancel_doc.update(
+        close_intent_sha256=parent.document_sha256,
+        close_claim_sha256=close.document_sha256,
+        entry_order_id="123456",
+        protection_algo_id="987654",
+        close_order_id="123457",
+    )
+    cancel_request = canonical([{"instId": intent.instrument_id, "algoId": "987654"}])
+    cancel_doc.update(
+        request_json=cancel_request.decode(), request_sha256=sha(cancel_request)
+    )
+    cancel_raw = canonical(cancel_doc)
+    cancel = replace(
+        previous.cancel,
+        intent=parent,
+        document_json=cancel_raw,
+        document_sha256=sha(cancel_raw),
+        request_json=cancel_request,
+        request_sha256=sha(cancel_request),
+    )
+    records = subject.RetainedControlledCloseV1(parent, close, cancel)
+    journal = SimpleNamespace(
+        **{**vars(original["journal"]), "proofs": (protected_raw,)}
+    )
+    value, capture, args = scenario(
+        original_intent=intent,
+        retained_records=records,
+        retained_journal=journal,
+        history_override=original["history"],
+    )
+    assert (
+        capture.order.selector.order_id == "123456"
+        and capture.close_order.selector.order_id == "123457"
+    )
+    assert (
+        subject.assess_controlled_close_recovery_v1(value, capture, **args).outcome
+        == "RECONCILED_FLAT"
+    )
+
+
 def signed_records(monkeypatch):
     """Published synthetic key only; actual retained domain verifier is reused."""
     import hashlib

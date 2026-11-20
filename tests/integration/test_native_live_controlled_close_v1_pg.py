@@ -52,7 +52,7 @@ async def _call(lab, document, *, claim=False, wrong_domain=False):
     return raw, signature
 
 
-async def _ready(lab):
+async def _ready(lab, *, complete_source=False):
     value = lab[2]
     rid, _, digest = exact_live_intent_document_v1(value)
     proof, raw, signature = fixtures._proof(
@@ -64,6 +64,14 @@ async def _ready(lab):
         entry_order_id="123456",
         entry_order_state="filled",
         entry_filled_contracts=str(value.contracts),
+        # The original SQL-only cases retain their minimal default proof.
+        # Raw-source replay requires a separately declared complete synthetic
+        # protected seed, chosen BEFORE canonicalization, HMAC and SQL append.
+        **(
+            {"full_account_verified": True, "fills_complete": True}
+            if complete_source
+            else {}
+        ),
     )
     assert await fixtures._append(lab, raw, signature) == sha(raw)
     async with lab[0].begin() as connection:
@@ -207,7 +215,7 @@ async def test_actual58_controlled_restart_complete_fresh_source_resolves_or_ret
     lab = lifecycle_lab
     _synthetic_key_file_handoff(monkeypatch, lab)
     key = object()
-    parent, _, protected = await _ready(lab)
+    parent, _, protected = await _ready(lab, complete_source=True)
     intent_raw, _ = await _call(lab, parent)
     close_raw, _ = await _call(lab, claim_document(parent), claim=True)
     zero_case = source_case.startswith("zero_")
@@ -225,6 +233,10 @@ async def test_actual58_controlled_restart_complete_fresh_source_resolves_or_ret
     await journal_repository.inhibit_for_recovery_v1(key)
     rid, _, _ = exact_live_intent_document_v1(lab[2])
     journal = await journal_repository.read_journal_v1(key, rid)
+    assert recovery.original.expected_original_bindings_v1(journal) == (
+        parent["entry_order_id"],
+        parent["protection_algo_id"],
+    ), "synthetic_source_seed_requires_complete_retained_protected_binding"
     records = await recovery.read_retained_records_v1(
         {"reconciler_factory": lab[3], "reconciler_pins": lab[4]}, key, journal
     )
@@ -250,6 +262,16 @@ async def test_actual58_controlled_restart_complete_fresh_source_resolves_or_ret
             retained_journal=journal,
             history_override=LiveReconciliationHistoryV1(recorded),
             shift=max(0, now_ms - base // 1_000_000),
+        )
+        baseline_assessor = (
+            recovery.assess_zero_effect_original_oco_v1
+            if zero_case
+            else recovery.assess_controlled_close_recovery_v1
+        )
+        baseline = baseline_assessor(value, capture, **args)
+        assert baseline.outcome == "RECONCILED_FLAT", (
+            "synthetic_raw_baseline_must_pass_before_targeted_mutation",
+            baseline.codes,
         )
         if source_case == "client_id_reuse":
             row = json.loads(capture.archive_pages[0].raw_body)["data"][0]
@@ -312,7 +334,9 @@ async def test_actual58_controlled_restart_complete_fresh_source_resolves_or_ret
     )
     assessed = assessor(value, capture, **args)
     complete = source_case in ("complete", "zero_then_oco")
-    assert assessed.outcome == ("RECONCILED_FLAT" if complete else "UNCERTAIN")
+    assert assessed.outcome == ("RECONCILED_FLAT" if complete else "UNCERTAIN"), (
+        assessed.codes
+    )
     assert assessed.execution_authority is assessed.resolution_authority is False
     # Allow only this declared future synthetic receipt to pass; no source
     # timestamp, original request or database deadline is reset.
