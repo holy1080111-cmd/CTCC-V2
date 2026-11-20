@@ -44,6 +44,8 @@ from app.domain.source_primitives import (
     validate_stamps,
 )
 from app.exchange.okx import native_live_write_v1 as physical
+from app.okx_live import entry_math_closure_v1 as entry_math_closure
+from app.okx_live import entry_owned_seal_v1 as entry_proof
 from app.okx_live import final_recheck_v1 as final_recheck
 from app.okx_live import native_runtime_v1 as runtime
 from app.okx_live import owned_risk_adapter_v1 as adapter
@@ -58,6 +60,7 @@ from app.trade_qualification.portfolio import LiveEvidenceStamp
 from app.trade_qualification.service import QualificationIntent
 
 _PUBLIC_SOURCE_KEY_V1 = object()
+_ENTRY_PROOF_KEY_V1 = object()
 _SESSION_KEY = object()
 _OWNED = WeakKeyDictionary()
 _PUBLIC_REQUESTS = WeakKeyDictionary()
@@ -629,78 +632,15 @@ def _qualified(owner, *, spent, current=True):
     _need(type(record) is dict and record["spent"] is spent)
     state = _session(record["session"], current=current, negative=not current)
     if current:
-        _need(record["revoked"] is False)
-        view = source._replay_owned_live_source_v1(
-            state["source_owner"], key=source._SOURCE_KEY
-        )
-        current_public = public._replay_owned_live_public_v1(
-            state["current_public_owner"], key=_PUBLIC_SOURCE_KEY_V1
-        )
-        facts = financial._replay_owned_live_financial_epoch_v1(
-            state["financial_owner"], key=financial._KEY
-        )
-        _need(
-            final_recheck.same_live_public_bank_v1(
-                state["current_public"], current_public
-            )
-            and facts.source_revision_sha256 == view["source_revision_sha256"]
-        )
-        _need(
-            math.verify_live_qualification_math_v1(state["initial_math"])
-            == state["initial_math"]
-            and math.verify_live_qualification_math_v1(state["current_math"])
-            == state["current_math"]
-            and state["initial_math"].pre_evidence_complete
-            and state["current_math"].pre_evidence_complete
-        )
-        rebuilt, actual_keys = _risk_inputs(
-            state,
-            facts,
-            state["current_instrument"],
-            state["current_public"],
-            state["current_local"],
-        )
-        _need(
-            rebuilt == state["current_math"].risk_inputs
-            and actual_keys == state["current_math"].consumed_event_keys
-        )
-        value = record["facts"].intent_data
-        final_inputs, final_keys = _risk_inputs(
-            state,
-            facts,
-            state["current_instrument"],
-            current_public,
-            state["current_local"],
-        )
-        additional = final_recheck.final_current_recheck_data_v1(
-            initial=state["initial_math"],
-            committed=state["current_math"],
-            current_source=current_public,
-            risk_inputs=final_inputs,
-            consumed_event_keys=final_keys,
-            publication_candidate_sha256=state["snapshot"].candidate_sha256,
-            committed_risk=max(value.risk_samples),
-            committed_margin=value.margin_amount,
-            committed_notional=value.notional_amount,
-            deadline=value.deadline,
-        )
-        record["last_final_recheck_json"] = additional.receipt_json
-        _publication(state)
-        actual = state["control"]
-        ledger._control(actual, value, utc_from_ns(_stamp().utc_ns))
-        _need(
-            value.policy_sha256 == state["policy_sha256"]
-            and value.arm_id == state["arm_id"]
-            and value.source_revision_sha256 == view["source_revision_sha256"]
-            and value.candidate_sha256 == sha(state["original_candidate_json"])
-        )
-        _need(
-            utc_from_ns(_stamp().utc_ns)
-            < final_recheck.next_cash_window_change_v1(
-                facts, evaluated_at=current_public.evaluated_at
-            )
+        entry_proof.replay_native_entry_v1(
+            owner, record, state, key=_ENTRY_PROOF_KEY_V1
         )
     return record, state
+
+
+def _require_native_entry_public_owner_v1(owner, public_owner, *, key):
+    """The raw ENTRY reader accepts only this original private R7 proof."""
+    entry_proof.require_original_public_owner_v1(owner, public_owner, key=key)
 
 
 def _replay_owned_live_qualification_v1(owner, *, key):
@@ -1036,6 +976,17 @@ def _intent(state, calculation, instrument):
         state["deadline"],
         datetime.fromisoformat(original["expires_at"]),
         datetime.fromisoformat(operands["expires_at"]),
+        # The ledger requires the durable intent itself to expire inside the
+        # original account observation's five-second window. Floor to the
+        # supported datetime precision so rounding cannot extend that bound.
+        datetime(1970, 1, 1, tzinfo=UTC)
+        + timedelta(
+            microseconds=(
+                source._SOURCES[state["source_owner"]]["current_completed"].utc_ns
+                + source._SOURCES[state["source_owner"]]["plan"].max_current_age_ns
+            )
+            // 1000
+        ),
     )
     return LiveIntentDataV1(
         account_uid=state["identity"]["uid"],
@@ -1167,6 +1118,7 @@ async def run_owned_live_operator_once_v1(session):
         state["active"] = True
         initial_local = await _local(session)
         _initial_owner, initial_public = await _public(session, "initial")
+        state["initial_public_owner"] = _initial_owner
         inputs, keys = _risk_inputs(
             state, facts, current_instrument, initial_public, initial_local
         )
@@ -1256,8 +1208,11 @@ async def run_owned_live_operator_once_v1(session):
             current_public_owner=current_owner,
             current_local=current_local,
             current_instrument=fresh_instrument,
+            current_financial_facts=fresh_facts,
         )
         value = _intent(state, current, fresh_instrument)
+        state["entry_native_intent"] = value
+        entry_proof.prepare_pending_entry_v1(session, key=_ENTRY_PROOF_KEY_V1)
         repository = ledger.NativeLiveLedgerDataRepositoryV1(
             cfg["writer_factory"], cfg["writer_pins"]
         )
@@ -1301,6 +1256,10 @@ async def run_owned_live_operator_once_v1(session):
             "close_public_used": False,
         }
         state["qualified_owner"] = qualified
+        state["entry_native_readback"] = readback
+        entry_proof.complete_native_entry_v1(
+            session, qualified, key=_ENTRY_PROOF_KEY_V1
+        )
         _qualified(qualified, spent=False)
         try:
             handle = await physical.submit_owned_live_fok_v1(qualified)
@@ -1314,6 +1273,7 @@ async def run_owned_live_operator_once_v1(session):
         # separate owned lifecycle must read actual exchange state and resolve.
         return qualified, handle
     except BaseException:
+        entry_proof.retire_pending_entry_v1(session, key=_ENTRY_PROOF_KEY_V1)
         state["active"] = False
         state["inhibit_code"] = "native_live_invocation_failed_do_not_retry"
         raise
@@ -1615,6 +1575,7 @@ _OPEN_BODY_SOURCE_V1 = _open_live_operator_body_v1.__wrapped__
 _OPEN_ENTRY_SOURCE_V1 = open_live_operator_session_v1.__wrapped__
 _RUNTIME_BODY_SOURCE_V1 = runtime.configured_live_runtime_v1.__wrapped__
 _SOURCE_BODY_SOURCE_V1 = source.acquire_owned_live_source_v1.__wrapped__
+_ENTRY_RUN_BODY_SOURCE_V1 = run_owned_live_operator_once_v1
 
 
 from app.trade_qualification.native_continuation_guard_v1 import (
@@ -1639,5 +1600,15 @@ _install(
         source,
         public,
         evidence,
+        evidence.shared,
+        evidence.service,
+        evidence.storage,
+        entry_proof,
+        entry_proof.inputs,
+        entry_proof.inputs.custody,
+        entry_proof.inputs.current,
+        entry_proof.inputs.history,
+        entry_math_closure,
+        *entry_math_closure.original_entry_math_modules_v1(),
     ),
 )

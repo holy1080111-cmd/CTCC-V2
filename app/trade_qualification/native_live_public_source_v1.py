@@ -45,6 +45,9 @@ from app.trade_qualification.funding_observation_v2 import parse_funding_observa
 
 _COORDINATOR = "app.okx_live.owned_qualification_v1"
 _COORDINATOR_REQUEST_KEY_V1 = object()
+_ENTRY_BANK_KEY_V1 = object()
+_CONTROLLED_QUOTE_PURPOSE_V1 = object()
+_ENTRY_QUOTE_PURPOSE_V1 = object()
 _OWNERS = WeakKeyDictionary()
 _INFLIGHT = set()
 _MAX_OWNERS = 16
@@ -200,6 +203,23 @@ class LiveControlledQuoteReplayV1:
     evaluated_at: datetime
     schema: str = field(
         default="ctcc.native_live.controlled_exit_raw_quote_replay.v1", init=False
+    )
+    execution_authority: bool = field(default=False, init=False)
+    qualification_performed: bool = field(default=False, init=False)
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class LiveEntryQuoteReplayV1:
+    """Fresh raw DATA under one already-owned full-R7 exact-input proof."""
+
+    quote: live_quote.LiveExecutableQuoteV1
+    reference: WSReferenceObservation
+    raw_inventory_sha256: str
+    original_packet_sha256: str
+    original_publication_sha256: str
+    evaluated_at: datetime
+    schema: str = field(
+        default="ctcc.native_live.entry_raw_quote_replay.v1", init=False
     )
     execution_authority: bool = field(default=False, init=False)
     qualification_performed: bool = field(default=False, init=False)
@@ -742,14 +762,49 @@ def _replay_owned_live_controlled_quote_v1(owner, *, key):
     remain bound to that original audit; this purpose emits no candle replay,
     MarketSnapshot or entry qualification. No quote/model/clock is cached.
     """
+    return _replay_owned_live_raw_quote_v1(
+        owner, key=key, qualification_owner=None, purpose=_CONTROLLED_QUOTE_PURPOSE_V1
+    )
+
+
+def _replay_owned_live_entry_quote_v1(owner, qualification_owner, *, key):
+    """ENTRY-only raw replay requires a genuine private same-invocation seal."""
+    return _replay_owned_live_raw_quote_v1(
+        owner,
+        key=key,
+        qualification_owner=qualification_owner,
+        purpose=_ENTRY_QUOTE_PURPOSE_V1,
+    )
+
+
+def _require_entry_bank_v1(qualification_owner, owner):
+    module = sys.modules.get(_COORDINATOR)
+    _need(module is not None)
+    checker = getattr(module, "_require_native_entry_public_owner_v1", None)
+    _need(type(checker) is FunctionType and checker.__module__ == _COORDINATOR)
+    checker(qualification_owner, owner, key=_ENTRY_BANK_KEY_V1)
+
+
+def _replay_owned_live_raw_quote_v1(owner, *, key, qualification_owner, purpose):
     _coordinator(key)
+    _need(purpose is _CONTROLLED_QUOTE_PURPOSE_V1 or purpose is _ENTRY_QUOTE_PURPOSE_V1)
+    if purpose is _ENTRY_QUOTE_PURPOSE_V1:
+        _require_entry_bank_v1(qualification_owner, owner)
+    else:
+        _need(qualification_owner is None)
     state = _OWNERS.get(owner) if type(owner) is OwnedLivePublicSourceV1 else None
     _need(state is not None)
     try:
         params = state["params"]
         _need(
-            params.stage == "controlled_exit"
-            and params.public_policy_sha256 == CLOSE_POLICY_SHA256
+            params.stage
+            == ("post_g12" if purpose is _ENTRY_QUOTE_PURPOSE_V1 else "controlled_exit")
+            and params.public_policy_sha256
+            == (
+                POLICY_SHA256
+                if purpose is _ENTRY_QUOTE_PURPOSE_V1
+                else CLOSE_POLICY_SHA256
+            )
         )
         _current(state)
         with transport._reopen_runtime_journal(params.root) as parent:
@@ -870,7 +925,12 @@ def _replay_owned_live_controlled_quote_v1(owner, *, key):
             0 <= (final_at - reference.received_at).total_seconds() <= 5
             and 0 <= (final_at - reference.source_time).total_seconds() <= 5
         )
-        return LiveControlledQuoteReplayV1(
+        kind = (
+            LiveEntryQuoteReplayV1
+            if purpose is _ENTRY_QUOTE_PURPOSE_V1
+            else LiveControlledQuoteReplayV1
+        )
+        return kind(
             quote,
             reference,
             inventory,
@@ -889,6 +949,56 @@ def _replay_owned_live_controlled_quote_v1(owner, *, key):
         raise LivePublicSourceError(
             "native_live_controlled_quote_replay_failed"
         ) from None
+    except BaseException:
+        _OWNERS.pop(owner, None)
+        raise
+
+
+def _recheck_owned_initial_entry_bytes_v1(owner, qualification_owner, *, key):
+    """Reopen old initial evidence bytes; never relabel its quote as current."""
+    _coordinator(key)
+    _require_entry_bank_v1(qualification_owner, owner)
+    state = _OWNERS.get(owner) if type(owner) is OwnedLivePublicSourceV1 else None
+    _need(state is not None)
+    try:
+        params = state["params"]
+        _need(
+            params.stage == "initial" and params.public_policy_sha256 == POLICY_SHA256
+        )
+        _current(state)
+        with transport._reopen_runtime_journal(params.root) as parent:
+            _need(
+                set(parent.names()) == {"raw", _FILE}
+                and parent.read(_FILE, 16384) == state["receipt"]
+            )
+            _need(
+                transport._native_recheck_root_identity(params.root)
+                == state["root_identity"]
+            )
+            with transport._reopen_runtime_journal(state["raw_root"]) as directory:
+                _need(
+                    transport._native_recheck_root_identity(state["raw_root"])
+                    == state["raw_identity"]
+                )
+                inventory = _inventory(directory)[1]
+                _need(inventory == state["inventory_sha256"])
+                _need(_inventory(directory)[1] == inventory)
+            _need(
+                transport._native_recheck_root_identity(state["raw_root"])
+                == state["raw_identity"]
+            )
+        _need(
+            transport._native_recheck_root_identity(params.root)
+            == state["root_identity"]
+        )
+        _current(state)
+        return (
+            inventory,
+            state["packet_sha256"],
+            state["plan_sha256"],
+            state["journal_sha256"],
+            sha(state["receipt"]),
+        )
     except BaseException:
         _OWNERS.pop(owner, None)
         raise

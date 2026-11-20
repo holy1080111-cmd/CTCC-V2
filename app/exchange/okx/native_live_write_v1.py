@@ -390,6 +390,9 @@ def _require_physical_gate_v1(gate, *, key):
     _same_facts(record["facts"], _facts(record["owner"], record["api"], spent=True))
     now = utc_from_ns(_stamp().utc_ns)
     ledger._control(record["control"], record["facts"].intent_data, now)
+    from app.okx_live.entry_owned_seal_v1 import require_native_final_clock_v1
+
+    require_native_final_clock_v1(record["owner"], key=_QUALIFICATION_SOURCE_KEY_V1)
     return record
 
 
