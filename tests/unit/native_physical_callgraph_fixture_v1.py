@@ -18,6 +18,7 @@ import sys
 from collections import Counter
 from decimal import Decimal
 from pathlib import Path
+from threading import get_ident
 from time import perf_counter_ns
 from types import SimpleNamespace as Data
 
@@ -34,6 +35,7 @@ from tests.unit.research.test_owned_public_runtime_p1 import SyntheticClock
 
 _REAL_SUBMIT = physical.submit_owned_live_fok_v1
 _REAL_NEW_GATE = physical._new_gate
+_REAL_SESSION = q._session
 
 
 def ephemeral_certificate(root):
@@ -233,6 +235,17 @@ class PhysicalWorkerFixture(WorkerFixture):
         self.state["instrument"] = refreshed
 
     def install_physical(self, cert, monkeypatch):
+        # Retain the ORIGINAL task/session callgraph. Only environment/settings
+        # admission remains inert; a per-qualified guard count is not assumed.
+        self.state.update(
+            loop=asyncio.get_running_loop(),
+            pid=os.getpid(),
+            thread=get_ident(),
+            closed=False,
+        )
+        monkeypatch.setattr(q, "_session", _REAL_SESSION)
+        monkeypatch.setattr(q, "_settings_pin_v1", lambda _settings: b"{}")
+        monkeypatch.setattr(q.source, "_configured", lambda _plan: None)
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.load_verify_locations(cert)
@@ -443,6 +456,7 @@ class CallgraphObservation:
 
     def start_faults(self):
         """Only local raise-line events run before the durable intent seam."""
+        self.codes[q._NATIVE_GUARD.__code__] = "inert_source_guard"
         monitor = sys.monitoring
         if monitor.get_tool(3) is not None:
             raise AssertionError("synthetic_monitoring_tool_already_in_use")
@@ -578,12 +592,17 @@ async def loopback_server(server_context):
             finally:
                 completed.set()
 
-    server = await asyncio.start_server(respond, "127.0.0.1", 0, ssl=server_context)
+    # AnyIO preserves the original remote port after resolving the address.
+    # Bind that exact port; never patch a vendor connect/socket implementation,
+    # change host routing or acquire privilege if this scoped bind is refused.
+    server = await asyncio.start_server(respond, "127.0.0.1", 443, ssl=server_context)
     port = server.sockets[0].getsockname()[1]
     return server, port, completed, counts
 
 
 def install_loopback_dns(monkeypatch, port):
+    assert port == 443
+
     def resolve(host, service, *_args, **_kwargs):
         if isinstance(host, bytes):
             host = host.decode("ascii")

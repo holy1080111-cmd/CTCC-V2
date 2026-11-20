@@ -15,8 +15,11 @@ The following admission boundaries are deliberately synthetic:
 - SQL role/catalog admission and declared rows, using a real AsyncEngine,
   AsyncSession transaction and independent-session control readback shape.
 - Dummy signing material and a fresh pytest-private test CA.
-- A DNS seam accepting only `openapi.okx.com:443` and returning the ephemeral
-  loopback listener. The original client still uses hostname verification.
+- A DNS seam accepting only `openapi.okx.com:443` and returning `127.0.0.1` at
+  the same port. A temporary loopback-only TLS listener binds directly to 443;
+  an unavailable or unauthorized bind fails without stopping another process,
+  changing routing, or changing privileges. The original client still uses
+  hostname verification.
 
 Every attempted actual database connection is positively rejected. The harness
 does not load configured credentials, establish a real Arm, or contact OKX. Its
@@ -75,3 +78,40 @@ production negative fence and freshness checks remain intact.
 The current baseline therefore establishes a real normal-path latency refusal,
 even with synthetic account/SQL admission. A faster producer must pass the same
 unchanged harness and complete the native path before any readiness claim.
+
+## Reader comparison and narrowed session admission
+
+The follow-up restores the original coordinator `_task` and `_session` bodies.
+Their actual task, loop, PID, thread and closed-state checks run. Environment,
+settings-pin, runtime, source lease and SQL admission remain explicitly inert.
+Local monitoring observes calls to the actual fixture `_NATIVE_GUARD` stub after
+intent readback; it does not estimate that count from `_qualified` calls.
+
+The first reader comparison exposed an ingress-only error: AnyIO's original
+`connect_tcp` uses only the IP from `getaddrinfo` and retains the original remote
+port. The old DNS fixture therefore could not redirect 443 to an ephemeral port.
+The corrected temporary 443 listener preserves every native/vendor method.
+Only the faithful 443 run can establish native connection progress.
+
+With reader commit `b3c30af970cb4996bbafcb0f262f18f9e6845458`, the faithful
+`N319/N377_PHYSICAL_LOOPBACK443.xml` still records two failing normal-path cases
+and one passing stale-instrument refusal. The original native TCP connection
+succeeds. The first remaining refusal is again `_time` at the unchanged cash
+cutoff, before TLS begins. Observed native time after the new mutable quote:
+
+| Original code entry | Seconds |
+| --- | ---: |
+| First held readback | 3.495 |
+| HTTP transport | 4.217 |
+| TCP connect | 4.397 |
+| Later transport gates | 4.583 / 4.674 / 4.766 |
+
+The observed post-intent entries are seventeen `_qualified`, fifteen `_facts`,
+twelve physical-gate, eleven final-clock, one held-readback and forty-seven
+actual inert source-guard calls. Counts exclude coroutine resumes. No TLS
+handshake or HTTP POST occurs; the record remains unattempted with risk held.
+
+The reader improvement is real but insufficient for the full normal route.
+These are optimistic measurements: real source guards, account/credential
+admission, SQL round trips and venue latency are still outside this synthetic
+harness. No whole-route or configured-runtime PASS is inferred.

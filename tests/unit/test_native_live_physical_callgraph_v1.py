@@ -87,6 +87,8 @@ async def test_original_staged_worker_real_vendor_loopback_first_post_budget(
         report = {
             "schema": "ctcc.synthetic_real_vendor_entry_callgraph.v1",
             "source_sql_credential_tls_dns_admission_synthetic": True,
+            "original_task_and_session_bodies_unchanged": True,
+            "settings_pin_and_source_configuration_admission_synthetic": True,
             "semantic_clock_paced_by_at_least_actual_native_elapsed": True,
             "original_worker_and_vendor_code_unchanged": True,
             "read_only_local_code_observer_enabled": profiled,
