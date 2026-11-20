@@ -996,6 +996,13 @@ class QualificationLedgerRepository:
                 ) = await native_issuer_transaction.read_actual_issuer_control_0056(
                     session, control_scope
                 )
+            elif source.database_head == "0057":
+                (
+                    state,
+                    event,
+                ) = await native_issuer_transaction.read_actual_issuer_control_0056(
+                    session, control_scope, database_head="0057"
+                )
             else:
                 state, event = await DemoControlRepositoryV2.read_in_transaction(
                     session, control_scope

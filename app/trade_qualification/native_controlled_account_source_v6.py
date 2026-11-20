@@ -3330,12 +3330,14 @@ async def _held_retained_transport_control_v6(record, session):
         yield state, event
         return
     selected, roles = profile
+    selected_profile = _database_profile_from_roles_v6(roles)
     async with control56.held_native_writer_control_0056_v1(
         selected,
         session,
         record["scope"],
         roles=roles,
         purpose=control56.NativeWriterControlPurpose0056.PREPARE_OBSERVATION,
+        **database_profiles.arguments(selected_profile),
     ) as held:
         held.check_held()
         actual = held.observation.control
@@ -3343,7 +3345,7 @@ async def _held_retained_transport_control_v6(record, session):
         held.check_held()
         if (
             await control56.writer56.observe_restricted_readwrite_writer_0056_v1(
-                session
+                session, **database_profiles.arguments(selected_profile)
             )
             != held.observation.writer_catalog
         ):
@@ -4078,11 +4080,11 @@ def _recovery_database_profile_v6(record):
     if (
         type(selected) is not selector56.ConfiguredNativeDemoFactoriesV2
         or type(roles) is not witness56.RestrictedNativeRoles0056WitnessV1
-        or roles.observation.database_head != "0056"
         or selected.writer_factory is not record["writer_factory"]
         or selected.frame_reader_factory is not record["raw_factory"]
     ):
         _deny("controlled_account_recovery_original_database_required")
+    _database_profile_from_roles_v6(roles)
     return profile
 
 
@@ -4443,6 +4445,9 @@ def _make_reconciliation_inhibitor_v6():
                         roles=roles,
                         scope=scope,
                         clock=lambda: utc_from_ns(clock()["utc_ns"]),
+                        **database_profiles.arguments(
+                            _database_profile_from_roles_v6(roles)
+                        ),
                     )
                     result = await repository.latch_stop(
                         scope, command_id=native.secrets.token_hex(32)

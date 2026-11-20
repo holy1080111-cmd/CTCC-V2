@@ -12,19 +12,22 @@ from sqlalchemy.pool import NullPool
 from app.database.repositories import (
     account_revision_collector_lineage_current55_v1 as lineage,
 )
+from app.domain import native_database_profile_v1 as profiles
 from app.trade_qualification.demo_control import ControlScope
+from tests.native_role_profile_fixtures_v1 import restricted_roles_fixture
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("fault", [None, "scope", "control", "actor", "xid", "owner"])
+@pytest.mark.parametrize("profile", [profiles.DB0056, profiles.DB0057])
 async def test_db0056_lineage_transaction_cannot_leave_original_account(
-    monkeypatch, fault
+    monkeypatch, fault, profile
 ):
     engine = create_async_engine(
         "postgresql+asyncpg://writer@localhost/demo", poolclass=NullPool
     )
     factory = async_sessionmaker(engine, autoflush=False, expire_on_commit=False)
-    database = object(), object()
+    database = object(), restricted_roles_fixture(profile)
     now = datetime(2026, 1, 1, tzinfo=UTC)
     expected_scope = object()
     scope = object() if fault == "scope" else expected_scope
@@ -56,13 +59,16 @@ async def test_db0056_lineage_transaction_cannot_leave_original_account(
     )
 
     @asynccontextmanager
-    async def held_control(selected, session, control_scope, *, roles, purpose):
+    async def held_control(
+        selected, session, control_scope, *, roles, purpose, **kwargs
+    ):
         assert selected is database[0] and roles is database[1]
         assert control_scope == expected_control.scope and session.in_transaction()
         assert (
             purpose
             is lineage.locked56.NativeWriterControlPurpose0056.PREPARE_OBSERVATION
         )
+        assert kwargs == profiles.arguments(profile)
         yield held
 
     monkeypatch.setattr(
@@ -75,10 +81,10 @@ async def test_db0056_lineage_transaction_cannot_leave_original_account(
         now + timedelta(seconds=1),
     )
     catalog = lineage.issuer_transaction.NativeIssuerCatalogIdentity(
-        "0056", 11, "b" * 64
+        profiles.head(profile), 11, "b" * 64
     )
     changed = lineage.issuer_transaction.NativeIssuerCatalogIdentity(
-        "0056", 12, "c" * 64
+        profiles.head(profile), 12, "c" * 64
     )
     transaction = AsyncMock(
         side_effect=[

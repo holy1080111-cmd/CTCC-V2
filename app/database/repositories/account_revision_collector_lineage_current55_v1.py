@@ -31,6 +31,7 @@ from app.database.repositories.demo_control_current55_v2 import (
 )
 from app.database.repositories.qualification_ledger import QualificationLedgerRepository
 from app.domain import account_revision_collector_lineage_v1 as policy
+from app.domain import native_database_profile_v1 as profiles
 from app.domain.native_clock import native_stamp
 from app.domain.source_primitives import decode, utc_from_ns
 from app.trade_qualification import account_capture_journal as journal
@@ -168,6 +169,11 @@ async def _owned_lineage_transaction(session, ledger, scope, state, replay, stam
         or session.get_bind(clause=_META_SQL) is not engine.sync_engine
     ):
         policy.deny("collector_lineage_database_0056_changed")
+    from app.database.repositories import (
+        qualification_native_checkpoint_v2 as checkpoint,
+    )
+
+    profile = checkpoint._profile_for_original_roles_v1(roles)
     await session.execute(
         text("SET TRANSACTION ISOLATION LEVEL READ COMMITTED, READ WRITE")
     )
@@ -178,6 +184,7 @@ async def _owned_lineage_transaction(session, ledger, scope, state, replay, stam
         expected_control.scope,
         roles=roles,
         purpose=locked56.NativeWriterControlPurpose0056.PREPARE_OBSERVATION,
+        **profiles.arguments(profile),
     ) as held:
         control_observation = held.observation.control
         if (control_observation.state, control_observation.event_sha256) != (
@@ -204,7 +211,7 @@ async def _owned_lineage_transaction(session, ledger, scope, state, replay, stam
             before,
         ) = await issuer_transaction.read_actual_native_issuer_transaction(session)
         held.check_held()
-        if catalog.head != "0056":
+        if catalog.head != profiles.head(profile):
             policy.deny("collector_lineage_database_0056_changed")
         yield row, control_observation.state, control_observation.event_sha256
         held.check_held()
