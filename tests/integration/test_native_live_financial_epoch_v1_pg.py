@@ -1,6 +1,6 @@
 """Actual isolated PG epoch acceptance, with declared synthetic source seam.
 
-Installs the separate unbound additive SPEC in the disposable DB0058 lab only.
+Uses the actual main migration's additive SPEC in the disposable DB0058 lab.
 No venue, credentials, source authenticity, Arm or execution acceptance claim.
 """
 
@@ -40,8 +40,22 @@ async def financial_lab(_live58_lab, monkeypatch):
     created = False
     try:
         async with owner.begin() as connection:
-            for statement in spec.UPGRADE_SQL:
-                await connection.exec_driver_sql(statement)
+            assert (
+                await connection.scalar(
+                    text("SELECT version_num FROM public.alembic_version")
+                )
+                == "0058"
+            )
+            # The sole main migration installs the objects. A test-local DDL
+            # installation would conceal a missing production migration.
+            for table in spec.TABLES:
+                assert (
+                    await connection.scalar(
+                        text("SELECT to_regclass(:name)::text"),
+                        {"name": "public." + table},
+                    )
+                    is not None
+                )
             await connection.exec_driver_sql(
                 f'CREATE ROLE "{role}" LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS'
             )

@@ -29,6 +29,8 @@ from scripts.verify_current0056_hermetic import _PG_TLS_READY
 
 RUNNER = "scripts/run_db0058_migration_probe_v1.py"
 TEST_MODULE = "tests/integration/test_native_live_ledger_v1_pg.py"
+FINANCIAL_TEST_MODULE = "tests/integration/test_native_live_financial_epoch_v1_pg.py"
+TEST_MODULES = (TEST_MODULE, FINANCIAL_TEST_MODULE)
 REQUIRED_CASES = tuple(
     ("tests.integration.test_native_live_ledger_v1_pg", name)
     for name in (
@@ -58,6 +60,26 @@ REQUIRED_CASES = tuple(
         "test_actual58_writer_can_observe_real_head_but_cannot_read_demo_records",
     )
 )
+REQUIRED_FINANCIAL_CASES = tuple(
+    ("tests.integration.test_native_live_financial_epoch_v1_pg", name)
+    for name in (
+        "test_live_epoch_two_workers_create_one_immutable_genesis_and_original_readback",
+        "test_live_epoch_is_append_only_and_collector_cannot_arm_clear_stop_or_delete",
+        "test_live_epoch_late_readback_failure_keeps_committed_prefix_and_never_resets",
+        "test_live_epoch_check_body_drift_is_denied_even_when_constraint_name_is_preserved",
+        "test_live_epoch_nonempty_downgrade_preserves_every_saved_sample",
+        "test_live_epoch_legacy_ambiguous_intent_blocks_even_when_native_source_reports_flat",
+        *(
+            "test_live_epoch_legacy_local_exposure_pending_or_latch_cannot_be_ignored["
+            + kind
+            + "]"
+            for kind in ("position", "pending_order", "latch")
+        ),
+        "test_live_epoch_original_legacy_global_lock_prevents_concurrent_legacy_submission",
+        "test_live_epoch_collector_rehashed_insert_is_not_an_authenticated_prefix",
+    )
+)
+REQUIRED_CASES = (*REQUIRED_CASES, *REQUIRED_FINANCIAL_CASES)
 _MAX_ARCHIVE = 128 * 1024 * 1024
 
 
@@ -350,7 +372,7 @@ def run_probe(args, raw, files, root):
                 *_PYTEST,
                 "-q",
                 "--junitxml=/validation-results/live-ledger-data.xml",
-                TEST_MODULE,
+                *TEST_MODULES,
                 mounts=(
                     "--mount",
                     f"type=bind,src={results},dst=/validation-results",

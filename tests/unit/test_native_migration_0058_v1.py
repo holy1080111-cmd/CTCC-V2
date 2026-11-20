@@ -5,8 +5,10 @@ from importlib import import_module
 from sqlalchemy.dialects.postgresql import dialect
 from sqlalchemy.schema import CreateIndex
 
+from app.database.models import native_live_financial_epoch_v1 as financial_models
 from app.database.models import native_live_ledger_v1 as live_models
 from app.database.models.submission_reporting import QualificationSubmissionOutcome
+from app.domain import native_live_financial_epoch_schema_v1 as financial
 from app.domain import native_live_ledger_schema_v1 as live
 from app.domain import native_protective_hold_schema_v58 as hold
 from app.domain import native_submission_binding_schema_v58 as submission
@@ -26,7 +28,12 @@ def test_actual58_is_additive_after57_and_never_grants_or_arms(monkeypatch):
     assert statements.index(hold.CURRENT_SQL) < statements.index(submission.CURRENT_SQL)
     assert any(submission.ANCESTOR_BODY_SHA256 in statement for statement in statements)
     assert any(submission.CURRENT_BODY_SHA256 in statement for statement in statements)
-    assert statements[-len(live.UPGRADE_SQL) :] == list(live.UPGRADE_SQL)
+    assert all(statement in statements for statement in live.UPGRADE_SQL)
+    assert all(statement in statements for statement in financial.UPGRADE_SQL)
+    assert statements.index(live.UPGRADE_SQL[-1]) < statements.index(
+        financial.UPGRADE_SQL[0]
+    )
+    assert "protected58_financial_guard_changed" in statements[-1]
     assert not any(
         statement.lstrip().upper().startswith("GRANT ") for statement in statements
     )
@@ -49,6 +56,12 @@ def test_downgrade_checks_retained_custody_before_removing_only_new_objects(
     )
     assert refusal < statements.index(subject.previous.CURRENT_SQL)
     assert refusal < statements.index(submission.ANCESTOR_SQL)
+    assert "native_live_financial_epochs_v1" in statements[refusal]
+    assert "native_live_financial_samples_v1" in statements[refusal]
+    assert "pg_catalog.acldefault('f',p.proowner)" in statements[refusal]
+    assert statements.index(financial.DOWNGRADE_SQL[-1]) < statements.index(
+        live.DOWNGRADE_SQL[0]
+    )
     assert any(submission.CURRENT_BODY_SHA256 in statement for statement in statements)
     assert statements[-len(live.DOWNGRADE_SQL) :] == list(live.DOWNGRADE_SQL)
     assert not any(
@@ -59,6 +72,16 @@ def test_downgrade_checks_retained_custody_before_removing_only_new_objects(
 
 
 def test_new_live_models_and_demo_indexes_match_source_spec_names_and_predicates():
+    assert (
+        tuple(
+            model.__tablename__
+            for model in (
+                financial_models.NativeLiveFinancialEpochV1,
+                financial_models.NativeLiveFinancialSampleV1,
+            )
+        )
+        == financial.TABLES
+    )
     assert (
         tuple(
             model.__tablename__

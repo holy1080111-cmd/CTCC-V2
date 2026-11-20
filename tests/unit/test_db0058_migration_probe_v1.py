@@ -54,7 +54,8 @@ def test_probe_admits_actual58_prefix_without_claiming_full_acceptance(tmp_path)
     raw, files = probe.admit_archive(args)
     assert probe.sha(raw) == args.archive_sha256
     assert files[probe.pins.MIGRATION_PATH]["sha256"] == probe.pins.MIGRATION_SHA256
-    assert len(probe.REQUIRED_CASES) == 17
+    assert len(probe.REQUIRED_CASES) == 28
+    assert len(probe.REQUIRED_FINANCIAL_CASES) == 11
 
 
 @pytest.mark.parametrize("change", ["migration", "runner", "extra_migration"])
@@ -77,7 +78,7 @@ def test_probe_rejects_changed_external_source_pins(tmp_path, field):
         probe.admit_archive(args)
 
 
-@pytest.mark.parametrize("omitted", (None, *range(4, 13)))
+@pytest.mark.parametrize("omitted", (None, *range(4, 13), *range(17, 28)))
 def test_parameterized_caps_each_require_their_own_passed_junit_case(tmp_path, omitted):
     cases = tuple(
         case for index, case in enumerate(probe.REQUIRED_CASES) if index != omitted
@@ -94,7 +95,7 @@ def test_parameterized_caps_each_require_their_own_passed_junit_case(tmp_path, o
         checked = probe.shared.verify_pytest_report(
             path, required_cases=probe.REQUIRED_CASES
         )
-        assert checked["tests"] == checked["passed"] == 17
+        assert checked["tests"] == checked["passed"] == 28
     else:
         # All retained cases pass; a missing single NULL/NaN/cap case still fails.
         with pytest.raises(

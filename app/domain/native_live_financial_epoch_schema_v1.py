@@ -1,4 +1,4 @@
-"""Additive, not-yet-migrated Live financial epoch SPEC, no execution grants.
+"""Additive main0058 Live financial epoch SPEC, no execution grants.
 
 The collector role is separate from the Live intent writer. There is exactly
 one prospective controlled epoch per Live UID; no truncate/update/reset API.

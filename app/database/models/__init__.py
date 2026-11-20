@@ -75,6 +75,10 @@ from app.database.models.native_leverage_configuration import (
     NativeLeverageConfigurationIntentV1,
     NativeLeverageConfigurationResultV1,
 )
+from app.database.models.native_live_financial_epoch_v1 import (
+    NativeLiveFinancialEpochV1,
+    NativeLiveFinancialSampleV1,
+)
 from app.database.models.native_live_ledger_v1 import (
     NativeLiveControlV1,
     NativeLiveIntentV1,
@@ -204,6 +208,8 @@ __all__ = [
     "NativeLeverageConfigurationIntentV1",
     "NativeLeverageConfigurationResultV1",
     "NativeLiveControlV1",
+    "NativeLiveFinancialEpochV1",
+    "NativeLiveFinancialSampleV1",
     "NativeLiveIntentV1",
     "NativeLiveReservationV1",
     "NativeLiveTransitionV1",
