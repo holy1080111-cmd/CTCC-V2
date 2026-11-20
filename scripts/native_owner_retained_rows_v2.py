@@ -77,7 +77,7 @@ def row_multiset_sql_v2(name, columns):
         text(
             "SELECT pg_catalog.count(*),COALESCE(pg_catalog.sum(pg_catalog.octet_length("
             + row
-            + ")),0)::bigint FROM "
+            + ")),0)::pg_catalog.int8 FROM "
             + table
         ),
         text(
@@ -90,18 +90,18 @@ def row_multiset_sql_v2(name, columns):
     )
 
 
-_LAYOUT_SQL = text("""SELECT c.relname::text,c.oid::bigint,c.relkind::text,c.relowner::bigint,
- c.relpersistence::text,c.relrowsecurity,c.relforcerowsecurity,c.relispartition,c.relhassubclass,c.relhasrules,
- COALESCE((SELECT pg_catalog.jsonb_agg(pg_catalog.jsonb_build_array(a.attname,a.atttypid::bigint,a.atttypmod,a.attnotnull,a.attcollation::bigint,a.attidentity::text,a.attgenerated::text)
-  ORDER BY a.attnum) FROM pg_catalog.pg_attribute a WHERE a.attrelid=c.oid AND a.attnum>0 AND NOT a.attisdropped),'[]'::jsonb)
+_LAYOUT_SQL = text("""SELECT c.relname::pg_catalog.text,c.oid::pg_catalog.int8,c.relkind::pg_catalog.text,c.relowner::pg_catalog.int8,
+ c.relpersistence::pg_catalog.text,c.relrowsecurity,c.relforcerowsecurity,c.relispartition,c.relhassubclass,c.relhasrules,
+ COALESCE((SELECT pg_catalog.jsonb_agg(pg_catalog.jsonb_build_array(a.attname,a.atttypid::pg_catalog.int8,a.atttypmod,a.attnotnull,a.attcollation::pg_catalog.int8,a.attidentity::pg_catalog.text,a.attgenerated::pg_catalog.text)
+  ORDER BY a.attnum) FROM pg_catalog.pg_attribute a WHERE a.attrelid=c.oid AND a.attnum>0 AND NOT a.attisdropped),'[]'::pg_catalog.jsonb)
  FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
  WHERE n.nspname='public' AND c.relkind IN ('r','p','m','f','v') ORDER BY c.relname COLLATE pg_catalog."C"
 """)
-_SEQUENCES_SQL = text("""SELECT c.relname::text,c.oid::bigint,c.relowner::bigint,
- pg_catalog.jsonb_build_array(s.seqtypid::bigint,s.seqstart,s.seqincrement,s.seqmax,s.seqmin,s.seqcache,s.seqcycle),
- COALESCE((SELECT pg_catalog.jsonb_agg(pg_catalog.jsonb_build_array(d.refobjid::bigint,d.refobjsubid,d.deptype::text) ORDER BY d.refobjid,d.refobjsubid,d.deptype)
-  FROM pg_catalog.pg_depend d WHERE d.classid='pg_catalog.pg_class'::regclass AND d.objid=c.oid
-  AND d.refclassid='pg_catalog.pg_class'::regclass AND d.deptype IN ('a','i')),'[]'::jsonb)
+_SEQUENCES_SQL = text("""SELECT c.relname::pg_catalog.text,c.oid::pg_catalog.int8,c.relowner::pg_catalog.int8,
+ pg_catalog.jsonb_build_array(s.seqtypid::pg_catalog.int8,s.seqstart,s.seqincrement,s.seqmax,s.seqmin,s.seqcache,s.seqcycle),
+ COALESCE((SELECT pg_catalog.jsonb_agg(pg_catalog.jsonb_build_array(d.refobjid::pg_catalog.int8,d.refobjsubid,d.deptype::pg_catalog.text) ORDER BY d.refobjid,d.refobjsubid,d.deptype)
+  FROM pg_catalog.pg_depend d WHERE d.classid='pg_catalog.pg_class'::pg_catalog.regclass AND d.objid=c.oid
+  AND d.refclassid='pg_catalog.pg_class'::pg_catalog.regclass AND d.deptype IN ('a','i')),'[]'::pg_catalog.jsonb)
  FROM pg_catalog.pg_sequence s JOIN pg_catalog.pg_class c ON c.oid=s.seqrelid
  JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
  WHERE n.nspname='public' ORDER BY c.relname COLLATE pg_catalog."C"

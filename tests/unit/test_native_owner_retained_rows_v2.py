@@ -189,3 +189,16 @@ def test_every_json_and_aggregate_call_in_shared_sql_is_explicitly_pg_catalog_bo
             r"(?<!pg_catalog\.)\b(?:to_jsonb|jsonb_build_array|jsonb_agg|string_agg|count|sum)\(",
             sql,
         )
+
+
+def test_shared_sql_never_resolves_fixed_builtin_casts_through_the_public_search_path():
+    import re
+
+    size, digest = subject.row_multiset_sql_v2("audit_logs", ["before"])
+    for sql in (
+        str(size),
+        str(digest),
+        str(subject._LAYOUT_SQL),
+        str(subject._SEQUENCES_SQL),
+    ):
+        assert not re.search(r"::(?:text|bigint|jsonb|regclass)\b", sql)
