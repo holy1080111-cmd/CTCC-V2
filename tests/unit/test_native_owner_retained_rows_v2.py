@@ -24,6 +24,7 @@ def _layouts():
             False,
             False,
             False,
+            False,
             [["version_num", 1043, 36, True, 100, "", ""]],
         ),
         (
@@ -32,6 +33,7 @@ def _layouts():
             "r",
             30,
             "p",
+            False,
             False,
             False,
             False,
@@ -47,7 +49,7 @@ def test_17_and_owner_upgrade_use_one_identical_source_defined_null_aware_codec(
     size, digest = subject.row_multiset_sql_v2("audit_logs", columns)
     assert subject.row_expression_v2(columns) in str(size)
     assert subject.row_expression_v2(columns) in str(digest)
-    assert 'ORDER BY row_sha COLLATE "C"' in str(digest)
+    assert 'ORDER BY row_sha COLLATE pg_catalog."C"' in str(digest)
     assert "DISTINCT" not in str(digest)
 
 
@@ -120,7 +122,8 @@ def test_original_relation_column_type_nullability_and_order_remain_in_snapshot(
         (6, True),
         (7, True),
         (8, True),
-        (9, []),
+        (9, True),
+        (10, []),
     ],
 )
 def test_native_layout_rejects_hidden_rows_changed_identity_or_missing_columns(
@@ -148,4 +151,41 @@ def test_saved_receipt_or_fake_connection_never_opens_a_row_read():
                 max_table_bytes=1024,
                 max_total_bytes=2048,
             )
+        )
+
+
+@pytest.mark.parametrize("oid", [True, 0, 999999, 1009, 2249])
+def test_unknown_domains_composites_arrays_or_custom_output_type_refuse_before_row_query(
+    oid,
+):
+    row = list(_layouts()[1])
+    columns = [list(row[-1][0])]
+    columns[0][1] = oid
+    row[-1] = columns
+    with pytest.raises(subject.RetainedRowsV2Refused):
+        subject._checked_layouts((_layouts()[0], tuple(row)), _expected(), 30)
+
+
+@pytest.mark.parametrize("oid", sorted(subject._NATIVE_SCALAR_OIDS))
+def test_reviewed_native_scalar_column_outputs_are_closed_and_supported(oid):
+    row = list(_layouts()[1])
+    columns = [list(row[-1][0])]
+    columns[0][1] = oid
+    row[-1] = columns
+    assert subject._checked_layouts((_layouts()[0], tuple(row)), _expected(), 30)
+
+
+def test_every_json_and_aggregate_call_in_shared_sql_is_explicitly_pg_catalog_bound():
+    import re
+
+    size, digest = subject.row_multiset_sql_v2("audit_logs", ["before"])
+    for sql in (
+        str(size),
+        str(digest),
+        str(subject._LAYOUT_SQL),
+        str(subject._SEQUENCES_SQL),
+    ):
+        assert not re.search(
+            r"(?<!pg_catalog\.)\b(?:to_jsonb|jsonb_build_array|jsonb_agg|string_agg|count|sum)\(",
+            sql,
         )

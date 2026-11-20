@@ -16,6 +16,7 @@ from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from alembic.script import ScriptDirectory
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.database.models.demo_automation import DemoAutomationState
@@ -272,3 +273,51 @@ async def test_actual0057_owner58_null_bitmap_refuses_rehearsal_or_final_null_fl
             )
             is True
         )
+
+
+async def test_actual0057_shared_snapshot_rejects_user_domain_before_selecting_its_rows(
+    _actual57_owner_profile_lab,
+):
+    owner, _selected, pins, _script = _actual57_owner_profile_lab
+    async with owner.begin() as connection:
+        await connection.exec_driver_sql(
+            "CREATE DOMAIN public.unreviewed_row_output AS jsonb"
+        )
+        await connection.exec_driver_sql(
+            'ALTER TABLE public.audit_logs ALTER COLUMN "before" TYPE public.unreviewed_row_output USING "before"::public.unreviewed_row_output'
+        )
+    with pytest.raises(subject.retained_rows.RetainedRowsV2Refused):
+        await subject._inventory(owner, pins)
+
+
+async def test_actual0057_shared_snapshot_never_calls_active_public_json_overload(
+    _actual57_owner_profile_lab,
+):
+    owner, _selected, pins, _script = _actual57_owner_profile_lab
+    async with owner.begin() as connection:
+        await connection.exec_driver_sql("""CREATE FUNCTION public.to_jsonb(anyelement) RETURNS jsonb LANGUAGE plpgsql AS $$
+ BEGIN RAISE EXCEPTION 'declared_foreign_json_callback_invoked'; END $$""")
+    async with owner.connect() as connection, connection.begin():
+        for sql in subject.parent.old._READBACK_SETTINGS:
+            await connection.exec_driver_sql(sql)
+        await connection.exec_driver_sql("SET LOCAL search_path TO public, pg_catalog")
+        savepoint = await connection.begin_nested()
+        with pytest.raises(DBAPIError) as blocked:
+            await connection.exec_driver_sql("SELECT to_jsonb(1)")
+        assert blocked.value.orig.sqlstate == "P0001"
+        await savepoint.rollback()
+        relations = await subject.parent._relations(connection, lock=False)
+        snapshot = await subject.retained_rows.snapshot_rows_v2(
+            connection,
+            relations,
+            owner_oid=pins.route.owner_oid,
+            marker_scope=subject.retained_rows.MarkerScopeV2.EXCLUDE_UPGRADE_MARKER,
+            max_rows=subject.parent._MAX_ROWS,
+            max_table_bytes=subject.parent._MAX_ROW_BYTES,
+            max_total_bytes=subject.parent._MAX_ROW_BYTES
+            * subject.parent._MAX_RELATIONS,
+        )
+        assert snapshot["row_encoding"] == subject.retained_rows.ROW_ENCODING
+        assert {row[0] for row in snapshot["rows"]} == {row[0] for row in relations} - {
+            "alembic_version"
+        }

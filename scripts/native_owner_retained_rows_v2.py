@@ -12,6 +12,31 @@ ROW_ENCODING = "ctcc.owner.retained_row_sql_null_bitmap.v2"
 _NAME = re.compile(r"[a-z_][a-z0-9_]{0,62}\Z", re.ASCII)
 _HEX = re.compile(r"[0-9a-f]{64}\Z", re.ASCII)
 _MAX_RELATIONS = 512
+# Closed native scalar column types used by the reviewed source schemas.
+# User domains/enums/composites/base types have their own OIDs and can execute
+# foreign output functions during to_jsonb; they are not an extensible fallback.
+_NATIVE_SCALAR_OIDS = frozenset(
+    {
+        16,
+        17,
+        20,
+        21,
+        23,
+        25,
+        114,
+        700,
+        701,
+        869,
+        1042,
+        1043,
+        1082,
+        1114,
+        1184,
+        1700,
+        2950,
+        3802,
+    }
+)
 
 
 class MarkerScopeV2(Enum):
@@ -37,7 +62,11 @@ def row_expression_v2(columns):
     )
     # SQL NULL and JSONB `null` otherwise collapse in PostgreSQL to_jsonb(row).
     nulls = ",".join('(r."' + c + '" IS NULL)' for c in columns)
-    return "jsonb_build_array(to_jsonb(r),to_jsonb(ARRAY[" + nulls + "]))::text"
+    return (
+        "pg_catalog.jsonb_build_array(pg_catalog.to_jsonb(r),pg_catalog.to_jsonb(ARRAY["
+        + nulls
+        + "]))::pg_catalog.text"
+    )
 
 
 def row_multiset_sql_v2(name, columns):
@@ -46,13 +75,13 @@ def row_multiset_sql_v2(name, columns):
     table = 'public."' + name + '" r'
     return (
         text(
-            "SELECT count(*),COALESCE(sum(pg_catalog.octet_length("
+            "SELECT pg_catalog.count(*),COALESCE(pg_catalog.sum(pg_catalog.octet_length("
             + row
             + ")),0)::bigint FROM "
             + table
         ),
         text(
-            "SELECT pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(COALESCE(string_agg(row_sha,'' ORDER BY row_sha COLLATE \"C\"),''),'UTF8')),'hex') FROM (SELECT pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to("
+            "SELECT pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(COALESCE(pg_catalog.string_agg(row_sha,'' ORDER BY row_sha COLLATE pg_catalog.\"C\"),''),'UTF8')),'hex') FROM (SELECT pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to("
             + row
             + ",'UTF8')),'hex') row_sha FROM "
             + table
@@ -62,20 +91,20 @@ def row_multiset_sql_v2(name, columns):
 
 
 _LAYOUT_SQL = text("""SELECT c.relname::text,c.oid::bigint,c.relkind::text,c.relowner::bigint,
- c.relpersistence::text,c.relrowsecurity,c.relforcerowsecurity,c.relispartition,c.relhassubclass,
- COALESCE((SELECT jsonb_agg(jsonb_build_array(a.attname,a.atttypid::bigint,a.atttypmod,a.attnotnull,a.attcollation::bigint,a.attidentity::text,a.attgenerated::text)
+ c.relpersistence::text,c.relrowsecurity,c.relforcerowsecurity,c.relispartition,c.relhassubclass,c.relhasrules,
+ COALESCE((SELECT pg_catalog.jsonb_agg(pg_catalog.jsonb_build_array(a.attname,a.atttypid::bigint,a.atttypmod,a.attnotnull,a.attcollation::bigint,a.attidentity::text,a.attgenerated::text)
   ORDER BY a.attnum) FROM pg_catalog.pg_attribute a WHERE a.attrelid=c.oid AND a.attnum>0 AND NOT a.attisdropped),'[]'::jsonb)
  FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
- WHERE n.nspname='public' AND c.relkind IN ('r','p','m','f','v') ORDER BY c.relname COLLATE "C"
+ WHERE n.nspname='public' AND c.relkind IN ('r','p','m','f','v') ORDER BY c.relname COLLATE pg_catalog."C"
 """)
 _SEQUENCES_SQL = text("""SELECT c.relname::text,c.oid::bigint,c.relowner::bigint,
- jsonb_build_array(s.seqtypid::bigint,s.seqstart,s.seqincrement,s.seqmax,s.seqmin,s.seqcache,s.seqcycle),
- COALESCE((SELECT jsonb_agg(jsonb_build_array(d.refobjid::bigint,d.refobjsubid,d.deptype::text) ORDER BY d.refobjid,d.refobjsubid,d.deptype)
+ pg_catalog.jsonb_build_array(s.seqtypid::bigint,s.seqstart,s.seqincrement,s.seqmax,s.seqmin,s.seqcache,s.seqcycle),
+ COALESCE((SELECT pg_catalog.jsonb_agg(pg_catalog.jsonb_build_array(d.refobjid::bigint,d.refobjsubid,d.deptype::text) ORDER BY d.refobjid,d.refobjsubid,d.deptype)
   FROM pg_catalog.pg_depend d WHERE d.classid='pg_catalog.pg_class'::regclass AND d.objid=c.oid
   AND d.refclassid='pg_catalog.pg_class'::regclass AND d.deptype IN ('a','i')),'[]'::jsonb)
  FROM pg_catalog.pg_sequence s JOIN pg_catalog.pg_class c ON c.oid=s.seqrelid
  JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
- WHERE n.nspname='public' ORDER BY c.relname COLLATE "C"
+ WHERE n.nspname='public' ORDER BY c.relname COLLATE pg_catalog."C"
 """)
 
 
@@ -106,7 +135,7 @@ def _checked_layouts(rows, expected, owner_oid):
     layouts = []
     names = set()
     for row in rows:
-        _need(type(row) is tuple and len(row) == 10)
+        _need(type(row) is tuple and len(row) == 11)
         (
             name,
             oid,
@@ -117,6 +146,7 @@ def _checked_layouts(rows, expected, owner_oid):
             forced,
             partition,
             children,
+            rules,
             columns,
         ) = row
         _need(
@@ -129,7 +159,7 @@ def _checked_layouts(rows, expected, owner_oid):
             and owner == owner_oid
             and type(owner) is int
             and persistence == "p"
-            and rls is forced is partition is children is False
+            and rls is forced is partition is children is rules is False
         )
         _need(type(columns) is list and 0 < len(columns) <= 1600)
         for column in columns:
@@ -139,7 +169,7 @@ def _checked_layouts(rows, expected, owner_oid):
                 and type(column[0]) is str
                 and _NAME.fullmatch(column[0]) is not None
                 and type(column[1]) is int
-                and column[1] > 0
+                and column[1] in _NATIVE_SCALAR_OIDS
                 and type(column[2]) is int
                 and type(column[3]) is bool
                 and type(column[4]) is int

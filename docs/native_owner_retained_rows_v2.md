@@ -22,6 +22,12 @@ remain included. Every other old row/layout/OID/sequence must match. Current58
 may add only its exact ten empty source-defined Live tables; that DDL creates
 no new sequences. Changed or added sequences refuse. Unknown inheritance,
 partitioning, RLS, object kinds or column identities refuse.
+Before any table-row serialization, the shared helper also rejects rewrite
+rules and every column type outside its closed reviewed native scalar OID set
+(including original INET869). User domains, composites, enums, arrays and custom
+output functions are not a fallback. All JSON/aggregate calls and collation in
+the helper SQL explicitly name `pg_catalog`; a public overload cannot intercept
+metadata or row serialization while later catalog checks are still pending.
 
 Current owner dry-run/commit receipts use v2 schemas and explicitly bind
 `ctcc.owner.retained_row_sql_null_bitmap.v2`. An old JSON-only receipt cannot be
