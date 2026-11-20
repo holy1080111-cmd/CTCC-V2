@@ -8,10 +8,11 @@ from app.dashboard.native_manual_demo_0056_v1 import manual_demo_dashboard_0056_
 
 
 async def _require_ready(request: Request):
-    if (
-        getattr(request.app.state, "native_manual_demo_recovery_confirmed", None)
-        is not True
-    ):
+    if getattr(
+        request.app.state, "native_manual_demo_recovery_confirmed", None
+    ) is not True or getattr(
+        request.app.state, "native_manual_demo_database_head", None
+    ) not in ("0056", "0057"):
         raise HTTPException(
             status_code=503, detail="native_manual_demo_recovery_unconfirmed"
         )
@@ -31,10 +32,10 @@ router.add_api_route(
 
 
 @router.get("/readiness")
-async def readiness():
+async def readiness(request: Request):
     return {
         "status": "MANUAL_DEMO_CONTROL_READY",
-        "database_head": "0056",
+        "database_head": request.app.state.native_manual_demo_database_head,
         "startup_recovery_confirmed": True,
         "execution_authority": False,
     }

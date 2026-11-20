@@ -8,13 +8,13 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from app.core.native_role_witness_0056_v1 import RestrictedNativeRoles0056WitnessV1
 from app.demo_automation import DemoAutomationSafetyError
 from app.demo_automation import native_caller_v2 as caller
 from app.demo_automation import native_current_source_0056_v1 as source56
 from app.demo_automation import native_server_selectors_v2 as selectors
 from app.demo_automation import native_source_only_v1 as source_only
 from app.demo_automation.native_requests_v2 import NativeDemoArmExecuteRequestV2
+from app.domain import native_database_profile_v1 as profiles
 from app.domain.demo_automation import ARM_PHRASE, EXECUTE_PHRASE
 from app.exchange.okx import native_demo_write_v2 as write
 from app.exchange.okx import private_rest
@@ -22,6 +22,7 @@ from app.trade_qualification import account_history_source_v1 as history
 from app.trade_qualification import native_controlled_account_source_v6 as controlled
 from app.trade_qualification import native_demo_control_owner_v2 as owner
 from app.trade_qualification import native_invocation_v2 as invocation
+from tests.native_role_profile_fixtures_v1 import restricted_roles_fixture
 
 
 def test_runtime_profile_keeps_the_real_compiled_source_closure_intact():
@@ -30,7 +31,7 @@ def test_runtime_profile_keeps_the_real_compiled_source_closure_intact():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("head", ["0055", "0056"])
+@pytest.mark.parametrize("head", ["0055", "0056", "0057"])
 @pytest.mark.parametrize("purpose", ["entry", "history", "recovery"])
 async def test_runtime_role_verification_failure_precedes_signed_get(
     monkeypatch, head, purpose
@@ -50,7 +51,7 @@ async def test_runtime_role_verification_failure_precedes_signed_get(
     head_read = AsyncMock(return_value=head)
     monkeypatch.setattr(selectors, "_observe_runtime_database_head_v2", head_read)
     refused = AsyncMock(side_effect=ValueError("fixture_role_refusal"))
-    if head == "0056":
+    if head in ("0056", "0057"):
         monkeypatch.setattr(selectors, "_source_roles_before_get_0056", refused)
     else:
         from app.core import native_role_preflight_v1 as roles55
@@ -71,14 +72,17 @@ async def test_runtime_role_verification_failure_precedes_signed_get(
                 history_only=purpose == "history",
             )
     head_read.assert_awaited_once_with(factories)
-    refused.assert_awaited_once_with(factories)
+    refused.assert_awaited_once_with(
+        factories,
+        **profiles.arguments(profiles.DB0057 if head == "0057" else profiles.DB0056),
+    )
     client.account_config_selector_v2.assert_not_awaited()
     factories.frame_reader_engine.dispose.assert_awaited_once()
     factories.custody_engine.dispose.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("rows", [[], ["0055", "0056"], ["0057"], [None]])
+@pytest.mark.parametrize("rows", [[], ["0055", "0056"], ["0058"], [None]])
 async def test_runtime_head_requires_exactly_one_supported_sql_row(monkeypatch, rows):
     statements = []
 
@@ -111,12 +115,11 @@ async def test_runtime_head_requires_exactly_one_supported_sql_row(monkeypatch, 
 async def test_source_only_registration_cannot_dispatch_control_or_recovery(
     monkeypatch,
 ):
-    roles = RestrictedNativeRoles0056WitnessV1(
-        SimpleNamespace(database_head="0056"), "1" * 64, "2" * 64
-    )
+    roles = restricted_roles_fixture()
     record, factories = object(), object()
     entry = {
         "source_roles_0056": roles,
+        "database_profile": profiles.DB0056,
         "purpose_0056": selectors._SOURCE_ONLY_0056,
         "record": record,
         "factories": factories,
@@ -150,8 +153,9 @@ async def test_source_only_registration_cannot_dispatch_control_or_recovery(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("stopped", [True, False])
+@pytest.mark.parametrize("profile", [profiles.DB0056, profiles.DB0057])
 async def test_cold56_bootstrap_requires_stop_and_independent_genesis_readback(
-    monkeypatch, tmp_path, stopped
+    monkeypatch, tmp_path, stopped, profile
 ):
     events = []
     factories = SimpleNamespace(writer_factory=object())
@@ -164,7 +168,8 @@ async def test_cold56_bootstrap_requires_stop_and_independent_genesis_readback(
         control=SimpleNamespace(state=SimpleNamespace(emergency_stop=stopped))
     )
 
-    async def observe(*_):
+    async def observe(*_, **kwargs):
+        assert kwargs == profiles.arguments(profile)
         events.append("control")
         return observation
 
@@ -179,7 +184,12 @@ async def test_cold56_bootstrap_requires_stop_and_independent_genesis_readback(
 
     monkeypatch.setattr(caller, "_ready", lambda *_: None)
     monkeypatch.setattr(
-        selectors, "_runtime_selection_database_head_v2", lambda *_a, **_k: "0056"
+        selectors,
+        "_runtime_selection_database_head_v2",
+        lambda *_a, **_k: profiles.head(profile),
+    )
+    monkeypatch.setattr(
+        selectors, "_selection_database_profile_0056", lambda _: profile
     )
     monkeypatch.setattr(source56, "_observe_control", observe)
     monkeypatch.setattr(
@@ -227,7 +237,7 @@ async def test_cold56_bootstrap_requires_stop_and_independent_genesis_readback(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("head", ["0055", "0056"])
+@pytest.mark.parametrize("head", ["0055", "0056", "0057"])
 @pytest.mark.parametrize("profile_changed", [False, True])
 async def test_one_request_dispatches_exact_profile_and_retains_g12_refusal(
     monkeypatch, tmp_path, head, profile_changed
@@ -381,8 +391,8 @@ async def test_one_request_dispatches_exact_profile_and_retains_g12_refusal(
     assert events == [
         "cold",
         "selector",
-        "owner" + head[-2:],
-        "arm" + head[-2:],
+        "owner" + ("55" if head == "0055" else "56"),
+        "arm" + ("55" if head == "0055" else "56"),
         "account",
         "g12-refusal",
         "revoke",

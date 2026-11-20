@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Literal
 
 from sqlalchemy import inspect, select, text
@@ -16,6 +17,7 @@ from app.database.models.demo_automation import DemoAutomationState
 from app.database.models.demo_control import DemoAccountControl, DemoControlJournal
 from app.database.repositories.demo_control import DemoControlRepository
 from app.database.repositories.demo_control_current55_v2 import DemoControlRepositoryV2
+from app.domain import native_database_profile_v1 as profiles
 from app.trade_qualification.demo_control import ControlScope, sha, utc
 
 _REASONS = ("emergency_stop_engaged", "native_legacy_genesis_unreconciled")
@@ -201,6 +203,7 @@ async def _stopped_scope(session, event_sha256, *, read_only):
 class LegacyControlGenesisResult0056V1:
     status: str
     updated_at: datetime
+    database_head: Literal["0056", "0057"] = field(default="0056")
     control_revision: Literal[1] = field(default=1, init=False)
     emergency_stop: Literal[True] = field(default=True, init=False)
     armed: Literal[False] = field(default=False, init=False)
@@ -210,7 +213,13 @@ class LegacyControlGenesisResult0056V1:
 
 
 async def _owner_identity(
-    session, engine, pins, server_incarnation_sha256, *, read_only
+    session,
+    engine,
+    pins,
+    server_incarnation_sha256,
+    *,
+    read_only,
+    profile=profiles.DB0056,
 ):
     from app.core import native_role_preflight_0056_full_diagnostic_v1 as roles56
     from scripts import native_owner_postgrant_readback_0056_v1 as postgrant
@@ -229,13 +238,15 @@ async def _owner_identity(
         )
         and session.get_bind() is engine.sync_engine
         and type(pins) is route.OwnerRoutePinsV1
-        and pins.database_head == "0056"
+        and pins.database_head == profiles.head(profile)
     )
-    identity = await roles56._identity_at_0056(session, pins.owner)
+    identity = await roles56._identity_at_0056(
+        session, pins.owner, **profiles.arguments(profile)
+    )
     upgrade._checked_profile(
         tuple((await session.execute(route._PROFILE_SQL)).one()),
         pins,
-        "0056",
+        profiles.head(profile),
         read_only=read_only,
     )
     _need(postgrant._owner_server_sha256(identity) == server_incarnation_sha256)
@@ -267,7 +278,13 @@ def _owner_engine(factory, pins):
 
 
 async def seed_owner_legacy_control_genesis_0056_v1(
-    factory, *, event_sha256, pins, server_incarnation_sha256, reconcile_only
+    factory,
+    *,
+    event_sha256,
+    pins,
+    server_incarnation_sha256,
+    reconcile_only,
+    profile=profiles.DB0056,
 ):
     """Use the caller's authenticated exact owner route. This never clears a stop."""
     attempted = False
@@ -275,6 +292,7 @@ async def seed_owner_legacy_control_genesis_0056_v1(
         sha(event_sha256)
         sha(server_incarnation_sha256)
         _need(type(reconcile_only) is bool)
+        profiles.require_migration(profile, Path(__file__).resolve().parents[3])
         engine = _owner_engine(factory, pins)
         async with asyncio.timeout(25):
             async with factory() as write:
@@ -297,6 +315,7 @@ async def seed_owner_legacy_control_genesis_0056_v1(
                     pins,
                     server_incarnation_sha256,
                     read_only=reconcile_only,
+                    **profiles.arguments(profile),
                 )
                 scope = await _stopped_scope(
                     write, event_sha256, read_only=reconcile_only
@@ -355,7 +374,12 @@ async def seed_owner_legacy_control_genesis_0056_v1(
                     _need(await write.scalar(stmt) == 1)
                     first = await _read(write, event_sha256)
                     second_identity, xid, second_pid = await _owner_identity(
-                        write, engine, pins, server_incarnation_sha256, read_only=False
+                        write,
+                        engine,
+                        pins,
+                        server_incarnation_sha256,
+                        read_only=False,
+                        **profiles.arguments(profile),
                     )
                     _need(
                         first == at
@@ -381,7 +405,12 @@ async def seed_owner_legacy_control_genesis_0056_v1(
                 await reader.execute(text("SET LOCAL synchronous_commit='on'"))
                 await reader.execute(text("SET LOCAL statement_timeout='3000ms'"))
                 observed_identity, xid, read_pid = await _owner_identity(
-                    reader, engine, pins, server_incarnation_sha256, read_only=True
+                    reader,
+                    engine,
+                    pins,
+                    server_incarnation_sha256,
+                    read_only=True,
+                    **profiles.arguments(profile),
                 )
                 _need(
                     reader is not write
@@ -394,7 +423,9 @@ async def seed_owner_legacy_control_genesis_0056_v1(
                 )
                 _need(await _read(reader, event_sha256) == first)
             return LegacyControlGenesisResult0056V1(
-                "STOPPED_CREATED" if attempted else "STOPPED_OBSERVED", first
+                "STOPPED_CREATED" if attempted else "STOPPED_OBSERVED",
+                first,
+                database_head=profiles.head(profile),
             )
     except (Exception, asyncio.CancelledError) as error:
         if attempted:
@@ -411,6 +442,11 @@ async def read_restricted_legacy_control_genesis_0056_v1(
 ):
     """Read an already committed stopped marker under the actual restricted writer."""
     from app.core import native_locked_demo_control_0056_v1 as locked
+    from app.demo_automation.native_server_selectors_v2 import (
+        _profile_for_original_roles_0056,
+    )
+
+    profile = _profile_for_original_roles_0056(roles)
 
     sha(event_sha256)
     utc(expected_at)
@@ -435,6 +471,7 @@ async def read_restricted_legacy_control_genesis_0056_v1(
             scope,
             roles=roles,
             purpose=locked.NativeWriterControlPurpose0056.PREPARE_OBSERVATION,
+            **profiles.arguments(profile),
         ) as held:
             actual = held.observation.control
             _need(

@@ -10,6 +10,7 @@ import pytest
 
 from app.core import native_stopped_control_genesis_0056_v1 as subject
 from app.database.repositories.demo_control import ControlObservation
+from app.domain import native_database_profile_v1 as profiles
 from app.trade_qualification.demo_control import ControlScope, stopped_genesis
 from scripts import initialize_demo_stopped_control_0056 as cli
 
@@ -40,6 +41,9 @@ def operation(monkeypatch):
     )
     genuine = {"factories": factories}
     monkeypatch.setattr(subject.selectors, "_record", Mock(return_value=genuine))
+    monkeypatch.setattr(
+        subject.selectors, "_selection_database_profile_0056", lambda _: profiles.DB0056
+    )
     stage = AsyncMock(return_value=(True, state, event))
 
     async def read(*_):
@@ -158,7 +162,7 @@ async def test_command_derives_uid_only_after_signed_selection(monkeypatch):
     monkeypatch.setattr(subject, "OkxDemoPrivateRestClient", Mock(return_value=client))
     monkeypatch.setattr(subject, "_operate_selected_genesis", operation)
     monkeypatch.setattr(
-        subject.selectors, "select_configured_demo_source_identity_0056_v1", select
+        subject.selectors, "_select_configured_demo_runtime_identity_v2", select
     )
     monkeypatch.setattr(
         subject.selectors, "_SELECTIONS", {selected: {"factories": factory_set}}
@@ -167,7 +171,10 @@ async def test_command_derives_uid_only_after_signed_selection(monkeypatch):
         "BTC-USDT-SWAP", reconcile_only=True
     )
     select.assert_awaited_once_with(
-        private_client=client, read_session=lease, instrument_ids=("BTC-USDT-SWAP",)
+        private_client=client,
+        read_session=lease,
+        instrument_ids=("BTC-USDT-SWAP",),
+        history_only=True,
     )
     operation.assert_awaited_once_with(selected, reconcile_only=True)
     dispose.assert_awaited_once_with(selected, factory_set)

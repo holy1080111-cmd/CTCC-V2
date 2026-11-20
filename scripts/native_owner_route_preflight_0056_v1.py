@@ -14,6 +14,7 @@ import io
 import json
 import re
 import ssl
+import stat
 from contextlib import redirect_stdout
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -125,15 +126,41 @@ def _source_for_profile(profile):
     profiles.require_migration(profile, _SOURCE_ROOT)
     identity = source_identity(_SOURCE_ROOT)
     path = _SOURCE_ROOT / "MANIFEST.sha256"
+    before = path.lstat()
+
+    def file_identity(value):
+        # Reading can change atime. Bind the file and modification metadata,
+        # then independently compare the original bytes below.
+        return (
+            value.st_dev,
+            value.st_ino,
+            value.st_mode,
+            value.st_nlink,
+            value.st_size,
+            value.st_mtime_ns,
+            value.st_ctime_ns,
+            getattr(value, "st_file_attributes", 0),
+        )
+
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or path.is_symlink()
+        or path.is_junction()
+        or before.st_nlink != 1
+        or getattr(before, "st_file_attributes", 0) & 1024
+    ):
+        _deny()
     raw = path.read_bytes()
     if (
         not 0 < len(raw) <= 2_000_000
+        or len(raw) != before.st_size
         or b"\r" in raw
         or not raw.endswith(b"\n")
         or manifest.read_manifest(path) != manifest.build_manifest(_SOURCE_ROOT)
         or path.read_bytes() != raw
         or source_identity(_SOURCE_ROOT) != identity
         or identity.head != profiles.head(profile)
+        or file_identity(path.lstat()) != file_identity(before)
     ):
         _deny()
     return _CurrentSource(identity.head, _sha(raw), identity.sha256)

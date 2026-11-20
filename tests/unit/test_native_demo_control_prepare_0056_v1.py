@@ -8,12 +8,13 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from app.core.native_role_witness_0056_v1 import RestrictedNativeRoles0056WitnessV1
 from app.database.repositories.demo_control import ControlObservation
 from app.demo_automation import native_server_selectors_v2 as selectors
+from app.domain import native_database_profile_v1 as profiles
 from app.trade_qualification import account_history_source_v1 as history
 from app.trade_qualification import demo_control as control
 from app.trade_qualification import native_demo_control_prepare_0056_v1 as prepare
+from tests.native_role_profile_fixtures_v1 import restricted_roles_fixture
 
 _INSTRUMENTS = ("BTC-USDT-SWAP",)
 
@@ -52,14 +53,13 @@ async def test_controlled_selector_refuses_before_get_when_roles_do_not_match(
 async def test_source_only_binding_refuses_before_any_writable_control_preparation(
     monkeypatch,
 ):
-    witness = RestrictedNativeRoles0056WitnessV1(
-        SimpleNamespace(database_head="0056"), "1" * 64, "2" * 64
-    )
+    witness = restricted_roles_fixture()
     selected_record = object()
     factories = object()
     data = {
         "purpose_0056": selectors._SOURCE_ONLY_0056,
         "source_roles_0056": witness,
+        "database_profile": profiles.DB0056,
         "record": selected_record,
         "factories": factories,
     }
@@ -114,9 +114,7 @@ async def test_prepare_replays_genesis_between_exact_control_reads(monkeypatch, 
         route_evidence=SimpleNamespace(binding_sha256="1" * 64),
         read_session=SimpleNamespace(binding_id="original-credential-session"),
     )
-    roles = SimpleNamespace(
-        role_route_sha256="2" * 64, server_incarnation_sha256="3" * 64
-    )
+    roles = restricted_roles_fixture()
     selected = (record, SimpleNamespace(writer_factory=factory), roles)
     selection = Mock(
         side_effect=[

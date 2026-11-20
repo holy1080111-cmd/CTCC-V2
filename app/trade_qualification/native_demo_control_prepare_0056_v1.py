@@ -12,6 +12,7 @@ from app.database.repositories.demo_control_current56_v1 import (
 )
 from app.demo_automation import native_server_selectors_v2 as selectors
 from app.demo_automation.native_source_only_v1 import _dispose, _settings
+from app.domain import native_database_profile_v1 as profiles
 from app.domain.source_primitives import canonical, sha
 from app.exchange.okx.private_rest import OkxDemoPrivateRestClient
 from app.trade_qualification import account_owned_financial_v1 as financial
@@ -34,11 +35,14 @@ class NativeDemoControlPrepared0056:
 
 
 def _control_pins(record, roles, scope, genesis, policy, inventory):
+    profile = selectors._profile_for_original_roles_0056(roles)
     return control.ControlPins(
         config_sha256=sha(
             canonical(
                 {
-                    "schema_version": "ctcc.native_demo_control.config.0056.v1",
+                    "schema_version": profiles.schema(
+                        profile, "ctcc.native_demo_control.config.0056.v1"
+                    ),
                     "plan_sha256": selectors.capture.plan_sha256(record.current_plan),
                     "scope": [
                         scope.environment,
@@ -64,13 +68,18 @@ async def prepare_configured_demo_control_0056(
 ) -> NativeDemoControlPrepared0056:
     """Check genuine signed scope, first ledger source and current stored Control."""
     record, factories, roles = selectors._controlled_identity_0056(selection)
+    profile = selectors._profile_for_original_roles_0056(roles)
     scope = LedgerScope(
         account_id=record.scope_config.expected_uid,
         settlement_currency=record.current_plan.settlement_currency,
     )
     control_scope = control.ControlScope("demo", scope.account_id)
     repository = DemoControlRepository0056V1(
-        factories, roles=roles, scope=control_scope, clock=previous._NOW
+        factories,
+        roles=roles,
+        scope=control_scope,
+        clock=previous._NOW,
+        **profiles.arguments(profile),
     )
 
     def require_same_selection() -> None:

@@ -31,6 +31,7 @@ def app(monkeypatch, *, ready=True):
     monkeypatch.setattr(security, "get_settings", lambda: config)
     instance = main._build_app()
     instance.state.native_manual_demo_recovery_confirmed = ready
+    instance.state.native_manual_demo_database_head = "0056" if ready else None
     return instance
 
 
@@ -120,7 +121,7 @@ async def test_manual_lifespan_never_launches_background_ws_or_workers(monkeypat
 
     instance = app(monkeypatch, ready=False)
     main.settings.okx_ws_enabled = True
-    start = AsyncMock()
+    start = AsyncMock(return_value="0056")
     stop = AsyncMock()
     dispose = AsyncMock()
     background_ws = AsyncMock()

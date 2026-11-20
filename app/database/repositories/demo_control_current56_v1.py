@@ -19,7 +19,9 @@ from app.database.repositories.demo_control import (
 from app.database.repositories.demo_control_current55_v2 import DemoControlRepositoryV2
 from app.demo_automation.native_server_selectors_v2 import (
     ConfiguredNativeDemoFactoriesV2,
+    _profile_for_original_roles_0056,
 )
+from app.domain import native_database_profile_v1 as profiles
 from app.trade_qualification import demo_control as control
 
 _SYNC = text("SET LOCAL synchronous_commit = 'on'")
@@ -74,12 +76,27 @@ class DemoControlRepository0056V1:
     lifetime replay for disarmed ownership and safety tightening only.
     """
 
-    def __init__(self, selected, *, roles, scope, clock, expected_acquire_event=None):
+    def __init__(
+        self,
+        selected,
+        *,
+        roles,
+        scope,
+        clock,
+        expected_acquire_event=None,
+        profile=profiles.DB0056,
+    ):
         _need(
             type(selected) is ConfiguredNativeDemoFactoriesV2
             and type(roles) is RestrictedNativeRoles0056WitnessV1
             and callable(clock)
+            and type(profile) is profiles.NativeDatabaseProfileV1
         )
+        try:
+            _need(_profile_for_original_roles_0056(roles) is profile)
+        except Exception:  # noqa: BLE001 -- close malformed witness/profile before opening a session.
+            _need(False)
+        self._profile = profile
         self._selected = selected
         self._factory = selected.writer_factory
         self._roles = roles
@@ -99,9 +116,14 @@ class DemoControlRepository0056V1:
     def clock(self):
         return self._clock
 
+    @property
+    def database_profile(self):
+        return profiles.checked(self._profile)
+
     def _check_scope(self, scope):
         _need(control.checked(scope, control.ControlScope) == self._scope)
         _need(self._selected.writer_factory is self._factory)
+        _need(_profile_for_original_roles_0056(self._roles) is self.database_profile)
 
     @asynccontextmanager
     async def _held(self, session, scope, *, mutate):
@@ -116,18 +138,24 @@ class DemoControlRepository0056V1:
         )
         await session.execute(_SYNC)
         async with locked._verified_locked_demo_control_0056(
-            self._selected, session, scope
+            self._selected, session, scope, **profiles.arguments(self.database_profile)
         ) as pin:
             row, catalog, witness, started_at, check = pin
             await locked._compare_held_role_pins(
-                self._selected, session, self._roles, catalog, witness, check
+                self._selected,
+                session,
+                self._roles,
+                catalog,
+                witness,
+                check,
+                **profiles.arguments(self.database_profile),
             )
             if mutate:
                 await session.execute(_FENCE)
                 check()
                 _need(
                     await locked.writer56.observe_restricted_readwrite_writer_0056_v1(
-                        session
+                        session, **profiles.arguments(self.database_profile)
                     )
                     == catalog
                 )
@@ -147,7 +175,7 @@ class DemoControlRepository0056V1:
             if mutate:
                 _need(
                     await locked.writer56.observe_restricted_readwrite_writer_0056_v1(
-                        session
+                        session, **profiles.arguments(self.database_profile)
                     )
                     == catalog
                 )

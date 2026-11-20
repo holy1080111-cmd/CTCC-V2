@@ -24,6 +24,7 @@ from sqlalchemy.pool import NullPool
 from app.config.settings import get_settings
 from app.database.native_pg_tls_v1 import reviewed_native_pg_tls_route_v1
 from app.database.repositories import public_runtime_bundle_custody as custody
+from app.domain import native_database_profile_v1 as profiles
 from app.domain.native_clock import native_stamp
 from app.domain.source_primitives import (
     canonical,
@@ -341,12 +342,16 @@ async def select_configured_demo_identity_v2(
         server_pin = _server_settings_pin(settings)
         artifact = _route_artifact()
         factories = select_configured_native_demo_factories_v2()
+        database_profile = profiles.DB0056
         if any(
             _source_use is purpose
             for purpose in (_RUNTIME_CONTROLLED, _RUNTIME_HISTORY, _RUNTIME_RECOVERY)
         ):
             head = await _observe_runtime_database_head_v2(factories)
-            if head == "0056":
+            if head in ("0056", "0057"):
+                database_profile = (
+                    profiles.DB0056 if head == "0056" else profiles.DB0057
+                )
                 _source_use = (
                     _RECOVERY_0056
                     if _source_use is _RUNTIME_RECOVERY
@@ -359,7 +364,9 @@ async def select_configured_demo_identity_v2(
                 source_only_role_preflight = True
         source_roles_0056 = None
         if _source_use is not None:
-            source_roles_0056 = await _source_roles_before_get_0056(factories)
+            source_roles_0056 = await _source_roles_before_get_0056(
+                factories, **profiles.arguments(database_profile)
+            )
             _need(
                 _configured_inputs(private_client, read_session, instrument_ids)
                 is settings
@@ -429,7 +436,7 @@ async def select_configured_demo_identity_v2(
             plan_id=(
                 "configured-current55-"
                 if source_roles_0056 is None
-                else "configured-current56-"
+                else "configured-current" + profiles.head(database_profile)[-2:] + "-"
             )
             + uuid.uuid4().hex,
             created_at=at,
@@ -515,6 +522,7 @@ async def select_configured_demo_identity_v2(
             "factories": factories,
             "source_roles_0056": source_roles_0056,
             "purpose_0056": _source_use,
+            "database_profile": None if source_roles_0056 is None else database_profile,
             "factory_pins": (
                 history._factory_pin(factories.custody_factory),
                 history._factory_pin(factories.frame_reader_factory),
@@ -546,18 +554,21 @@ async def select_configured_demo_identity_v2(
                 await _dispose_failed_selection_factories_v2(factories)
 
 
-async def _source_roles_before_get_0056(factories):
+async def _source_roles_before_get_0056(factories, *, profile=profiles.DB0056):
     from app.core.native_role_witness_0056_v1 import (
         RestrictedNativeRoles0056WitnessV1,
         observe_restricted_native_roles_0056_witness_v1,
     )
 
+    profiles.checked(profile)
     roles = await observe_restricted_native_roles_0056_witness_v1(
-        factories, source=Path(__file__).resolve().parents[2]
+        factories,
+        source=Path(__file__).resolve().parents[2],
+        **profiles.arguments(profile),
     )
     _need(
         type(roles) is RestrictedNativeRoles0056WitnessV1
-        and roles.observation.database_head == "0056"
+        and roles.observation.database_head == profiles.head(profile)
         and roles.observation.admission == "DENY"
         and roles.startup_admission is roles.execution_authority is False,
         "native_demo_selector_0056_role_preflight_refused",
@@ -587,7 +598,7 @@ async def _observe_runtime_database_head_v2(factories):
         _need(
             len(rows) == 1
             and type(rows[0]) is str
-            and rows[0] in ("0055", "0056")
+            and rows[0] in ("0055", "0056", "0057")
             and history._factory_pin(writer) == pin,
             "native_demo_runtime_database_profile_refused",
         )
@@ -634,11 +645,57 @@ def _runtime_selection_database_head_v2(selection, *, history_only=False):
         entry["purpose_0056"]
         is (_SOURCE_ONLY_0056 if history_only else _CONTROLLED_0056)
         and type(roles) is RestrictedNativeRoles0056WitnessV1
-        and roles.observation.database_head == "0056"
+        and _selection_database_profile_0056(selection)
+        is _profile_for_original_roles_0056(roles)
         and roles.startup_admission is roles.execution_authority is False,
         "native_demo_runtime_selector_purpose_refused",
     )
-    return "0056"
+    return profiles.head(_selection_database_profile_0056(selection))
+
+
+def _profile_for_original_roles_0056(roles):
+    """Closed DATA dispatch only; an actual held catalog must still replay it."""
+    from app.core.native_role_witness_0056_v1 import (
+        RestrictedNativeRoles0056WitnessV1,
+        old,
+    )
+
+    _need(
+        type(roles) is RestrictedNativeRoles0056WitnessV1
+        and type(roles.observation) is old.RestrictedNativeRoles0056ObservationV1
+        and roles.observation.database_head in ("0056", "0057"),
+        "native_demo_selector_database_profile_refused",
+    )
+    profile = (
+        profiles.DB0056
+        if roles.observation.database_head == "0056"
+        else profiles.DB0057
+    )
+    _need(
+        roles.schema
+        == profiles.schema(
+            profile, "ctcc.native_only.restricted0056_runtime_witness.v1"
+        )
+        and roles.observation.schema
+        == profiles.schema(
+            profile, "ctcc.native_only.restricted0056_role_observation.v1"
+        )
+        and roles.observation.admission == "DENY"
+        and roles.startup_admission is roles.execution_authority is False,
+        "native_demo_selector_database_profile_refused",
+    )
+    return profile
+
+
+def _selection_database_profile_0056(selection):
+    """Read the original selected profile; DATA/recovery purposes remain separate."""
+    entry = _record(selection)
+    observed = _profile_for_original_roles_0056(entry["source_roles_0056"])
+    _need(
+        entry["database_profile"] is observed,
+        "native_demo_selector_database_profile_changed",
+    )
+    return observed
 
 
 async def select_configured_demo_source_identity_0056_v1(
@@ -673,7 +730,8 @@ def _controlled_identity_0056(selection):
     _need(
         entry["purpose_0056"] is _CONTROLLED_0056
         and type(entry["source_roles_0056"]) is RestrictedNativeRoles0056WitnessV1
-        and entry["source_roles_0056"].observation.database_head == "0056"
+        and _selection_database_profile_0056(selection)
+        is _profile_for_original_roles_0056(entry["source_roles_0056"])
         and entry["source_roles_0056"].execution_authority is False,
         "native_demo_selector_0056_controlled_identity_required",
     )
@@ -704,7 +762,8 @@ def _replay_configured_demo_recovery_identity_v2(selection, *, key):
                 for purpose in (_CONTROLLED_0056, _RECOVERY_0056)
             )
             and type(roles) is RestrictedNativeRoles0056WitnessV1
-            and roles.observation.database_head == "0056"
+            and _selection_database_profile_0056(selection)
+            is _profile_for_original_roles_0056(roles)
             and roles.startup_admission is roles.execution_authority is False,
             "native_demo_runtime_selector_purpose_refused",
         )

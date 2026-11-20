@@ -7,6 +7,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.core import native_manual_demo_lifespan_0056_v1 as manual
+from app.domain import native_database_profile_v1 as profiles
+from tests.native_role_profile_fixtures_v1 import restricted_roles_fixture
 
 
 def settings(**changes):
@@ -100,7 +102,7 @@ def test_actual_account_restart_settings_accept_only_the_explicit_manual_policy(
             recovery._configured_restart_settings_0056(instrument)
 
 
-def lab(monkeypatch):
+def lab(monkeypatch, profile=profiles.DB0056):
     from app.config import settings as configured
     from app.core import native_account_restart_recovery_0056_v1 as stop
     from app.core import native_role_witness_0056_v1 as roles
@@ -111,23 +113,20 @@ def lab(monkeypatch):
     factory = object()
     chosen = SimpleNamespace(writer_factory=factory)
     seen = []
-    witness = roles.RestrictedNativeRoles0056WitnessV1(
-        roles.old.RestrictedNativeRoles0056ObservationV1(
-            "1" * 64, "2" * 64, "3" * 64, "4" * 64
-        ),
-        "5" * 64,
-        "6" * 64,
-    )
+    witness = restricted_roles_fixture(profile)
     before = manual.original.ExistingControl(7, False, True, True, True)
 
     async def role_read(*_args, **_kwargs):
+        assert _kwargs == {"source": manual._SOURCE, **profiles.arguments(profile)}
         seen.append("roles")
         return witness
 
     async def account_stop(*_args, **kwargs):
         assert kwargs == {"reconcile_only": False}
         seen.append("account_stop")
-        return stop.NativeAccountRestartRecovery0056V1("STOP_OBSERVED", 9, "a" * 64)
+        return stop.NativeAccountRestartRecovery0056V1(
+            "STOP_OBSERVED", 9, "a" * 64, database_head=profiles.head(profile)
+        )
 
     async def recover(**kwargs):
         assert kwargs == {"require_existing": True, "expected_revision": 7}
@@ -158,6 +157,11 @@ def lab(monkeypatch):
     monkeypatch.setattr(source, "_source_manifest_sha256", lambda _path: "a" * 64)
     monkeypatch.setattr(
         selectors, "select_configured_native_demo_factories_v2", lambda: chosen
+    )
+    monkeypatch.setattr(
+        selectors,
+        "_observe_runtime_database_head_v2",
+        AsyncMock(return_value=profiles.head(profile)),
     )
     monkeypatch.setattr(selectors, "_dispose_failed_selection_factories_v2", dispose)
     monkeypatch.setattr(

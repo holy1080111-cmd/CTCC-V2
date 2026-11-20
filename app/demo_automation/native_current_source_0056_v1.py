@@ -20,6 +20,7 @@ from app.database.repositories.public_runtime_bundle_custody import (
 )
 from app.demo_automation import native_server_selectors_v2 as selectors
 from app.demo_automation.native_source_only_v1 import _dispose, _settings
+from app.domain import native_database_profile_v1 as profiles
 from app.domain.source_primitives import canonical, sha
 from app.exchange.okx.private_rest import OkxDemoPrivateRestClient
 from app.trade_evidence.native_private_root_v2 import (
@@ -73,14 +74,16 @@ def _attempt(
     return result
 
 
-async def _observe_control(factories, scope, roles):
+async def _observe_control(factories, scope, roles, *, profile=profiles.DB0056):
     # Never hold the UID lock over a provider request. Another process can
     # stop or disarm during collection; a changed endpoint burns this result.
     async with factories.writer_factory() as session, session.begin():
-        result = await read_locked_demo_control_0056_v1(factories, session, scope)
+        result = await read_locked_demo_control_0056_v1(
+            factories, session, scope, **profiles.arguments(profile)
+        )
         _need(
             type(result) is NativeLockedDemoControl0056V1
-            and result.database_head == "0056"
+            and result.database_head == profiles.head(profile)
             and result.control.state.scope == scope
             and result.control.state.arm_request_id is None
             and result.issuance_authority is result.execution_authority is False

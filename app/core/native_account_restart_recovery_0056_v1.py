@@ -8,6 +8,7 @@ from typing import Literal
 
 from app.core import native_locked_demo_control_0056_v1 as locked
 from app.demo_automation import native_server_selectors_v2 as selectors
+from app.domain import native_database_profile_v1 as profiles
 from app.exchange.okx.private_rest import OkxDemoPrivateRestClient
 from app.trade_qualification import demo_control as control
 
@@ -25,7 +26,7 @@ class NativeAccountRestartRecovery0056V1:
     status: Literal["STOP_PERSISTED", "STOP_OBSERVED"]
     revision: int
     control_event_sha256: str
-    database_head: Literal["0056"] = field(default="0056", init=False)
+    database_head: Literal["0056", "0057"] = field(default="0056")
     emergency_stop: Literal[True] = field(default=True, init=False)
     armed: Literal[False] = field(default=False, init=False)
     positions_reconciled: Literal[False] = field(default=False, init=False)
@@ -55,13 +56,14 @@ def _stopped(state: control.ControlState) -> bool:
     )
 
 
-async def _stop_locked(session, factories, roles, scope):
+async def _stop_locked(session, factories, roles, scope, *, profile=profiles.DB0056):
     async with locked.held_native_writer_control_0056_v1(
         factories,
         session,
         scope,
         roles=roles,
         purpose=locked.NativeWriterControlPurpose0056.RECOVERY_STOP,
+        **profiles.arguments(profile),
     ) as held:
         observation = held.observation.control
         before, previous_event = observation.state, observation.event_sha256
@@ -105,7 +107,7 @@ async def _stop_locked(session, factories, roles, scope):
         return True, stop, event
 
 
-async def _observe_stop(factories, roles, scope):
+async def _observe_stop(factories, roles, scope, *, profile=profiles.DB0056):
     async with (
         factories.writer_factory() as session,
         session.begin(),
@@ -115,6 +117,7 @@ async def _observe_stop(factories, roles, scope):
             scope,
             roles=roles,
             purpose=locked.NativeWriterControlPurpose0056.PREPARE_OBSERVATION,
+            **profiles.arguments(profile),
         ) as held,
     ):
         proof = held.observation
@@ -131,6 +134,7 @@ async def _recover_selected(selection, *, reconcile_only: bool):
     selected = selectors._record(selection)
     factories = selected["factories"]
     roles = selection.source_roles_0056
+    profile = selectors._selection_database_profile_0056(selection)
     scope = control.ControlScope("demo", selection.scope_config.expected_uid)
     expected = None
     attempted = False
@@ -139,7 +143,7 @@ async def _recover_selected(selection, *, reconcile_only: bool):
             async with factories.writer_factory() as session:
                 tx = await session.begin()
                 changed, state, event = await _stop_locked(
-                    session, factories, roles, scope
+                    session, factories, roles, scope, **profiles.arguments(profile)
                 )
                 _need(selectors._record(selection) is selected)
                 expected = (state, event)
@@ -148,7 +152,9 @@ async def _recover_selected(selection, *, reconcile_only: bool):
                     await tx.commit()
                 else:
                     await tx.rollback()
-        readback = await _observe_stop(factories, roles, scope)
+        readback = await _observe_stop(
+            factories, roles, scope, **profiles.arguments(profile)
+        )
         _need(selectors._record(selection) is selected)
         actual = (readback.state, readback.event_sha256)
         _need(expected is None or actual == expected)
@@ -156,6 +162,7 @@ async def _recover_selected(selection, *, reconcile_only: bool):
             "STOP_PERSISTED" if attempted else "STOP_OBSERVED",
             readback.state.revision,
             readback.event_sha256,
+            database_head=profiles.head(profile),
         )
     except (Exception, asyncio.CancelledError):
         if attempted:
@@ -176,10 +183,11 @@ async def recover_configured_account_restart_0056_v1(
         settings = _configured_restart_settings_0056(instrument_id)
         client = OkxDemoPrivateRestClient(settings=settings)
         with client.pinned_read_session() as lease:
-            selection = await selectors.select_configured_demo_source_identity_0056_v1(
+            selection = await selectors._select_configured_demo_runtime_identity_v2(
                 private_client=client,
                 read_session=lease,
                 instrument_ids=(instrument_id,),
+                history_only=True,
             )
             factories = selectors._SELECTIONS[selection]["factories"]
             result = await _recover_selected(selection, reconcile_only=reconcile_only)

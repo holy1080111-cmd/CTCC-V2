@@ -9,6 +9,7 @@ import pytest
 
 from app.core import native_account_restart_recovery_0056_v1 as subject
 from app.database.repositories.demo_control import ControlObservation
+from app.domain import native_database_profile_v1 as profiles
 from app.trade_qualification import demo_control as control
 
 _SCOPE = control.ControlScope("demo", "730005")
@@ -105,10 +106,13 @@ def operation(monkeypatch):
     selected = {"factories": SimpleNamespace(writer_factory=Session)}
     state = control.stopped_genesis(_SCOPE, _AT)
     monkeypatch.setattr(subject.selectors, "_record", Mock(return_value=selected))
+    monkeypatch.setattr(
+        subject.selectors, "_selection_database_profile_0056", lambda _: profiles.DB0056
+    )
     stage = AsyncMock(return_value=(True, state, "e" * 64))
     monkeypatch.setattr(subject, "_stop_locked", stage)
 
-    async def read(*_):
+    async def read(*_, **_kwargs):
         trace.append("readback")
         return ControlObservation(state, "e" * 64, _AT)
 

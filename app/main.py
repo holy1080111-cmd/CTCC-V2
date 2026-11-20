@@ -48,10 +48,14 @@ async def lifespan(instance: FastAPI):
         )
 
         instance.state.native_manual_demo_recovery_confirmed = False
+        instance.state.native_manual_demo_database_head = None
         try:
-            await start_manual_demo_0056_v1(
+            head = await start_manual_demo_0056_v1(
                 settings, AsyncSessionFactory, safe_demo_automation
             )
+            if type(head) is not str or head not in ("0056", "0057"):
+                raise RuntimeError("native_manual_demo_database_head_unconfirmed")
+            instance.state.native_manual_demo_database_head = head
         except BaseException:
             with suppress(Exception, CancelledError):
                 await engine.dispose()
@@ -61,6 +65,7 @@ async def lifespan(instance: FastAPI):
             yield
         finally:
             instance.state.native_manual_demo_recovery_confirmed = False
+            instance.state.native_manual_demo_database_head = None
             try:
                 await safe_demo_automation.stop()
             finally:

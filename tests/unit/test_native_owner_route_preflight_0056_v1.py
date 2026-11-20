@@ -143,6 +143,23 @@ def test_successor_cannot_be_selected_by_string_or_unsupported_parent(
         )
 
 
+def test_explicit_successor_source_refuses_linked_manifest(monkeypatch):
+    target = subject._SOURCE_ROOT / "MANIFEST.sha256"
+    original = Path.lstat
+
+    def linked(path):
+        observed = original(path)
+        if path == target:
+            fields = list(observed)
+            fields[0] = stat.S_IFLNK | stat.S_IMODE(observed.st_mode)
+            return os.stat_result(fields)
+        return observed
+
+    monkeypatch.setattr(Path, "lstat", linked)
+    with pytest.raises(subject.OwnerRoutePreflightError):
+        subject._source_for_profile(profiles.DB0057)
+
+
 @pytest.mark.parametrize(
     "change",
     [

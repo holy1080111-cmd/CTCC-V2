@@ -222,6 +222,7 @@ async def test_asgi_dashboard_is_guarded_by_actual_startup_flag(monkeypatch, rea
     instance = FastAPI()
     instance.include_router(http.router)
     instance.state.native_manual_demo_recovery_confirmed = ready
+    instance.state.native_manual_demo_database_head = "0056" if ready else None
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=instance), base_url="http://test"
     ) as client:

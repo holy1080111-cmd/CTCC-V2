@@ -31,6 +31,7 @@ from app.database.repositories import (
 from app.database.repositories import public_runtime_bundle_custody as custody
 from app.demo_automation import native_caller_v2 as production
 from app.domain import native_clock
+from app.domain import native_database_profile_v1 as profiles
 from app.domain.source_primitives import canonical, decode, sha, utc_from_ns
 from app.exchange.okx.private_rest import (
     DemoPinnedReadSession,
@@ -359,6 +360,9 @@ def _selected_record_v3(state):
             factories is not state["db0056_factories"]
             or roles is not state["db0056_roles"]
             or type(state["repository"]) is not repository56.DemoControlRepository0056V1
+            or selector._selection_database_profile_0056(state["identity_selection"])
+            is not state["database_profile"]
+            or state["repository"].database_profile is not state["database_profile"]
         ):
             _deny("native_demo_control_original_db0056_selection_changed")
     if (
@@ -521,7 +525,7 @@ async def _prepare_configured_demo_control_owner_v2(
     if writer_route[1] != custody_route[1]:
         _deny("native_demo_control_same_database_route_required")
     custody_repository = custody.RuntimeBundleCustodyRepository(owned_custody_factory)
-    db0056_roles = db0056_factories = None
+    db0056_roles = db0056_factories = database_profile = None
     if _db0056 is None:
         repository = repository_v2.DemoControlRepositoryV2(
             AsyncSessionFactory, clock=_NOW
@@ -563,6 +567,9 @@ async def _prepare_configured_demo_control_owner_v2(
         record, db0056_factories, db0056_roles = selector._controlled_identity_0056(
             _identity_selection
         )
+        database_profile = selector._selection_database_profile_0056(
+            _identity_selection
+        )
         if (
             record is not _identity_record
             or db0056_factories.writer_factory is not AsyncSessionFactory
@@ -575,7 +582,11 @@ async def _prepare_configured_demo_control_owner_v2(
             _deny("native_demo_control_original_db0056_selection_changed")
         control_scope = control.ControlScope("demo", scope.account_id)
         reader = repository56.DemoControlRepository0056V1(
-            db0056_factories, roles=db0056_roles, scope=control_scope, clock=_NOW
+            db0056_factories,
+            roles=db0056_roles,
+            scope=control_scope,
+            clock=_NOW,
+            **profiles.arguments(database_profile),
         )
         before = await reader.verify_native_deployment_v2()
         read_session.verify_current()
@@ -594,6 +605,7 @@ async def _prepare_configured_demo_control_owner_v2(
             scope=control_scope,
             clock=_NOW,
             expected_acquire_event=before.event_sha256,
+            **profiles.arguments(database_profile),
         )
     owner = original.DemoControlOwner(
         repository,
@@ -611,6 +623,7 @@ async def _prepare_configured_demo_control_owner_v2(
         "identity_record": _identity_record,
         "db0056_roles": db0056_roles,
         "db0056_factories": db0056_factories,
+        "database_profile": database_profile,
         "settings": configured.get_settings(),
         "settings_pin": native._v3_data_pin(configured.get_settings().__dict__),
         "plan_sha256": capture.plan_sha256(plan),
@@ -1089,6 +1102,7 @@ def _make_kernel():
             "historical_repository",
             "operator_repository",
             "production",
+            "profiles",
             "lineage_repository",
             "legacy_lineage",
             "journal_repository",

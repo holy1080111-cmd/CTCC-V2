@@ -9,6 +9,7 @@ from typing import Literal
 from app.core import native_locked_demo_control_0056_v1 as locked
 from app.core.native_role_witness_0056_v1 import RestrictedNativeRoles0056WitnessV1
 from app.demo_automation import native_server_selectors_v2 as selectors
+from app.domain import native_database_profile_v1 as profiles
 from app.exchange.okx.private_rest import OkxDemoPrivateRestClient
 from app.trade_qualification.demo_control import (
     ControlScope,
@@ -27,7 +28,7 @@ class NativeStoppedControlGenesis0056Error(ValueError):
 class StoppedControlGenesis0056V1:
     status: Literal["CREATED_STOPPED", "EXISTING_STOPPED"]
     control_event_sha256: str
-    database_head: Literal["0056"] = field(default="0056", init=False)
+    database_head: Literal["0056", "0057"] = field(default="0056")
     control_revision: Literal[1] = field(default=1, init=False)
     emergency_stop: Literal[True] = field(default=True, init=False)
     armed: Literal[False] = field(default=False, init=False)
@@ -73,10 +74,12 @@ def _uncertain(stage: Literal["commit", "readback", "cleanup"]) -> None:
     ) from None
 
 
-def _require_role_witness(roles, catalog, witness) -> None:
+def _require_role_witness(roles, catalog, witness, *, profile=profiles.DB0056) -> None:
     _need(
         type(roles) is RestrictedNativeRoles0056WitnessV1
-        and roles.observation.database_head == "0056"
+        and selectors._profile_for_original_roles_0056(roles)
+        is profiles.checked(profile)
+        and catalog.database_head == profiles.head(profile)
         and roles.observation.admission == "DENY"
         and roles.startup_admission is roles.execution_authority is False
         and catalog.native_definitions_sha256
@@ -85,12 +88,12 @@ def _require_role_witness(roles, catalog, witness) -> None:
     )
 
 
-async def _stage_genesis(session, factories, roles, scope):
+async def _stage_genesis(session, factories, roles, scope, *, profile=profiles.DB0056):
     async with locked._verified_locked_demo_control_0056(
-        factories, session, scope
+        factories, session, scope, **profiles.arguments(profile)
     ) as proof:
         row, catalog, witness, started_at, require_held_transaction = proof
-        _require_role_witness(roles, catalog, witness)
+        _require_role_witness(roles, catalog, witness, **profiles.arguments(profile))
         if row is not None:
             state, event_sha = await locked.DemoControlRepositoryV2._snapshot(
                 session, row
@@ -116,13 +119,16 @@ async def _stage_genesis(session, factories, roles, scope):
         return True, state, event_sha
 
 
-async def _read_committed_genesis(factories, roles, scope):
+async def _read_committed_genesis(factories, roles, scope, *, profile=profiles.DB0056):
     async with factories.writer_factory() as session, session.begin():
-        proof = await locked.read_locked_demo_control_0056_v1(factories, session, scope)
+        proof = await locked.read_locked_demo_control_0056_v1(
+            factories, session, scope, **profiles.arguments(profile)
+        )
         _require_role_witness(
             roles,
             proof.writer_catalog,
             (proof.server_incarnation_sha256, proof.role_route_sha256),
+            **profiles.arguments(profile),
         )
         _need(
             proof.issuance_authority is proof.execution_authority is False
@@ -136,6 +142,7 @@ async def _operate_selected_genesis(selection, *, reconcile_only):
     selected = selectors._record(selection)
     factories = selected["factories"]
     roles = selection.source_roles_0056
+    profile = selectors._selection_database_profile_0056(selection)
     scope = ControlScope("demo", selection.scope_config.expected_uid)
     _need(type(reconcile_only) is bool)
     expected_state = expected_event = None
@@ -146,7 +153,7 @@ async def _operate_selected_genesis(selection, *, reconcile_only):
             async with factories.writer_factory() as session:
                 transaction = await session.begin()
                 created, expected_state, expected_event = await _stage_genesis(
-                    session, factories, roles, scope
+                    session, factories, roles, scope, **profiles.arguments(profile)
                 )
                 _need(selectors._record(selection) is selected)
                 if created:
@@ -160,7 +167,9 @@ async def _operate_selected_genesis(selection, *, reconcile_only):
             raise
 
     try:
-        observed = await _read_committed_genesis(factories, roles, scope)
+        observed = await _read_committed_genesis(
+            factories, roles, scope, **profiles.arguments(profile)
+        )
         _need(selectors._record(selection) is selected)
         if expected_state is not None:
             _need(
@@ -175,6 +184,7 @@ async def _operate_selected_genesis(selection, *, reconcile_only):
     return StoppedControlGenesis0056V1(
         "CREATED_STOPPED" if created else "EXISTING_STOPPED",
         observed.event_sha256,
+        database_head=profiles.head(profile),
     )
 
 
@@ -191,10 +201,11 @@ async def initialize_configured_stopped_control_0056_v1(
         settings = _settings(instrument_id)
         client = OkxDemoPrivateRestClient(settings=settings)
         with client.pinned_read_session() as lease:
-            selection = await selectors.select_configured_demo_source_identity_0056_v1(
+            selection = await selectors._select_configured_demo_runtime_identity_v2(
                 private_client=client,
                 read_session=lease,
                 instrument_ids=(instrument_id,),
+                history_only=True,
             )
             # Record factories before any replay can fail, so dispose can
             # always close both companion engines on refusal.

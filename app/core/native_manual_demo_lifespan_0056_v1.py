@@ -9,6 +9,7 @@ import asyncio
 from pathlib import Path
 
 from app.core import native_only_lifespan as original
+from app.domain import native_database_profile_v1 as profiles
 
 _SOURCE = Path(__file__).resolve().parents[2]
 _DISABLED = tuple(
@@ -72,12 +73,16 @@ async def start_manual_demo_0056_v1(settings, session_factory, automation):
         source_sha = source56._source_manifest_sha256(_SOURCE)
         selected = selectors.select_configured_native_demo_factories_v2()
         _need(selected.writer_factory is session_factory)
+        actual_head = await selectors._observe_runtime_database_head_v2(selected)
+        _need(actual_head in ("0056", "0057"))
+        profile = profiles.DB0056 if actual_head == "0056" else profiles.DB0057
         first = await roles56.observe_restricted_native_roles_0056_witness_v1(
-            selected, source=_SOURCE
+            selected, source=_SOURCE, **profiles.arguments(profile)
         )
         _need(
             type(first) is roles56.RestrictedNativeRoles0056WitnessV1
-            and first.observation.database_head == "0056"
+            and first.observation.database_head == actual_head
+            and selectors._profile_for_original_roles_0056(first) is profile
         )
         before = await original.inspect_existing_control(session_factory)
         symbols = settings.okx_demo_scan_symbol_list
@@ -87,7 +92,7 @@ async def start_manual_demo_0056_v1(settings, session_factory, automation):
         )
         _need(
             type(stopped) is account_stop.NativeAccountRestartRecovery0056V1
-            and stopped.database_head == "0056"
+            and stopped.database_head == actual_head
             and stopped.emergency_stop is True
             and stopped.armed is False
         )
@@ -102,7 +107,7 @@ async def start_manual_demo_0056_v1(settings, session_factory, automation):
         status = await automation.status()
         original._check_recovery(before, after, status)
         second = await roles56.observe_restricted_native_roles_0056_witness_v1(
-            selected, source=_SOURCE
+            selected, source=_SOURCE, **profiles.arguments(profile)
         )
         _need(
             first == second
@@ -111,6 +116,7 @@ async def start_manual_demo_0056_v1(settings, session_factory, automation):
             and source56._source_manifest_sha256(_SOURCE) == source_sha
         )
         require_manual_demo_settings_0056_v1(settings)
+        return actual_head
     except asyncio.CancelledError:
         failed = True
         raise

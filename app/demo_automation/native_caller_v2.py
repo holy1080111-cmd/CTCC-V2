@@ -295,7 +295,7 @@ def _check_pending_owned_arm_0056(state, request, plan, owner):
     _check_request_v2(request, plan)
     _need(
         state["action"] == "arm_execute"
-        and state["database_head"] == "0056"
+        and state["database_head"] in ("0056", "0057")
         and state.get("pending_arm_0056") is request
         and state.get("arm_plan_0056") is plan
         and state.get("controller") is owner
@@ -416,7 +416,7 @@ async def _cold_history(service, state, instrument_id):
             )
         _ready(service, state)
         if genesis is None:
-            if head == "0056":
+            if head in ("0056", "0057"):
                 await _bootstrap_cold_history_0056(
                     service, state, selection, lease, client
                 )
@@ -446,6 +446,7 @@ async def _bootstrap_cold_history_0056(service, state, selection, lease, client)
     from app.demo_automation import native_current_source_0056_v1 as source
     from app.demo_automation import native_server_selectors_v2 as selectors
     from app.demo_automation.native_source_only_v1 import _history_bundle_hash
+    from app.domain import native_database_profile_v1 as profiles
     from app.trade_qualification import account_history_source_v1 as history
     from app.trade_qualification import native_demo_control_owner_v2 as facade
     from app.trade_qualification.demo_control import ControlScope
@@ -453,11 +454,14 @@ async def _bootstrap_cold_history_0056(service, state, selection, lease, client)
 
     _need(
         selectors._runtime_selection_database_head_v2(selection, history_only=True)
-        == "0056"
+        in ("0056", "0057")
     )
+    profile = selectors._selection_database_profile_0056(selection)
     factories, roles = selection.factories, selection.source_roles_0056
     scope = ControlScope("demo", selection.scope_config.expected_uid)
-    before = await source._observe_control(factories, scope, roles)
+    before = await source._observe_control(
+        factories, scope, roles, **profiles.arguments(profile)
+    )
     _ready(service, state)
     _need(before.control.state.emergency_stop is True)
     digest = await history.acquire_configured_history_current_source_0056_v1(
@@ -469,7 +473,9 @@ async def _bootstrap_cold_history_0056(service, state, selection, lease, client)
         bootstrap_only=True,
     )
     _ready(service, state)
-    after = await source._observe_control(factories, scope, roles)
+    after = await source._observe_control(
+        factories, scope, roles, **profiles.arguments(profile)
+    )
     _ready(service, state)
     source._readback_control(before, after)
     measured = await facade._read_genesis(
@@ -477,12 +483,14 @@ async def _bootstrap_cold_history_0056(service, state, selection, lease, client)
         LedgerScope(account_id=scope.account_id, settlement_currency="USDT"),
     )
     _ready(service, state)
-    final = await source._observe_control(factories, scope, roles)
+    final = await source._observe_control(
+        factories, scope, roles, **profiles.arguments(profile)
+    )
     _ready(service, state)
     source._readback_control(after, final)
     _need(
         selectors._runtime_selection_database_head_v2(selection, history_only=True)
-        == "0056"
+        == profiles.head(profile)
         and selection.factories is factories
         and selection.source_roles_0056 is roles
         and _history_bundle_hash(state["roots"]["cold-history-raw"]) == digest
@@ -729,7 +737,7 @@ async def perform_native_demo_action_v2(service, request, *, operator_token):
                 prepare_started = utc_from_ns(native_stamp()["utc_ns"])
                 owner = await (
                     facade.prepare_selected_demo_control_owner_0056(selection)
-                    if head == "0056"
+                    if head in ("0056", "0057")
                     else facade.prepare_selected_demo_control_owner_v3(selection)
                 )
                 state["controller"] = owner
@@ -753,7 +761,7 @@ async def perform_native_demo_action_v2(service, request, *, operator_token):
                         prepare_started
                         + timedelta(seconds=demo_control.MAX_ARM_SECONDS),
                     )
-                    if head == "0056":
+                    if head in ("0056", "0057"):
                         state["pending_arm_0056"] = request
                         state["arm_plan_0056"] = selected
                         try:
