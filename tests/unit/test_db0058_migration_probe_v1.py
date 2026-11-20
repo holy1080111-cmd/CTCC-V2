@@ -53,7 +53,7 @@ def test_probe_admits_actual58_prefix_without_claiming_full_acceptance(tmp_path)
     raw, files = probe.admit_archive(args)
     assert probe.sha(raw) == args.archive_sha256
     assert files[probe.pins.MIGRATION_PATH]["sha256"] == probe.pins.MIGRATION_SHA256
-    assert len(probe.REQUIRED_CASES) == 8
+    assert len(probe.REQUIRED_CASES) == 9
 
 
 @pytest.mark.parametrize("change", ["migration", "runner", "extra_migration"])

@@ -40,6 +40,7 @@ REQUIRED_CASES = tuple(
         "test_actual58_downgrade_refuses_retained_control_without_deleting_custody",
         "test_actual58_effective_maintain_drift_blocks_data_hold",
         "test_actual58_negative_procedures_cannot_arm_or_clear_estop",
+        "test_actual58_writer_can_observe_real_head_but_cannot_read_demo_records",
     )
 )
 _MAX_ARCHIVE = 128 * 1024 * 1024
@@ -349,7 +350,7 @@ def run_probe(args, raw, files, root):
                 allow_unrelated_skips=False,
             )
             need(
-                report["tests"] == 16
+                report["tests"] == 17
                 and report["passed"] == report["tests"]
                 and report["skipped"] == 0
             )
