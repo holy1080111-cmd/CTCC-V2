@@ -268,3 +268,47 @@ def _verify_retained_lifecycle_signature_v1(key_owner, raw, signature):
     )
     _need(hmac.compare_digest(expected, bytes.fromhex(signature)))
     return True
+
+
+def _verify_retained_controlled_close_intent_signature_v1(key_owner, raw, signature):
+    """Verify one stored close intent; never sign or accept a caller domain."""
+    from app.domain.native_live_controlled_close_schema_v1 import INTENT_DOMAIN
+
+    _need(INTENT_DOMAIN == b"ctcc-native-live-controlled-close-intent-v1\x00")
+    record = _record(key_owner)
+    _need(
+        type(raw) is bytes
+        and 0 < len(raw) <= 65536
+        and raw.isascii()
+        and type(signature) is str
+        and _HEX.fullmatch(signature) is not None
+    )
+    expected = hmac.digest(
+        bytes.fromhex(record["document"]["key_hex"]),
+        INTENT_DOMAIN + raw,
+        hashlib.sha256,
+    )
+    _need(hmac.compare_digest(expected, bytes.fromhex(signature)))
+    return True
+
+
+def _verify_retained_controlled_close_claim_signature_v1(key_owner, raw, signature):
+    """Verify one stored action claim under its separate, fixed domain."""
+    from app.domain.native_live_controlled_close_schema_v1 import CLAIM_DOMAIN
+
+    _need(CLAIM_DOMAIN == b"ctcc-native-live-controlled-close-claim-v1\x00")
+    record = _record(key_owner)
+    _need(
+        type(raw) is bytes
+        and 0 < len(raw) <= 32768
+        and raw.isascii()
+        and type(signature) is str
+        and _HEX.fullmatch(signature) is not None
+    )
+    expected = hmac.digest(
+        bytes.fromhex(record["document"]["key_hex"]),
+        CLAIM_DOMAIN + raw,
+        hashlib.sha256,
+    )
+    _need(hmac.compare_digest(expected, bytes.fromhex(signature)))
+    return True
