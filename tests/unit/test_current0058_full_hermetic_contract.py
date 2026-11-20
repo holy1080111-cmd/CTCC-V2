@@ -255,10 +255,8 @@ def test_five_pg_owners_preserve_every_whole_module_and_historical_producer():
     assert legacy.POSTGRES_ANCHOR_PATHS <= owners[0]
     assert full.collection.HISTORICAL_PRODUCER_PATHS <= owners[1]
     assert owners[2] == full.collection.SUCCESSOR_PATHS
-    assert owners[
-        3
-    ] - full.collection.RETAINED0017_OWNER_PATHS <= legacy.postgres_paths(0)
-    assert full.collection.RETAINED0017_OWNER_PATHS <= owners[3]
+    assert owners[3] - full.collection.OWNER_PATHS <= legacy.postgres_paths(0)
+    assert full.collection.OWNER_PATHS <= owners[3]
     assert owners[4] <= legacy.postgres_paths(1)
     assert {Path(path).name for path in owners[2]} <= set(windows.POSTGRES_INTEGRATION)
     assert {

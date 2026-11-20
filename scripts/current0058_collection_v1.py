@@ -30,8 +30,6 @@ SUCCESSOR_PATHS = frozenset(
         "tests/integration/test_g12_restricted_writer_0057_pg.py",
         "tests/integration/test_owned_history_profiles0057_pg.py",
         "tests/integration/test_terminal_readout_profiles0057_pg.py",
-        "tests/integration/test_native_owner_upgrade_0057_pg.py",
-        "tests/integration/test_native_owner_upgrade_0058_pg.py",
         "tests/integration/test_native_postsubmit_profiles0057_pg.py",
     }
 )
@@ -41,6 +39,13 @@ SUCCESSOR_PATHS = frozenset(
 RETAINED0017_OWNER_PATHS = frozenset(
     {"tests/integration/test_retained0017_owner_plan_v1_pg.py"}
 )
+CANONICAL_OWNER_PATHS = frozenset(
+    {
+        "tests/integration/test_native_owner_upgrade_0057_pg.py",
+        "tests/integration/test_native_owner_upgrade_0058_pg.py",
+    }
+)
+OWNER_PATHS = RETAINED0017_OWNER_PATHS | CANONICAL_OWNER_PATHS
 _OBSERVED = set()
 # Keep every historical receipt producer together on its original observer.
 # Other whole modules split deterministically; the complete collection/JUnit
@@ -76,7 +81,7 @@ def postgres_paths(index):
     if index == 2:
         return SUCCESSOR_PATHS
     parent = index if index < 2 else index - 3
-    paths = previous.postgres_paths(parent) - SUCCESSOR_PATHS
+    paths = previous.postgres_paths(parent) - SUCCESSOR_PATHS - OWNER_PATHS
     retained = previous.POSTGRES_ANCHOR_PATHS | HISTORICAL_PRODUCER_PATHS
     moved = frozenset(
         path
@@ -84,7 +89,7 @@ def postgres_paths(index):
         if path not in retained and previous.module_shard(path) >= 4
     )
     owned = paths - moved if index < 2 else moved
-    return owned | RETAINED0017_OWNER_PATHS if index == 3 else owned
+    return owned | OWNER_PATHS if index == 3 else owned
 
 
 def selected_for(mode, index, node):
@@ -102,8 +107,7 @@ def selected_for(mode, index, node):
     if mode == "postgres":
         return path in postgres_paths(index)
     return (
-        path
-        not in previous.POSTGRES_TEST_PATHS | SUCCESSOR_PATHS | RETAINED0017_OWNER_PATHS
+        path not in previous.POSTGRES_TEST_PATHS | SUCCESSOR_PATHS | OWNER_PATHS
         and previous.module_shard(path) == index
     )
 

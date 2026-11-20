@@ -83,7 +83,31 @@ OWNER_UPGRADE_CASES = tuple(
         "test_actual0057_owner58_rehearsal_and_commit_preserve_every_row_actor_and44_acl",
         "test_actual0057_owner58_final_ddl_failure_restores_original_head_rows_oids_and_acl",
         "test_actual0057_owner58_unreviewed_live_access_rolls_back_without_granting_or_commit",
+        *(
+            "test_actual0057_owner58_null_bitmap_refuses_rehearsal_or_final_null_flip_and_restores_all_state["
+            + stage
+            + "]"
+            for stage in ("1", "2")
+        ),
     )
+)
+OWNER0057_NULL_CASES = tuple(
+    (
+        "tests.integration.test_native_owner_upgrade_0057_pg",
+        "test_actual0056_owner_upgrade_null_bitmap_refuses_changed_audit_value_and_rolls_back["
+        + changed
+        + "]",
+    )
+    for changed in ("False", "True")
+)
+CANONICAL_OWNER_CASES = (
+    *(
+        case
+        for case in base.SUCCESSOR_CASES
+        if case[0].replace(".", "/") + ".py" in collection.CANONICAL_OWNER_PATHS
+    ),
+    *OWNER0057_NULL_CASES,
+    *OWNER_UPGRADE_CASES,
 )
 RETAINED0017_OWNER_CASES = tuple(
     ("tests.integration.test_retained0017_owner_plan_v1_pg", name)
@@ -257,14 +281,17 @@ LIVE_CONTROLLED_CLOSE_CASES = tuple(
     )
 )
 SUCCESSOR_CASES = (
-    *base.SUCCESSOR_CASES,
+    *(
+        case
+        for case in base.SUCCESSOR_CASES
+        if case[0].replace(".", "/") + ".py" not in collection.CANONICAL_OWNER_PATHS
+    ),
     *live_cases.REQUIRED_CASES,
     *g12.CASES,
     g12.CUSTODY_CASE,
     *PHYSICAL_LIVE_CASES,
     *BINDING_CASES,
     *ORIGINAL_OCO_CASES,
-    *OWNER_UPGRADE_CASES,
     *ORIGINAL_OCO_REPORT_CASES,
     *LIVE_OPERATOR_CASES,
     *LIVE_LIFECYCLE_CASES,
@@ -284,6 +311,7 @@ REQUIRED_CASES = (
     *BINDING_CASES,
     *ORIGINAL_OCO_CASES,
     *OWNER_UPGRADE_CASES,
+    *OWNER0057_NULL_CASES,
     *ORIGINAL_OCO_REPORT_CASES,
     *LIVE_OPERATOR_CASES,
     *LIVE_LIFECYCLE_CASES,
