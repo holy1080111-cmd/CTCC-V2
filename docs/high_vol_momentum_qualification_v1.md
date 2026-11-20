@@ -57,3 +57,21 @@ The focused tests use declared synthetic source bytes and real calculations.
 Their positive mathematical cases do not constitute real market evidence,
 authenticated Demo acceptance, Gate3, predictive edge or Live acceptance.
 The original observation v2 and failed-G2 sidecar remain DATA diagnostics.
+
+`test_high_vol_full_raw_g1_v1.py` additionally proves the profile is reachable
+through the complete real raw-V2 G1 calculation. Its four positive cases cover
+both families and both directions. One common 5m tape supplies every 15m/1H/4H
+OHLC and contract/base/quote turnover by exact aggregation. Historical broad
+wicks produce actual high 4H volatility while source-derived causal shocks stay
+below 0.65; expansion includes real prior compression and a later 5m momentum
+transition. G1 and the source analysis, router, conditions, history, trigger and
+zone evaluators run unchanged. The legacy profile rejects the same captured
+bytes; the new profile derives the original intent and passes the prefix gates,
+retaining setup 10:00, latest trigger 10:10 and its fixed entry/zone/expiry.
+
+The inherited quote at 100.41 is retained as a fifth adverse case: G1 and the
+HighVol source permission pass, but its original point zone is 100.36, so no
+intent is derived. The positive cases declare separate initial raw quotes at
+the point zone before capture, including consistent ticker, mark, books and WS.
+No captured candidate, zone or receipt is repaired. These synthetic fixtures
+prove engineering nonvacuity, not authenticated market or execution acceptance.

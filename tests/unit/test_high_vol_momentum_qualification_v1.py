@@ -1,8 +1,9 @@
 """Synthetic per-frame math contracts, not full raw-G1/native/venue acceptance.
 
 These retained legacy per-frame tapes do not establish parent/child aggregation.
-Separate raw-G1 tests exercise the profile lineage using an existing coherent
-normal Expansion tape. No positive HighVol full-G1 or Demo sample is claimed.
+Separate raw-G1 tests exercise both normal Expansion lineage and complete
+common-tape HighVol inputs. This file alone does not claim full-G1 or Demo
+acceptance; see test_high_vol_full_raw_g1_v1.py for the synthetic G1 coverage.
 """
 
 from copy import deepcopy
