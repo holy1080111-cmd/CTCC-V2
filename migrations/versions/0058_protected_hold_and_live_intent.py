@@ -13,6 +13,7 @@ from app.domain import native_filled_flat_closure_schema_v55 as previous
 from app.domain import native_live_financial_epoch_schema_v1 as financial
 from app.domain import native_live_ledger_schema_v1 as live
 from app.domain import native_protective_hold_schema_v58 as hold
+from app.domain import native_protective_report_schema_v58 as report
 from app.domain import native_submission_binding_schema_v58 as submission
 
 revision = "0058"
@@ -102,10 +103,33 @@ def _require_financial_guard():
  """)
 
 
+def _require_report_guard(sql):
+    from hashlib import sha256
+
+    pin = sha256(sql.split("$ctcc$")[1].encode()).hexdigest()
+    op.execute(f"""
+ DO $check$ BEGIN
+ IF NOT EXISTS (
+  SELECT 1 FROM pg_catalog.pg_proc p
+  JOIN pg_catalog.pg_class c ON c.oid='public.qualification_submission_outcomes'::regclass
+  JOIN pg_catalog.pg_language l ON l.oid=p.prolang
+  WHERE p.oid=pg_catalog.to_regprocedure('public.qualification_native_report_eligible_v55(text,text,text,text)')
+   AND p.proowner=c.relowner AND l.lanname='plpgsql'
+   AND p.prorettype='pg_catalog.bool'::regtype AND p.pronargs=4
+   AND NOT p.proretset AND NOT p.prosecdef AND NOT p.proisstrict AND NOT p.proleakproof
+   AND p.prokind='f' AND p.provolatile='v' AND p.proparallel='u' AND p.prosupport=0
+   AND p.proconfig=ARRAY['search_path=pg_catalog, pg_temp']::text[]
+   AND pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(p.prosrc,'UTF8')),'hex')='{pin}'
+ ) THEN RAISE EXCEPTION 'protected58_report_eligible_changed'; END IF;
+ END $check$;
+ """)
+
+
 def upgrade():
     op.execute(_LOCK)
     _require_guard(previous.CURRENT_BODY_SHA256)
     _require_submission_guard(submission.ANCESTOR_BODY_SHA256)
+    _require_report_guard(report.ancestor.ELIGIBLE_SQL)
     for statement in hold.statements():
         op.execute(statement)
     op.execute(hold.CURRENT_SQL)
@@ -113,6 +137,9 @@ def upgrade():
     for statement in submission.statements():
         op.execute(statement)
     _require_submission_guard(submission.CURRENT_BODY_SHA256)
+    for statement in report.statements():
+        op.execute(statement)
+    _require_report_guard(report.ELIGIBLE_SQL)
     for statement in live.UPGRADE_SQL:
         op.execute(statement)
     for statement in financial.UPGRADE_SQL:
@@ -129,13 +156,17 @@ def downgrade():
     )
     _require_guard(hold.CURRENT_BODY_SHA256)
     _require_submission_guard(submission.CURRENT_BODY_SHA256)
+    _require_report_guard(report.ELIGIBLE_SQL)
     _require_financial_guard()
     op.execute("""
  DO $check$ BEGIN
  IF EXISTS(SELECT 1 FROM public.qualification_submission_outcomes
      WHERE capture_json::jsonb->>'version' IN (
       'ctcc.native_protected_hold.v1','ctcc.native_protective_flat_closure.v1',
-      'ctcc.native_protected_hold_resources_retired.v1'))
+      'ctcc.native_protected_hold_resources_retired.v1',
+      'ctcc.native_original_oco_forensics_readback.v1',
+      'ctcc.native_original_oco_cleanup.v1',
+      'ctcc.native_original_oco_report_ready.v1'))
  OR EXISTS(SELECT 1 FROM public.native_live_controls_v1)
  OR EXISTS(SELECT 1 FROM public.native_live_reservations_v1)
  OR EXISTS(SELECT 1 FROM public.native_live_intents_v1)
@@ -166,6 +197,9 @@ def downgrade():
  """)
     op.execute(previous.CURRENT_SQL)
     _require_guard(previous.CURRENT_BODY_SHA256)
+    for statement in report.restore_statements():
+        op.execute(statement)
+    _require_report_guard(report.ancestor.ELIGIBLE_SQL)
     for statement in submission.restore_statements():
         op.execute(statement)
     _require_submission_guard(submission.ANCESTOR_BODY_SHA256)

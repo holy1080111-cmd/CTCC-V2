@@ -11,6 +11,7 @@ from app.database.models.submission_reporting import QualificationSubmissionOutc
 from app.domain import native_live_financial_epoch_schema_v1 as financial
 from app.domain import native_live_ledger_schema_v1 as live
 from app.domain import native_protective_hold_schema_v58 as hold
+from app.domain import native_protective_report_schema_v58 as report
 from app.domain import native_submission_binding_schema_v58 as submission
 
 subject = import_module("migrations.versions.0058_protected_hold_and_live_intent")
@@ -25,6 +26,14 @@ def test_actual58_is_additive_after57_and_never_grants_or_arms(monkeypatch):
     assert all(statement in statements for statement in hold.statements())
     assert hold.CURRENT_SQL in statements
     assert submission.CURRENT_SQL in statements
+    assert report.ELIGIBLE_SQL in statements
+    assert statements.index(submission.CURRENT_SQL) < statements.index(
+        report.ELIGIBLE_SQL
+    )
+    assert any(report.ELIGIBLE_BODY_SHA256 in statement for statement in statements)
+    assert any(
+        "protected58_report_eligible_changed" in statement for statement in statements
+    )
     assert statements.index(hold.CURRENT_SQL) < statements.index(submission.CURRENT_SQL)
     assert any(submission.ANCESTOR_BODY_SHA256 in statement for statement in statements)
     assert any(submission.CURRENT_BODY_SHA256 in statement for statement in statements)
@@ -56,6 +65,11 @@ def test_downgrade_checks_retained_custody_before_removing_only_new_objects(
     )
     assert refusal < statements.index(subject.previous.CURRENT_SQL)
     assert refusal < statements.index(submission.ANCESTOR_SQL)
+    assert refusal < statements.index(report.restore_statements()[0])
+    assert statements.index(report.restore_statements()[0]) < statements.index(
+        submission.ANCESTOR_SQL
+    )
+    assert "ctcc.native_original_oco_report_ready.v1" in statements[refusal]
     assert "native_live_financial_epochs_v1" in statements[refusal]
     assert "native_live_financial_samples_v1" in statements[refusal]
     assert "pg_catalog.acldefault('f',p.proowner)" in statements[refusal]
