@@ -232,6 +232,10 @@ def _verify_source_for_signing_v1(owner, *, key_owner):
         from app.okx_live.owned_recovery_v1 import _verify_recovery_observation_v1
 
         _verify_recovery_observation_v1(owner, key=_SOURCE_LEASE_KEY_V1)
+    elif state.get("controlled_close_history") is not None:
+        from app.okx_live.owned_close_v1 import _verify_owned_close_history_v1
+
+        _verify_owned_close_history_v1(owner, key=_SOURCE_LEASE_KEY_V1)
     raw = state["proof_json"]
     _need(type(raw) is bytes and canonical(decode(raw, maximum=65536)) == raw)
     # A real capture retains these exact bytes before the signer can run. The
@@ -506,6 +510,8 @@ def _capture_arguments(state, capture):
     }
     if state.get("recovery_history") is not None:
         arguments["history"] = state["recovery_history"]
+    elif state.get("controlled_close_history") is not None:
+        arguments["history"] = state["controlled_close_history"]
     return arguments
 
 
@@ -666,6 +672,13 @@ def _proof_document(state, *, capture, facts, economics, failure_code=None):
             else None,
             "semantics": "historical_utc_not_current_monotonic_or_post_start",
             "economic_qualification_reestablished": False,
+        }
+    elif state.get("controlled_close_history") is not None:
+        history = state["controlled_close_history"]
+        proof["controlled_close_history"] = {
+            "intent_recorded_at": history.intent_recorded_at.isoformat(),
+            "retained_original_submission_started_utc": history.submission_started_utc.isoformat(),
+            "semantics": "original_submission_utc_history_new_close_get_barrier",
         }
     # Frozen dataclass fields are replayed at signing; not a caller passed flag.
     state["assessed_facts"] = facts

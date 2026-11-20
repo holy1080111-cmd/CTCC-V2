@@ -506,6 +506,7 @@ async def _renew_protected_source(state):
         state["key_owner"], state["consent"].reservation_id
     )
     _need(journal.reservation_state != "reconciled")
+    history = _close_submission_history_v1(original, journal)
     owner = lifecycle._new_owner(
         **{
             name: original[name]
@@ -518,15 +519,18 @@ async def _renew_protected_source(state):
                 "handoff",
                 "evidence_root",
                 "report_id",
-                "submission_started",
                 "submission_sha256",
                 "submission_attempted",
             )
         },
         journal=journal,
+        submission_started=None,
+        controlled_close_history=history,
+        controlled_close_owner=state["self"],
         capture_id=secrets.token_hex(16),
         capture_barrier=_stamp(),
     )
+    state["protected_owner"] = owner
     capture = await lifecycle._capture_owned_live_postsubmit_v1(owner)
     current = lifecycle._record(owner)
     assessed = facts.assess_live_postsubmit_facts_v1(
@@ -567,6 +571,40 @@ async def _renew_protected_source(state):
         source_root=current["source_root"],
     )
     return current
+
+
+def _close_submission_history_v1(original, journal):
+    """Retain actual POST UTC separately; never replay an old monotonic batch."""
+    from app.domain.source_primitives import ClockStamp
+    from app.okx_live.reconciliation_facts_v1 import LiveReconciliationHistoryV1
+
+    started = original["submission_started"]
+    _need(
+        type(started) is ClockStamp
+        and type(journal.intent_recorded_at) is datetime
+        and journal.intent_recorded_at.tzinfo is UTC
+    )
+    observed = utc_from_ns(started.utc_ns)
+    _need(journal.intent_recorded_at <= observed)
+    return LiveReconciliationHistoryV1(journal.intent_recorded_at, observed)
+
+
+def _verify_owned_close_history_v1(owner, *, key):
+    from app.okx_live import owned_lifecycle_v1 as lifecycle
+
+    _need(key is lifecycle._SOURCE_LEASE_KEY_V1)
+    child = lifecycle._record(owner)
+    state = _record(child["controlled_close_owner"])
+    original = _original(state)
+    _need(state["protected_owner"] is owner)
+    for name in ("runtime_owner", "key_owner", "source_owner", "intent", "handoff"):
+        _need(child[name] is original[name])
+    _need(child["submission_started"] is None)
+    _need(
+        child["controlled_close_history"]
+        == _close_submission_history_v1(original, child["journal"])
+    )
+    _clock(state)
 
 
 def _require_complete_close_flow_v1():
@@ -611,6 +649,7 @@ async def run_owned_live_controlled_close_v1(lifecycle_owner):
     owner = OwnedLiveControlledCloseV1(key=_OWNER_KEY)
     cfg = original["repository"]
     _OWNED[owner] = state = {
+        "self": owner,
         "pid": os.getpid(),
         "thread": threading.get_ident(),
         "task": asyncio.current_task(),

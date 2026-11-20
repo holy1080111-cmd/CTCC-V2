@@ -570,3 +570,36 @@ def test_signed_cancel_claim_carries_original_close_client_identity_into_custody
     parsed, _, _ = repository._parse_data(actual, metadata=METADATA, claim=True)
     assert parsed["close_client_order_id"] == parent["close_client_order_id"]
     assert parsed["execution_authority"] is False
+
+
+def test_close_history_keeps_measured_original_post_utc_without_replaying_old_monotonic_clock():
+    from tests.unit.test_native_live_recovery_history_v1 import history_scenario
+
+    value, data = history_scenario()
+    original = {"submission_started": raw.stamp(0)}
+    journal = SimpleNamespace(intent_recorded_at=utc_from_ns(raw.stamp(-1).utc_ns))
+    history = actor._close_submission_history_v1(original, journal)
+    assert history.submission_started_utc == utc_from_ns(raw.stamp(0).utc_ns)
+    assert history.intent_recorded_at == journal.intent_recorded_at
+    data["history"] = history
+    assert data["submission_started"] is None
+    observed = facts.assess_live_postsubmit_facts_v1(value, **data)
+    assert observed.outcome == "FULL_FILL_PROTECTED"
+    assert (
+        observed.execution_authority
+        is observed.economic_qualification_verified
+        is False
+    )
+    data["submission_started"] = raw.stamp(0)
+    assert facts.assess_live_postsubmit_facts_v1(value, **data).outcome == "UNCERTAIN"
+
+
+@pytest.mark.parametrize("started,recorded", [(None, 0), ({}, 0), (raw.stamp(0), 1)])
+def test_close_history_cannot_invent_a_post_start_or_precede_committed_intent(
+    started, recorded
+):
+    with pytest.raises(actor.LiveControlledCloseError):
+        actor._close_submission_history_v1(
+            {"submission_started": started},
+            SimpleNamespace(intent_recorded_at=utc_from_ns(raw.stamp(recorded).utc_ns)),
+        )

@@ -166,6 +166,7 @@ async def capture_owned_live_postsubmit_pages_v1(owner, *, key):
             select_live_trade_read_v1(
                 "fills_history"
                 if state.get("recovery_history") is not None
+                or state.get("controlled_close_history") is not None
                 else "fills",
                 instrument_id=intent.instrument_id,
                 order_id=order_id,
