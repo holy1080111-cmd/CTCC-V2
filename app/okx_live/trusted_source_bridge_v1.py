@@ -190,6 +190,36 @@ class _LiveCredentialMaterialV1:
     timeout_seconds: float
 
 
+def _live_postsubmit_lease_v1(owner, *, key):
+    """Original lease for a new lifecycle capture, never an old snapshot permit.
+
+    Entry's account snapshot may have expired. Its private owner, original task,
+    unchanged configured credentials and retained raw bank must still agree;
+    the lifecycle must then measure NEW GETs and re-verify account identity.
+    """
+    from app.okx_live import owned_lifecycle_v1 as lifecycle
+
+    _need(key is lifecycle._SOURCE_LEASE_KEY_V1)
+    lifecycle._require_active_source_context_v1(owner, key=key)
+    _retained_source_identity_v1(owner)
+    state = _SOURCES[owner]
+    lease = state["lease"]
+    lease.verify_current()
+    _need(
+        _configured(state["plan"]) is state["settings"]
+        and state["uid"] == lease._pin.expected_uid
+        and state["main_uid"] == lease._pin.expected_main_uid
+    )
+    return (
+        lease._owner,
+        lease,
+        state["root"],
+        state["uid"],
+        state["main_uid"],
+        state["credential_session_sha256"],
+    )
+
+
 def _owned_live_credential_material_v1(owner, *, key):
     """Private physical scope only; neither a saved receipt nor a key is enough."""
     from app.exchange.okx import native_live_write_v1 as physical

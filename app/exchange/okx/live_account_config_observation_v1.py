@@ -74,6 +74,8 @@ _OWNED_GET_PATHS = frozenset(
         "/api/v5/trade/orders-history",
         "/api/v5/trade/orders-history-archive",
         "/api/v5/trade/orders-algo-history",
+        "/api/v5/trade/order",
+        "/api/v5/trade/order-algo",
         "/api/v5/account/positions-history",
     }
 )
@@ -512,7 +514,18 @@ async def _observe_owned_live_get_v1(
         maximum = MAX_BODY
     else:
         # The shared transport cannot widen its target by an unchecked caller.
-        if path in _HISTORY_GET_PATHS:
+        from app.exchange.okx.live_trade_read_page_v1 import (
+            LiveTradeReadSelectorV1,
+        )
+
+        if type(selector) is LiveTradeReadSelectorV1:
+            from app.exchange.okx.live_trade_read_page_v1 import (
+                _checked_selector,
+                _request_path,
+            )
+
+            maximum = MAX_HISTORY_BODY
+        elif path in _HISTORY_GET_PATHS:
             from app.exchange.okx.live_account_history_page_v1 import (
                 _checked_selector,
                 _request_path,
