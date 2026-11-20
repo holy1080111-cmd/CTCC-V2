@@ -1,0 +1,50 @@
+name: DB0058 historical component regression probe
+
+on:
+  push:
+    branches: [work/db0058-history-regression-probe]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  historical-regression:
+    if: github.ref == 'refs/heads/work/db0058-history-regression-probe'
+    name: Exact source historical PostgreSQL component 0
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - name: Checkout exact diagnostic source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run complete unchanged historical component
+        shell: bash
+        run: |
+          set -euo pipefail
+          commit=$(git rev-parse HEAD)
+          test "$commit" = "$GITHUB_SHA"
+          tree=$(git rev-parse 'HEAD^{tree}')
+          archive="$RUNNER_TEMP/ctcc-source.tar"
+          git -c core.autocrlf=false -c core.eol=lf archive --format=tar --output="$archive" "$commit"
+          digest=$(sha256sum "$archive" | cut -d ' ' -f 1)
+          python3 -m scripts.verify_current0058_full_hermetic \
+            --archive "$archive" --archive-sha256 "$digest" \
+            --commit "$commit" --tree "$tree" \
+            --suite postgres --postgres-component-index 0 \
+            --output "$RUNNER_TEMP/ctcc-history58-regression"
+
+      - name: Preserve exact diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ctcc-history58-regression-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/ctcc-source.tar
+            ${{ runner.temp }}/ctcc-history58-regression/*.json
+            ${{ runner.temp }}/ctcc-history58-regression/*.log
+            ${{ runner.temp }}/ctcc-history58-regression/test-results/*.xml
+          if-no-files-found: error
+          retention-days: 30

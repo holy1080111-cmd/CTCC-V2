@@ -6,7 +6,9 @@ new test must run on its own actual stage; existing43 results cannot be reused.
 
 import asyncio
 import json
+import time
 from dataclasses import replace
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import text
@@ -34,6 +36,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 async def test_pg_financial_synthetic_wire_original33_uses_same_expiry_and_measured_finish(
     monkeypatch,
     original_frame_database,
+    record_property,
 ):
     admin = original_frame_database
     (
@@ -43,17 +46,42 @@ async def test_pg_financial_synthetic_wire_original33_uses_same_expiry_and_measu
         lease,
         checkpoint,
     ) = await original._prefix33_with_original_checkpoint(monkeypatch, admin)
+    timing = original._ClosedOriginalTiming()
+    grant_started = time.monotonic_ns()
     async with original.collector(admin, grant=True) as (reader, oid):
+        timing.setup_grant_ns = time.monotonic_ns() - grant_started
         # FIRST construction follows real role setup, exactly as the existing
         # native acceptance. No existing request expiry or Control lease resets.
         request = original._request(scope, documents, revisions, lease)
-        result = await native.replay_original_history_financial_from_pg_v2(
-            async_sessionmaker(reader, expire_on_commit=False, autoflush=False),
-            genesis_request=request,
-            expected_checkpoint_sha256=checkpoint,
-            approved_collector_role_oid=oid,
-            expected_financial_policy_sha256=stream.original_history_financial_stream_policy_sha256_v2(),
+        timing.initial_request_remaining_us = int(
+            (request.expires_at - datetime.now(UTC)).total_seconds() * 1_000_000
         )
+        # Observe the SAME original functions/clock/lease as the existing
+        # original33 diagnostic. Always retain closed phase counts/durations,
+        # including a real failure; never replace its return or extend expiry.
+        originals = None
+        try:
+            with monkeypatch.context() as measured:
+                originals = timing.install(measured)
+                started = time.monotonic_ns()
+                try:
+                    result = await native.replay_original_history_financial_from_pg_v2(
+                        async_sessionmaker(
+                            reader, expire_on_commit=False, autoflush=False
+                        ),
+                        genesis_request=request,
+                        expected_checkpoint_sha256=checkpoint,
+                        approved_collector_role_oid=oid,
+                        expected_financial_policy_sha256=stream.original_history_financial_stream_policy_sha256_v2(),
+                    )
+                finally:
+                    timing.pipeline_ns = time.monotonic_ns() - started
+                    record_property(
+                        "ctcc_closed_financial_phase_timing_v1", timing.serialized()
+                    )
+        finally:
+            if originals is not None:
+                timing.assert_restored(originals)
         await original._assert_reader_gone(admin, reader)
         acquisition = json.loads(result.acquisition_receipt_json)
         joined = json.loads(result.replay.receipt_json)
