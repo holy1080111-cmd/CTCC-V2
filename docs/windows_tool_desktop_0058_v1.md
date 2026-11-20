@@ -66,6 +66,9 @@ refuses a port collision. Stopping requires an explicit native confirmation
 and terminates only the held child process handle. It adds no HTTP shutdown,
 Arm, order, position-close or protection-cancel authority. A forced stop may
 leave a pending operation requiring the existing durable recovery procedure.
+The supervisor explicitly shows its own window and checks visibility after
+the inherited first-show state; a hidden CLI parent cannot silently hide the
+operator controls. This changes no system-wide visibility or security setting.
 
 The desktop helper supplies no qualification, Arm, reconciliation, order or
 release authority. It cannot migrate DB0017, adopt an older private profile,

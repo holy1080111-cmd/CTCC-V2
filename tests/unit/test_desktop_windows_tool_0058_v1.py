@@ -605,3 +605,39 @@ def test_actual_windows_direct_base_protocol_preserves_venv_and_native_listener_
         if child.poll() is None:
             child.terminate()
         child.wait(timeout=5)
+
+
+def test_supervisor_explicitly_shows_window_after_inherited_hidden_startup():
+    from scripts import desktop_windows_supervisor_v1 as supervisor
+
+    events = []
+
+    class User:
+        visible = False
+
+        def ShowWindow(self, window, mode):
+            events.append((window, mode))
+            if len(events) > 1:
+                self.visible = True
+
+        def IsWindowVisible(self, window):
+            assert window == 123
+            return self.visible
+
+        def UpdateWindow(self, window):
+            events.append((window, "updated"))
+
+    supervisor._show_supervisor_window(User(), 123)
+    assert events == [(123, 10), (123, 4), (123, "updated")]
+
+
+def test_invisible_supervisor_is_not_reported_as_ready():
+    from scripts import desktop_windows_supervisor_v1 as supervisor
+
+    user = SimpleNamespace(
+        ShowWindow=lambda *_: None,
+        IsWindowVisible=lambda _: False,
+        UpdateWindow=lambda _: pytest.fail("hidden UI accepted"),
+    )
+    with pytest.raises(ValueError):
+        supervisor._show_supervisor_window(user, 123)

@@ -41,6 +41,15 @@ def _command(owner, command, window):
     return False
 
 
+def _show_supervisor_window(user, window):
+    # Windows can ignore the first ShowWindow argument in favor of a hidden
+    # inherited STARTUPINFO. The second call explicitly shows this operator UI.
+    user.ShowWindow(window, 10)
+    user.ShowWindow(window, 4)
+    desktop._need(bool(user.IsWindowVisible(window)))
+    user.UpdateWindow(window)
+
+
 def supervise_owned_desktop_v1(owner):
     """Keep the original handle; never reconnect by a saved PID or port."""
     from ctypes import wintypes as w
@@ -92,6 +101,7 @@ def supervise_owned_desktop_v1(owner):
         "ShowWindow": ([w.HWND, ctypes.c_int], w.BOOL),
         "UpdateWindow": ([w.HWND], w.BOOL),
         "IsWindow": ([w.HWND], w.BOOL),
+        "IsWindowVisible": ([w.HWND], w.BOOL),
         "SetTimer": (
             [w.HWND, ctypes.c_size_t, w.UINT, ctypes.c_void_p],
             ctypes.c_size_t,
@@ -197,8 +207,7 @@ def supervise_owned_desktop_v1(owner):
             desktop._need(bool(child))
             user.SendMessageW(child, 0x30, font, 1)
         desktop._need(user.SetTimer(window, 1, 1000, None) == 1)
-        user.ShowWindow(window, 4)
-        user.UpdateWindow(window)
+        _show_supervisor_window(user, window)
         message = w.MSG()
         while True:
             state = user.GetMessageW(ctypes.byref(message), None, 0, 0)
