@@ -7,12 +7,14 @@ the unique close intent, terminal closure and final resource cleanup readback.
 
 from dataclasses import dataclass, field
 from decimal import Decimal
+from enum import Enum
 
 from app.domain.source_primitives import canonical, decode, sha
 from app.trade_evidence import execution_forensics as execution
 from app.trade_evidence import forensics as core
 from app.trade_evidence import native_forensics_v2 as entry
 from app.trade_qualification import native_close_final_facts_v1 as closing
+from app.trade_qualification import native_protective_exit_facts_v1 as protective
 from app.trade_qualification import native_reconciliation_facts_v1 as facts
 
 
@@ -26,8 +28,13 @@ class NativeClosedForensicsDataV55:
     order_retry_authority: bool = field(default=False, init=False)
 
 
-def reconstruct_native_closed_forensics_v55(
-    target, original, preflight, close_intent_json, final
+class ClosedForensicsProfileV1(Enum):
+    OWN_CLOSE = "own_close"
+    ORIGINAL_OCO = "original_oco"
+
+
+def _reconstruct_closed_forensics_profile(
+    target, original, preflight, close_intent_json, final, *, profile
 ):
     """Recompute terminal facts and existing FIFO/cost engines from actual rows.
 
@@ -36,9 +43,19 @@ def reconstruct_native_closed_forensics_v55(
     Bill generation time never supplies a funding effective-accrual timestamp.
     """
     try:
-        actual = closing.assess_native_closed_trade_v1(
-            target, original, preflight, close_intent_json, final
-        )
+        if type(profile) is not ClosedForensicsProfileV1:
+            raise ValueError("closed_forensics_profile_required")
+        original_oco = profile is ClosedForensicsProfileV1.ORIGINAL_OCO
+        if original_oco:
+            if preflight is not None or close_intent_json is not None:
+                raise ValueError("original_oco_cannot_use_local_close_intent")
+            actual = protective.assess_original_protective_exit_v1(
+                target, original, final
+            )
+        else:
+            actual = closing.assess_native_closed_trade_v1(
+                target, original, preflight, close_intent_json, final
+            )
         initial_analysis, _, initial_receipt = entry._entry_mapping(target, original)
         candidate = initial_analysis.inputs.candidate
         candidate_pin = core.candidate_sha256(candidate)
@@ -47,7 +64,13 @@ def reconstruct_native_closed_forensics_v55(
         fills, cashflows, links = [], [], []
         for prefix, order_id, role in (
             ("entry", terminal["entry_order_id"], "entry"),
-            ("close", terminal["close_order_id"], "exit"),
+            (
+                "exit" if original_oco else "close",
+                terminal["child_order_id"]
+                if original_oco
+                else terminal["close_order_id"],
+                "exit",
+            ),
         ):
             row_pages = {}
             query = {
@@ -95,7 +118,17 @@ def reconstruct_native_closed_forensics_v55(
                     side=row["side"],
                     contracts=Decimal(row["fillSz"]),
                     price=Decimal(row["fillPx"]),
-                    exit_reason="other" if role == "exit" else None,
+                    exit_reason=(
+                        (
+                            "take_profit"
+                            if terminal["trigger_side"] == "tp"
+                            else "stop_loss"
+                        )
+                        if original_oco
+                        else "other"
+                    )
+                    if role == "exit"
+                    else None,
                 )
                 fills.append(fill)
                 cashflows.append(
@@ -163,13 +196,21 @@ def reconstruct_native_closed_forensics_v55(
             analysis,
             expected_candidate_sha256=candidate_pin,
             policy=execution.ExecutionForensicsPolicy(
-                policy_id="native_owned_closed_references_unknown_v55",
+                policy_id=(
+                    "native_original_oco_references_unknown_v58"
+                    if original_oco
+                    else "native_owned_closed_references_unknown_v55"
+                ),
                 maximum_reference_age_ms=5000,
             ),
             references=(),
         )
         receipt = {
-            "version": "ctcc.native_closed_trade_forensics.v1",
+            "version": (
+                "ctcc.native_original_oco_forensics.v1"
+                if original_oco
+                else "ctcc.native_closed_trade_forensics.v1"
+            ),
             "reservation_id": target.reservation_id,
             "request_sha256": sha(target.request_json.encode()),
             "intent_sha256": target.intent_sha256,
@@ -195,8 +236,27 @@ def reconstruct_native_closed_forensics_v55(
         }
         raw = canonical(receipt)
         facts.need(0 < len(raw) <= 140000, "native_closed_forensics_receipt_capacity")
+        if original_oco:
+            from app.trade_evidence.native_protective_forensics_v58 import (
+                NativeProtectiveForensicsDataV58,
+            )
+
+            return NativeProtectiveForensicsDataV58(raw, analysis, costs)
         return NativeClosedForensicsDataV55(raw, analysis, costs)
     except Exception:  # noqa: BLE001 -- keep all private rows and identifiers redacted.
         raise entry.NativeForensicsError(
             "native_closed_forensics_reconstruction_invalid"
         ) from None
+
+
+def reconstruct_native_closed_forensics_v55(
+    target, original, preflight, close_intent_json, final
+):
+    return _reconstruct_closed_forensics_profile(
+        target,
+        original,
+        preflight,
+        close_intent_json,
+        final,
+        profile=ClosedForensicsProfileV1.OWN_CLOSE,
+    )
