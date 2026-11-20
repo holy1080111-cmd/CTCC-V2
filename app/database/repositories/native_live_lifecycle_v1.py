@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 from sqlalchemy.pool import NullPool
 
 from app.database.repositories import native_live_ledger_v1 as base
+from app.domain import native_live_controlled_close_schema_v1 as close_spec
 from app.domain import native_live_lifecycle_schema_v1 as spec
 from app.domain.native_live_inherited_acl_v1 import (
     require_inherited_live_data_helpers_v1,
@@ -39,7 +40,13 @@ _READ_TABLES = (
     "native_live_transitions_v1",
     *LEGACY_TABLES,
     spec.TABLES[1],
+    *close_spec.TABLES,
 )
+_CATALOG_TABLES = (*spec.TABLES, *close_spec.TABLES)
+_CATALOG_CHECKS = {**spec.TABLE_CHECKS, **close_spec.TABLE_CHECKS}
+_CATALOG_UNIQUES = {**spec.TABLE_UNIQUES, **close_spec.TABLE_UNIQUES}
+_CATALOG_PRIMARY_KEYS = {**spec.SOURCE_PRIMARY_KEYS, **close_spec.SOURCE_PRIMARY_KEYS}
+_CATALOG_FOREIGN_KEYS = {**spec.SOURCE_FOREIGN_KEYS, **close_spec.SOURCE_FOREIGN_KEYS}
 _SETTINGS = (
     "SET TRANSACTION ISOLATION LEVEL READ COMMITTED READ WRITE",
     "SET LOCAL search_path TO pg_catalog, public, pg_temp",
@@ -252,6 +259,12 @@ async def _catalog(session, pins):
         if statement.startswith("CREATE FUNCTION public."):
             name = statement.split("public.", 1)[1].split("(", 1)[0]
             functions[name] = sha(statement.split("$body$")[1].encode("utf8"))
+    for statement in close_spec.UPGRADE_SQL:
+        if statement.startswith(
+            ("CREATE FUNCTION public.", "CREATE OR REPLACE FUNCTION public.")
+        ):
+            name = statement.split("public.", 1)[1].split("(", 1)[0]
+            functions[name] = sha(statement.split("$body$")[1].encode("utf8"))
     records = (
         await session.execute(
             text("""SELECT p.proname::text,p.proowner::bigint,
@@ -274,6 +287,9 @@ async def _catalog(session, pins):
         spec.FUNCTIONS[3]: 25,
         spec.FUNCTIONS[4]: 2279,
         spec.FUNCTIONS[5]: 3802,
+        close_spec.FUNCTIONS[0]: 25,
+        close_spec.FUNCTIONS[1]: 25,
+        close_spec.FUNCTIONS[2]: 2279,
     }
     control_type = await session.scalar(
         text("SELECT 'public.native_live_controls_v1'::regtype::oid::bigint")
@@ -286,9 +302,9 @@ async def _catalog(session, pins):
         seen.add(name)
         nargs = (
             2
-            if name == spec.FUNCTIONS[3]
+            if name in (spec.FUNCTIONS[3], *close_spec.EXECUTABLE_FUNCTIONS)
             else 0
-            if name in (spec.FUNCTIONS[4], spec.FUNCTIONS[5])
+            if name in (spec.FUNCTIONS[4], spec.FUNCTIONS[5], close_spec.FUNCTIONS[2])
             else 1
         )
         _need(
@@ -296,7 +312,7 @@ async def _catalog(session, pins):
             == (
                 pins.owner_oid,
                 functions[name],
-                name != spec.FUNCTIONS[4],
+                name not in (spec.FUNCTIONS[4], close_spec.FUNCTIONS[2]),
                 ["search_path=pg_catalog, pg_temp"],
                 "f",
                 False,
@@ -324,12 +340,12 @@ async def _catalog(session, pins):
  NOT EXISTS(SELECT 1 FROM pg_catalog.pg_rewrite r WHERE r.ev_class=c.oid)
  FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
  WHERE n.nspname='public' AND c.relname=ANY(CAST(:names AS text[]))"""),
-            {"names": list(spec.TABLES)},
+            {"names": list(_CATALOG_TABLES)},
         )
     ).all()
     _need(
-        len(table_rows) == len(spec.TABLES)
-        and {r[0] for r in table_rows} == set(spec.TABLES)
+        len(table_rows) == len(_CATALOG_TABLES)
+        and {r[0] for r in table_rows} == set(_CATALOG_TABLES)
         and all(
             tuple(r[1:]) == (pins.owner_oid, "r", "p", False, False, None, True, True)
             for r in table_rows
@@ -354,14 +370,27 @@ async def _catalog(session, pins):
  FROM pg_catalog.pg_trigger t JOIN pg_catalog.pg_class c ON c.oid=t.tgrelid
  JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace JOIN pg_catalog.pg_proc p ON p.oid=t.tgfoid
  WHERE n.nspname='public' AND c.relname=ANY(CAST(:names AS text[])) AND NOT t.tgisinternal"""),
-            {"names": list(spec.TABLES)},
+            {"names": list(_CATALOG_TABLES)},
         )
     ).all()
     _need(
         {tuple(row) for row in triggers}
         == {
-            (table, table + "_immutable", "O", 31, spec.FUNCTIONS[4], 0, "", 0, True, 0)
-            for table in spec.TABLES
+            (
+                table,
+                table + "_immutable",
+                "O",
+                31,
+                close_spec.FUNCTIONS[2]
+                if table in close_spec.TABLES
+                else spec.FUNCTIONS[4],
+                0,
+                "",
+                0,
+                True,
+                0,
+            )
+            for table in _CATALOG_TABLES
         }
     )
     # Definer metadata returns fixed-source/actual EXPLAIN plans, never key rows.
@@ -370,7 +399,7 @@ async def _catalog(session, pins):
         text("SELECT public.native_live_lifecycle_catalog_v1()")
     )
     expected = {
-        (table, name) for table in spec.TABLES for name, _ in spec.TABLE_CHECKS[table]
+        (table, name) for table in _CATALOG_TABLES for name, _ in _CATALOG_CHECKS[table]
     }
     _need(type(plans) is list and len(plans) == len(expected))
     observed = set()
@@ -391,7 +420,7 @@ async def _catalog(session, pins):
 
 async def _structural_catalog(session):
     columns = {
-        spec.TABLES[0]: (
+        _CATALOG_TABLES[0]: (
             ("environment", 1043, 8, True, None),
             ("account_uid", 1043, 44, True, None),
             ("main_uid", 1043, 44, True, None),
@@ -404,7 +433,7 @@ async def _structural_catalog(session):
             ("key_material_sha256", 1043, 68, True, None),
             ("created_at", 1184, -1, True, "clock_timestamp()"),
         ),
-        spec.TABLES[1]: (
+        _CATALOG_TABLES[1]: (
             ("reservation_id", 1043, 68, True, None),
             ("sequence", 20, -1, True, None),
             ("environment", 1043, 8, True, None),
@@ -419,46 +448,48 @@ async def _structural_catalog(session):
             ("recorded_at", 1184, -1, True, "clock_timestamp()"),
         ),
     }
+    columns.update(close_spec.SOURCE_COLUMNS)
     rows = (
         await session.execute(
-            text("""SELECT c.relname::text,a.attname::text,a.atttypid::bigint,a.atttypmod,a.attnotnull,pg_get_expr(d.adbin,d.adrelid),a.attgenerated::text,a.attidentity::text,a.attisdropped
+            text("""SELECT c.relname::text,a.attname::text,a.atttypid::bigint,a.atttypmod,a.attnotnull,pg_get_expr(d.adbin,d.adrelid),a.attgenerated::text,a.attidentity::text,a.attisdropped,a.attcollation=column_type.typcollation
  FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
  JOIN pg_catalog.pg_attribute a ON a.attrelid=c.oid AND a.attnum>0
+ JOIN pg_catalog.pg_type column_type ON column_type.oid=a.atttypid
  LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid=c.oid AND d.adnum=a.attnum
  WHERE n.nspname='public' AND c.relname=ANY(CAST(:names AS text[])) ORDER BY c.relname,a.attnum"""),
-            {"names": list(spec.TABLES)},
+            {"names": list(_CATALOG_TABLES)},
         )
     ).all()
     _need(
         [tuple(row) for row in rows]
         == [
-            (table, *col, "", "", False)
+            (table, *col, "", "", False, True)
             for table in sorted(columns)
             for col in columns[table]
         ]
     )
     expected = {
         (table, "pk_" + table): ("p", fields, None, None)
-        for table, fields in spec.SOURCE_PRIMARY_KEYS.items()
+        for table, fields in _CATALOG_PRIMARY_KEYS.items()
     }
     expected.update(
         {
             (table, name): ("u", fields, None, None)
-            for table in spec.TABLES
-            for name, fields in spec.TABLE_UNIQUES[table]
+            for table in _CATALOG_TABLES
+            for name, fields in _CATALOG_UNIQUES[table]
         }
     )
     expected.update(
         {
             key: ("f", fields, parent, parent_fields)
-            for key, (fields, parent, parent_fields) in spec.SOURCE_FOREIGN_KEYS.items()
+            for key, (fields, parent, parent_fields) in _CATALOG_FOREIGN_KEYS.items()
         }
     )
     expected.update(
         {
             (table, name): ("c", None, None, None)
-            for table in spec.TABLES
-            for name, _ in spec.TABLE_CHECKS[table]
+            for table in _CATALOG_TABLES
+            for name, _ in _CATALOG_CHECKS[table]
         }
     )
     entries = (
@@ -471,7 +502,7 @@ async def _structural_catalog(session):
  FROM pg_catalog.pg_constraint k JOIN pg_catalog.pg_class c ON c.oid=k.conrelid JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
  LEFT JOIN pg_catalog.pg_class pc ON pc.oid=k.confrelid LEFT JOIN pg_catalog.pg_namespace pn ON pn.oid=pc.relnamespace
  WHERE n.nspname='public' AND c.relname=ANY(CAST(:names AS text[]))"""),
-            {"names": list(spec.TABLES)},
+            {"names": list(_CATALOG_TABLES)},
         )
     ).all()
     _need(len(entries) == len(expected))
@@ -504,7 +535,7 @@ async def _structural_catalog(session):
             text("""SELECT t.relname::text,c.relname::text,i.indisunique,i.indisprimary,i.indisvalid,i.indisready,i.indislive,i.indimmediate,i.indpred IS NULL,i.indexprs IS NULL,pg_get_indexdef(i.indexrelid)
  FROM pg_catalog.pg_index i JOIN pg_catalog.pg_class t ON t.oid=i.indrelid JOIN pg_catalog.pg_class c ON c.oid=i.indexrelid
  JOIN pg_catalog.pg_namespace n ON n.oid=t.relnamespace WHERE n.nspname='public' AND t.relname=ANY(CAST(:names AS text[]))"""),
-            {"names": list(spec.TABLES)},
+            {"names": list(_CATALOG_TABLES)},
         )
     ).all()
     _need(len(indexes) == len(expected_indexes))
@@ -551,7 +582,16 @@ async def _profile(session, pins):
     )
     _need(
         (await session.execute(base._ROUTINES)).all()
-        == [(name,) for name in sorted((*spec.EXECUTABLE_FUNCTIONS, *inherited))]
+        == [
+            (name,)
+            for name in sorted(
+                (
+                    *spec.EXECUTABLE_FUNCTIONS,
+                    *close_spec.EXECUTABLE_FUNCTIONS,
+                    *inherited,
+                )
+            )
+        ]
     )
     _need(
         await session.scalar(

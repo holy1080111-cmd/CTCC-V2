@@ -53,7 +53,7 @@ def test_system_or_unquoted_actor_names_never_generate_sql(name):
 
 def test_reconciler_grants_are_read_only_except_closed_procedures_and_hide_key_table():
     statements = spec.live_lifecycle_reconciler_grant_sql_v1("ctcc_reconciler")
-    assert len(statements) == 17
+    assert len(statements) == 21
     assert not any(
         word in statement
         for statement in statements
@@ -70,7 +70,7 @@ def test_reconciler_grants_are_read_only_except_closed_procedures_and_hide_key_t
         "TABLE public.native_live_lifecycle_keys_v1" in statement
         for statement in statements
     )
-    assert sum("GRANT EXECUTE" in statement for statement in statements) == 5
+    assert sum("GRANT EXECUTE" in statement for statement in statements) == 7
 
 
 def test_guard_delta_preserves_all_original_insert_caps_and_exact_rollback():

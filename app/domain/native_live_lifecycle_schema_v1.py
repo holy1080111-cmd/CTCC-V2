@@ -323,6 +323,10 @@ def live_lifecycle_reconciler_grant_sql_v1(name):
         *legacy,
         TABLES[1],
     )
+    from app.domain.native_live_controlled_close_schema_v1 import (
+        additional_reconciler_grant_sql_v1,
+    )
+
     return (
         f'GRANT USAGE ON SCHEMA public TO "{name}"',
         *(f'GRANT SELECT ON TABLE public.{table} TO "{name}"' for table in read),
@@ -336,6 +340,7 @@ def live_lifecycle_reconciler_grant_sql_v1(name):
                 (FUNCTIONS[5], "()"),
             )
         ),
+        *additional_reconciler_grant_sql_v1(name),
     )
 
 
