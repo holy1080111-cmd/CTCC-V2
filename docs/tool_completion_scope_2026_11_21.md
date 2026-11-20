@@ -19,6 +19,7 @@ no final release has been made.
 | HighVol Momentum | [Canonical profile](high_vol_momentum_qualification_v1.md); private setup selects it explicitly, default Standard, same risk/G12/recheck/reservation/intent boundary. |
 | Manual Live | [Dedicated loopback interface](native_live_manual_tool_v1.md), default OFF, current human entry challenge and separate bounded one-shot close confirmation. |
 | Stopped-state setup | [Genuine0058 owner procedure](windows_tool0058_stopped_setup.md); preserves DB0017 and its unresolved state. |
+| Retained database inspection | [Read-only0017 inventory and upgrade plan](retained0017_owner_readonly_plan_v1.md); requires an independently identified clone, preserves SQL-null distinctions, and supplies no migration or execution permission. |
 | Reports/Notion | Independent durable workers; [root identity pin](native_notion_root_identity_pin_v1.md) preserves separate exclusive publisher transactions. |
 | Validation | [Five PostgreSQL components plus eight shards](current0058_parallel_validation.md), exact collection/JUnit/source union with no omitted case. |
 
@@ -142,6 +143,25 @@ and original file identity, size and modification time remain unchanged.
 This preserves the original state but does not prove a PostgreSQL restore,
 current migration head or exchange exposure. Raw VM contents are excluded from
 Git, reports, Notion and the release bundle. No old container was started.
+
+Offline inspection identified one PostgreSQL17 volume belonging to the preserved
+installation. A new private physical copy retains all1,607 entries:1,579 regular
+files and28 directories, totaling136,846,581 regular-file bytes. Each file was
+fsynced and independently reopened/hash-checked; original inode/layout metadata
+and the copy hashes remain private. The complete raw files are excluded from
+release evidence. Root readback receipt SHA256:
+`a8e99ab2e76ab6e5418761723b0c7d0e53ab527c9cf1688f5e7c34c691d5155c`.
+This is preservation evidence; no SQL connection, restore or schema acceptance
+occurred.
+
+The retained-state installer still needs a reviewed17→55 operation, followed by
+the existing canonical55→56→57→58 chain, private TLS/roles and reconciliation.
+The new read-only inspection tool prepares that work without changing rows or
+turning an unknown account into an empty one. Source70d15cb passed57 scoped unit cases;
+13 actual PostgreSQL cases are authored/collected and await execution. The
+original source17 INET column is explicitly included in its bounded builtin
+type inventory. Current owner migration row proofs are also being hardened to
+distinguish SQL NULL from JSON null; old source-specific receipts are retained.
 
 Final-source Windows/Linux/PostgreSQL/Docker regression, installed activation,
 final secret audit, matching GitHub CI, PR/main/release and final immutable
