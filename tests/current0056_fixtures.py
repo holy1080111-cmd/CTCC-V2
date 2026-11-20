@@ -37,3 +37,38 @@ async def read_current0056_preserved_parent(connection):
         "account_complete": False,
         "execution_authority": False,
     }
+
+
+async def read_current_native_preserved_parent_v1(connection):
+    """Verify unchanged account ancestors on real main-head57 or58 databases.
+
+    The head is independently read and preserved, never supplied as52/55/56.
+    This test helper issues no native source, account, role or trading authority.
+    """
+    scope = scopes.actual_current_source_scope(ROOT)
+    assert scope.actual_source_head in {"0057", "0058"}
+    assert scope.database_target == scope.actual_source_head
+
+    def source_check(sync_connection):
+        return scopes.verify_database_scope(sync_connection, ROOT, scope)
+
+    observed_scope = await connection.run_sync(source_check)
+    first = await historical52._actual_historical0052_state(connection)
+    assert first["observed_head"] == scope.database_target
+    parent = current54._parent_readback(first)
+    original_frame = frame.verify_owner_installation_catalog(
+        first["original_frame_catalog"], first["partition_catalog"]
+    )
+    assert original_frame["revision"] == "0052"
+    assert await historical52._actual_historical0052_state(connection) == first
+    assert await connection.run_sync(source_check) == observed_scope
+    return {
+        **parent,
+        "schema": "ctcc.current_native.preserved_parent_readback.v1",
+        "expected": scope.database_target,
+        "observed": first["observed_head"],
+        "original_history_frame_owner_installation": original_frame,
+        "source_scope": observed_scope,
+        "account_complete": False,
+        "execution_authority": False,
+    }

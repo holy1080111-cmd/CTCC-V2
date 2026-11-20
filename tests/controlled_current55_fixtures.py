@@ -41,7 +41,7 @@ def migrate_current55(connection, target="0055", *, down=False):
     config.set_main_option("script_location", str(ROOT / "migrations"))
     script = ScriptDirectory.from_config(config)
     source_head = script.get_current_head()
-    if source_head == "0056":
+    if source_head in {"0056", "0057", "0058"}:
         scope = database0055_source_scope(ROOT)
         assert scope.actual_source_head == source_head
         assert scope.database_target == "0055"
