@@ -77,7 +77,7 @@ def test_image_includes_core_blueprint_acceptance_inputs_explicitly() -> None:
         line.strip() for line in dockerfile.splitlines() if line.startswith("COPY ")
     }
     assert (
-        "COPY README.md Dockerfile MANIFEST.sha256 compose.yaml .env.example .gitignore .dockerignore .gitattributes ./"
+        "COPY README.md Dockerfile MANIFEST.sha256 compose.yaml .env.example .gitignore .dockerignore .gitattributes Open-CTCC.cmd ./"
         in copy_lines
     )
     assert "COPY config ./config" in copy_lines
@@ -86,5 +86,10 @@ def test_image_includes_core_blueprint_acceptance_inputs_explicitly() -> None:
     assert "COPY .env " not in dockerfile
     ignored = (root / ".dockerignore").read_text(encoding="utf-8").splitlines()
     assert ".env*" in ignored and "!.env.example" in ignored
-    for relative in ("README.md", "Dockerfile", "config/ctcc_core_blueprint.json"):
+    for relative in (
+        "README.md",
+        "Dockerfile",
+        "Open-CTCC.cmd",
+        "config/ctcc_core_blueprint.json",
+    ):
         assert (root / relative).is_file()
