@@ -11,6 +11,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# The source/archive installer tests use real isolated Git repositories. Keep
+# the genuine tool available in immutable validation instead of skipping them.
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends git \
+    && git --version \
+    && dpkg-query -W -f='${Package}\t${Version}\n' > /usr/local/share/ctcc-validation-os-packages.tsv \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN addgroup --system ctcc \
     && adduser --system --ingroup ctcc ctcc \
     && install -d -m 0750 -o ctcc -g ctcc /run/ctcc-analysis \
@@ -24,7 +32,7 @@ COPY alembic.ini ./
 COPY tests ./tests
 COPY scripts ./scripts
 COPY docs ./docs
-COPY README.md Dockerfile MANIFEST.sha256 compose.yaml .env.example .gitignore .dockerignore .gitattributes ./
+COPY README.md Dockerfile MANIFEST.sha256 compose.yaml .env.example .gitignore .dockerignore .gitattributes Open-CTCC.cmd ./
 COPY config ./config
 COPY requirements ./requirements
 
