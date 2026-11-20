@@ -46,5 +46,7 @@ jobs:
             ${{ runner.temp }}/ctcc-owner58-regression/*.json
             ${{ runner.temp }}/ctcc-owner58-regression/*.log
             ${{ runner.temp }}/ctcc-owner58-regression/test-results/*.xml
+            ${{ runner.temp }}/ctcc-owner58-regression/test-results/*.json
+            ${{ runner.temp }}/ctcc-owner58-regression/test-results/*.log
           if-no-files-found: error
           retention-days: 30

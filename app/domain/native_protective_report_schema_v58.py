@@ -6,22 +6,26 @@ numeric spelling; reversing both reconstructs the exact55 function. There is
 no fabricated own-close intent or preflight.
 """
 
+import json
 from hashlib import sha256
 
 from app.domain import native_closed_report_schema_v55 as ancestor
 from app.domain import native_protective_hold_schema_v58 as hold
-from app.domain.source_primitives import canonical, decode
 
 FORENSICS_VERSION = "ctcc.native_original_oco_forensics_readback.v1"
 CLEANUP_VERSION = "ctcc.native_original_oco_cleanup.v1"
 READY_VERSION = "ctcc.native_original_oco_report_ready.v1"
 REPORT_POLICY_VERSION = "ctcc.native_original_oco_observed_unknowns.v58"
-_policy = decode(ancestor.REPORT_POLICY_JSON.encode())
+# This is the fixed source-owned ancestor literal, never caller/raw input.
+# Keep SPEC construction stdlib-only for independent hermetic host readback.
+_policy = json.loads(ancestor.REPORT_POLICY_JSON)
 _policy.update(
     version=REPORT_POLICY_VERSION,
     eligibility="original_oco_closed_flat_and_retired_read_resources_and_exact_two_group_forensic_replay",
 )
-REPORT_POLICY_JSON = canonical(_policy).decode()
+REPORT_POLICY_JSON = json.dumps(
+    _policy, ensure_ascii=True, sort_keys=True, separators=(",", ":"), allow_nan=False
+)
 REPORT_POLICY_SHA256 = sha256(REPORT_POLICY_JSON.encode()).hexdigest()
 del _policy
 

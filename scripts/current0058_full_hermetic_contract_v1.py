@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 from scripts import current0057_full_hermetic_contract_v1 as base
 from scripts import current0057_hermetic_contract as historical57
@@ -239,6 +240,26 @@ def cleanup_inventory(mode, index, prefix):
 
 def require_host_code(files):
     base._require_host_code(files, HOST_HELPERS, need=_need)
+    _require_loaded_app_sources(files)
+
+
+def _require_loaded_app_sources(files):
+    """Bind late-imported pure SPEC dependencies to the same exact archive."""
+    root = Path(__file__).resolve().parents[1]
+    for name, module in tuple(sys.modules.items()):
+        if name == "app" or name.startswith("app."):
+            filename = getattr(module, "__file__", None)
+            _need(type(filename) is str)
+            path = Path(filename)
+            _need(
+                path.is_absolute()
+                and path.suffix == ".py"
+                and path.is_relative_to(root / "app")
+                and not path.is_symlink()
+                and path.is_file()
+            )
+            relative = path.relative_to(root).as_posix()
+            _need(digest(path.read_bytes()) == files.get(relative, {}).get("sha256"))
 
 
 def required_cases(mode, index):
@@ -365,7 +386,7 @@ def measurement_environment(mode, index):
 
 
 def verify_component(root, archive, *, commit, tree, manifest_sha256):
-    return base._verify_component(
+    verified = base._verify_component(
         sys.modules[__name__],
         root,
         archive,
@@ -373,3 +394,11 @@ def verify_component(root, archive, *, commit, tree, manifest_sha256):
         tree=tree,
         manifest_sha256=manifest_sha256,
     )
+    # Measurement replay may import source-owned pure SQL SPEC modules late.
+    # Check their actual host bytes as well; never adopt a different checkout.
+    mapping = _read(root, "source-files.json")
+    _need(digest(mapping) == verified["identity"]["source_files_sha256"])
+    from scripts.evidence_json import read_evidence_json
+
+    require_host_code(read_evidence_json(mapping))
+    return verified
