@@ -44,7 +44,8 @@ def _rows():
 def test_allowlist_is_finite_exact_invoker_helpers_not_demo_or_live_authority():
     rows = _rows()
     names = subject.verify_inherited_live_helper_rows_v1(rows, owner_oid=16384)
-    assert len(names) == 12 and "qualification_native_plain_v55" in names
+    assert len(names) == 13 and "qualification_native_plain_v55" in names
+    assert "qualification_native_protective_flat_data_v58" in names
     assert all(
         row["security_definer"] is False and row["returns"] != "trigger" for row in rows
     )

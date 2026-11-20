@@ -38,6 +38,8 @@ REQUIRED_CASES = tuple(
         "test_actual58_estop_or_expiry_refuses_before_creating_any_hold",
         "test_actual58_direct_sql_cannot_make_null_armed_or_unknown_caps",
         "test_actual58_downgrade_refuses_retained_control_without_deleting_custody",
+        "test_actual58_effective_maintain_drift_blocks_data_hold",
+        "test_actual58_negative_procedures_cannot_arm_or_clear_estop",
     )
 )
 _MAX_ARCHIVE = 128 * 1024 * 1024
@@ -347,7 +349,7 @@ def run_probe(args, raw, files, root):
                 allow_unrelated_skips=False,
             )
             need(
-                report["tests"] == 14
+                report["tests"] == 16
                 and report["passed"] == report["tests"]
                 and report["skipped"] == 0
             )

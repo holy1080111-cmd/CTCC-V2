@@ -11,6 +11,7 @@ from sqlalchemy import text
 from app.domain import native_closed_report_schema_v55 as reports
 from app.domain import native_filled_flat_closure_schema_v55 as filled
 from app.domain import native_leverage_configuration_schema_v55 as leverage
+from app.domain import native_protective_hold_schema_v58 as protective
 from app.domain.source_primitives import canonical, sha
 
 
@@ -51,7 +52,15 @@ def inherited_live_data_helper_specs_v1():
                 sql.split("$f$")[1],
                 ["search_path=pg_catalog, public, pg_temp"],
             )
-    if len(specs) != 12:
+    specs[protective.FUNCTION] = (
+        protective.FUNCTION_IDENTITY,
+        "boolean",
+        "plpgsql",
+        "v",
+        protective.PREDICATE_SQL.split("$ctcc$")[1],
+        ["search_path=pg_catalog, pg_temp"],
+    )
+    if len(specs) != 13:
         raise ValueError("native_live_inherited_helper_scope_changed")
     return specs
 
