@@ -170,6 +170,27 @@ class LiveSourcePageDataV1:
     request_signature_sha256: str
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class _LiveCredentialMaterialV1:
+    credentials: tuple[str, str, str]
+    origin: str
+    user_agent: str
+    timeout_seconds: float
+
+
+def _owned_live_credential_material_v1(owner, *, key):
+    """Private physical scope only; neither a saved receipt nor a key is enough."""
+    from app.exchange.okx import native_live_write_v1 as physical
+
+    _need(key is physical._CREDENTIAL_SOURCE_KEY_V1)
+    physical._require_live_source_access_v1(owner, key=key)
+    _replay_owned_live_source_v1(owner, key=_SOURCE_KEY)
+    pin = _SOURCES[owner]["lease"]._pin
+    return _LiveCredentialMaterialV1(
+        pin.credentials, pin.origin, pin.user_agent, pin.timeout_seconds
+    )
+
+
 def _page_data(page, chain, custody):
     return LiveSourcePageDataV1(
         page.selector,
