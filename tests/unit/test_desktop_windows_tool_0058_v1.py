@@ -4,8 +4,11 @@ import io
 import json
 import os
 import socket
+import subprocess
 import sys
+import time
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
@@ -26,6 +29,8 @@ def plan(tmp_path, mode="analysis"):
         mode,
         18282,
         "c" * 64,
+        tmp_path / "base/python.exe",
+        "d" * 64,
     )
 
 
@@ -277,10 +282,12 @@ def process_fixture(tmp_path, monkeypatch, *, browser=True):
     monkeypatch.setattr(desktop, "_plan", lambda _: value)
     monkeypatch.setattr(desktop, "_listening_pid", lambda _: 1234)
     monkeypatch.setattr(desktop, "_ready", lambda *_: True)
+    monkeypatch.setattr(desktop, "_owned_process_image", lambda *_, **__: 123456)
     monkeypatch.setattr(desktop.secrets, "token_hex", lambda _: "1" * 64)
     monkeypatch.setenv("OKX_LIVE_API_SECRET", "credential_must_not_escape")
     monkeypatch.setenv("CTCC_API_TOKEN", "credential_must_not_escape")
     monkeypatch.setenv("HTTP_PROXY", "http://credential_must_not_escape")
+    monkeypatch.setenv("__PYVENV_LAUNCHER__", "foreign_launcher_must_not_escape")
 
     def create(command, **kwargs):
         observed.append((command, kwargs))
@@ -302,6 +309,9 @@ def test_owned_hidden_child_has_no_secret_or_nonce_in_arguments_environment_logs
     desktop.launch(value)
     command, options = observed[0]
     assert "credential_must_not_escape" not in str((command, options, browsers))
+    assert "foreign_launcher_must_not_escape" not in str((command, options, browsers))
+    assert command[0] == str(value.base_interpreter)
+    assert options["env"]["__PYVENV_LAUNCHER__"] == str(value.interpreter)
     assert "1" * 64 not in str((command, options, browsers))
     assert options["stdout"] is options["stderr"] is desktop.subprocess.DEVNULL
     assert options["creationflags"] == 0x08000000
@@ -407,3 +417,191 @@ def test_native_windows_listener_pid_and_collision_are_measured_without_an_appli
         assert desktop._listening_pid(port) == os.getpid()
         with pytest.raises(OSError):
             desktop._require_free_port(port)
+
+
+def test_native_windows_process_handle_image_birth_and_hash_are_observed(tmp_path):
+    if sys.platform != "win32":
+        with pytest.raises(ValueError):
+            desktop._owned_process_image(
+                SimpleNamespace(poll=lambda: None), plan(tmp_path)
+            )
+        return
+    import ctypes
+
+    api = ctypes.WinDLL("kernel32", use_last_error=True)
+    api.GetCurrentProcess.argtypes, api.GetCurrentProcess.restype = [], ctypes.c_void_p
+    process = SimpleNamespace(
+        poll=lambda: None, pid=os.getpid(), _handle=api.GetCurrentProcess()
+    )
+    image = __import__("pathlib").Path(sys._base_executable).resolve()
+    value = replace(
+        plan(tmp_path),
+        base_interpreter=image,
+        base_interpreter_sha256=desktop.package.sha(
+            desktop.package.regular(image, 20_000_000)
+        ),
+    )
+    stamp = desktop._owned_process_image(process, value)
+    assert desktop._owned_process_image(process, value, stamp) == stamp
+    with pytest.raises(ValueError):
+        desktop._owned_process_image(process, value, stamp + 1)
+    with pytest.raises(ValueError):
+        desktop._owned_process_image(
+            process, replace(value, base_interpreter_sha256="f" * 64)
+        )
+    with pytest.raises(ValueError):
+        desktop._owned_process_image(
+            process, replace(value, base_interpreter=tmp_path / "foreign.exe")
+        )
+    with pytest.raises(ValueError):
+        desktop._owned_process_image(
+            SimpleNamespace(
+                poll=lambda: None, pid=os.getpid() + 1, _handle=process._handle
+            ),
+            value,
+        )
+
+
+def test_direct_base_image_drift_refuses_before_stdin_or_browser(tmp_path, monkeypatch):
+    value, process, _, browsers = process_fixture(tmp_path, monkeypatch)
+
+    def reject(*_):
+        raise ValueError("image_changed")
+
+    monkeypatch.setattr(desktop, "_owned_process_image", reject)
+    with pytest.raises(ValueError):
+        desktop.launch(value)
+    assert process.terminated and process.stdin.parts == [] and browsers == []
+
+
+def test_supervisor_reopens_only_original_still_owned_verified_child(
+    tmp_path, monkeypatch
+):
+    value, process, _, browsers = process_fixture(tmp_path, monkeypatch)
+    owner = desktop.launch(value)
+    desktop.reopen_owned_desktop_v1(owner)
+    assert len(browsers) == 2 and process.terminated is False
+    monkeypatch.setattr(desktop, "_listening_pid", lambda _: 999)
+    with pytest.raises(ValueError):
+        desktop.reopen_owned_desktop_v1(owner)
+    assert len(browsers) == 2 and process.terminated is False
+
+
+def test_supervisor_rechecks_profile_before_reopening(tmp_path, monkeypatch):
+    value, process, _, browsers = process_fixture(tmp_path, monkeypatch)
+    owner = desktop.launch(value)
+    monkeypatch.setattr(
+        desktop, "_plan", lambda _: replace(value, profile_sha256="f" * 64)
+    )
+    with pytest.raises(ValueError):
+        desktop.reopen_owned_desktop_v1(owner)
+    assert len(browsers) == 1 and process.terminated is False
+
+
+def test_caller_created_session_cannot_reopen_or_stop_a_process():
+    forged = desktop.DesktopSessionV1()
+    with pytest.raises(ValueError):
+        desktop.reopen_owned_desktop_v1(forged)
+    with pytest.raises(ValueError):
+        desktop.stop_owned_desktop_v1(forged)
+
+
+@pytest.mark.parametrize("confirmed", [False, True])
+def test_native_supervisor_stop_requires_explicit_confirmation(
+    tmp_path, monkeypatch, confirmed
+):
+    from scripts import desktop_windows_supervisor_v1 as supervisor
+
+    value, process, _, _ = process_fixture(tmp_path, monkeypatch)
+    owner = desktop.launch(value)
+    monkeypatch.setattr(supervisor, "_confirm_stop", lambda _: confirmed)
+    assert supervisor._command(owner, 101, 123) is confirmed
+    assert process.terminated is confirmed
+    if confirmed:
+        with pytest.raises(ValueError):
+            desktop.stop_owned_desktop_v1(owner)
+
+
+def test_main_supervises_only_returned_owned_child(tmp_path, monkeypatch):
+    from scripts import desktop_windows_supervisor_v1 as supervisor
+
+    value, process, _, _ = process_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(desktop, "_select_profile", lambda: value.profile)
+    owners = []
+    monkeypatch.setattr(supervisor, "supervise_owned_desktop_v1", owners.append)
+    assert desktop.main() == 0
+    assert len(owners) == 1 and desktop._session(owners[0])[0] is process
+
+
+def test_supervisor_failure_never_claims_ready_child_was_not_started(
+    tmp_path, monkeypatch
+):
+    from scripts import desktop_windows_supervisor_v1 as supervisor
+
+    value, process, _, _ = process_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(desktop, "_select_profile", lambda: value.profile)
+
+    def fail(_):
+        raise ValueError("private_must_not_escape")
+
+    messages = []
+    monkeypatch.setattr(supervisor, "supervise_owned_desktop_v1", fail)
+    monkeypatch.setattr(desktop, "_message", messages.append)
+    assert desktop.main() == 1 and process.terminated is False
+    assert "本機工具已啟動" in str(messages) and "private_must_not_escape" not in str(
+        messages
+    )
+
+
+def test_actual_windows_direct_base_protocol_preserves_venv_and_native_listener_pid(
+    tmp_path,
+):
+    if sys.platform != "win32":
+        with pytest.raises(ValueError):
+            desktop._require_free_port(18368)
+        return
+    output = tmp_path / "public-process-proof.json"
+    code = (
+        "import json,os,socket,sys;from pathlib import Path;"
+        "s=socket.socket();s.bind(('127.0.0.1',0));s.listen(1);"
+        "Path(sys.argv[1]).write_text(json.dumps({'pid':os.getpid(),"
+        "'port':s.getsockname()[1],'executable_exact':sys.executable==sys.argv[2],"
+        "'prefix_exact':sys.prefix==sys.argv[3],'version':list(sys.version_info[:3])}));"
+        "sys.stdin.buffer.read(1)"
+    )
+    base = Path(sys._base_executable).resolve()
+    environment = {
+        name: value
+        for name, value in os.environ.items()
+        if name.upper() in desktop._ENV_NAMES
+    }
+    environment["__PYVENV_LAUNCHER__"] = sys.executable
+    child = subprocess.Popen(
+        [str(base), "-I", "-B", "-c", code, str(output), sys.executable, sys.prefix],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+        env=environment,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not output.exists() and time.monotonic() < deadline:
+            assert child.poll() is None
+            time.sleep(0.02)
+        actual = json.loads(output.read_bytes())
+        assert actual["pid"] == child.pid == desktop._listening_pid(actual["port"])
+        assert actual["executable_exact"] is actual["prefix_exact"] is True
+        assert actual["version"] == list(sys.version_info[:3])
+        value = replace(
+            plan(tmp_path),
+            base_interpreter=base,
+            base_interpreter_sha256=desktop.package.sha(
+                desktop.package.regular(base, 20_000_000)
+            ),
+        )
+        assert desktop._owned_process_image(child, value) > 0
+    finally:
+        if child.poll() is None:
+            child.terminate()
+        child.wait(timeout=5)

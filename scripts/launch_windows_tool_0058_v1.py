@@ -262,6 +262,7 @@ def main(arguments=None):
         # substitute for the separately installed exact Windows lock.
         package.need(
             Path(sys.executable).resolve() == root / "runtime/Scripts/python.exe"
+            and Path(sys.prefix).resolve() == root / "runtime"
         )
         package.verify_dependencies(root)
         with runtime_lock(root):

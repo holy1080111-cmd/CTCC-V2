@@ -16,6 +16,7 @@ import socket
 import subprocess
 import sys
 import time
+import weakref
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.error import URLError
@@ -47,13 +48,14 @@ _ENV_NAMES = frozenset(
 
 
 class BrowserNotOpened(ValueError):
-    def __init__(self, mode, port):
+    def __init__(self, mode, port, owner=None):
         _need(
             mode in ("analysis", "demo", "live")
             and type(port) is int
             and 1024 <= port <= 65535
         )
         self.url = f"http://127.0.0.1:{port}/" + ("" if mode == "live" else "dashboard")
+        self.owner = owner
         super().__init__("ctcc_desktop_browser_not_opened")
 
 
@@ -67,7 +69,16 @@ class DesktopLaunchPlanV1:
     mode: str
     port: int
     profile_sha256: str
+    base_interpreter: Path
+    base_interpreter_sha256: str
     execution_authority: bool = field(default=False, init=False)
+
+
+class DesktopSessionV1:
+    __slots__ = ("__weakref__",)
+
+
+_SESSIONS = weakref.WeakKeyDictionary()
 
 
 def _need(value):
@@ -154,6 +165,11 @@ def _plan(profile):
     _need(_private(profile) == original)
     interpreter = expected / "python.exe"
     package.regular(interpreter, 20_000_000)
+    base = Path(sys._base_executable)
+    _need(base.is_absolute() and base.name.casefold() in ("python.exe", "pythonw.exe"))
+    base = base.with_name("python.exe")
+    _need(base.resolve(strict=True) == base)
+    base_sha256 = package.sha(package.regular(base, 20_000_000))
     # Discard the settings/token mapping. Only safe launch metadata crosses
     # this boundary, while the child independently rereads the private file.
     return DesktopLaunchPlanV1(
@@ -165,7 +181,42 @@ def _plan(profile):
         document["mode"],
         document["port"],
         package.sha(original),
+        base,
+        base_sha256,
     )
+
+
+def _owned_process_image(process, plan, creation=None):
+    """The retained native handle, executable image and birth time must agree."""
+    from ctypes import wintypes as w
+
+    _need(sys.platform == "win32" and process.poll() is None)
+    api = ctypes.WinDLL("kernel32", use_last_error=True)
+    api.GetProcessId.argtypes, api.GetProcessId.restype = [w.HANDLE], w.DWORD
+    api.QueryFullProcessImageNameW.argtypes = [
+        w.HANDLE,
+        w.DWORD,
+        w.LPWSTR,
+        ctypes.POINTER(w.DWORD),
+    ]
+    api.QueryFullProcessImageNameW.restype = w.BOOL
+    api.GetProcessTimes.argtypes = [w.HANDLE] + [ctypes.POINTER(w.FILETIME)] * 4
+    api.GetProcessTimes.restype = w.BOOL
+    handle = int(process._handle)
+    _need(api.GetProcessId(handle) == process.pid)
+    length = w.DWORD(32768)
+    image = ctypes.create_unicode_buffer(length.value)
+    _need(bool(api.QueryFullProcessImageNameW(handle, 0, image, ctypes.byref(length))))
+    _need(Path(image.value).resolve(strict=True) == plan.base_interpreter)
+    times = [w.FILETIME() for _ in range(4)]
+    _need(bool(api.GetProcessTimes(handle, *(ctypes.byref(value) for value in times))))
+    actual = (times[0].dwHighDateTime << 32) | times[0].dwLowDateTime
+    _need(actual > 0 and (creation is None or actual == creation))
+    _need(
+        package.sha(package.regular(plan.base_interpreter, 20_000_000))
+        == plan.base_interpreter_sha256
+    )
+    return actual
 
 
 def _require_free_port(port):
@@ -278,8 +329,13 @@ def launch(plan):
     environment = {
         name: value for name, value in os.environ.items() if name.upper() in _ENV_NAMES
     }
+    # The same closed protocol is used by CPython's Windows multiprocessing:
+    # bypass the venv redirector, preserving the exact isolated executable and
+    # prefix. This makes Popen's retained handle own the actual listening PID.
+    # An ambient __PYVENV_LAUNCHER__ is never copied.
+    environment["__PYVENV_LAUNCHER__"] = str(plan.interpreter)
     command = [
-        str(plan.interpreter),
+        str(plan.base_interpreter),
         "-I",
         "-B",
         "-c",
@@ -305,6 +361,7 @@ def launch(plan):
         _need(
             type(process.pid) is int and process.pid > 0 and process.stdin is not None
         )
+        creation = _owned_process_image(process, plan)
         message = package.canonical(
             {
                 "schema": STARTUP_SCHEMA,
@@ -329,16 +386,19 @@ def launch(plan):
                 _need(
                     process.poll() is None and _listening_pid(plan.port) == process.pid
                 )
+                _owned_process_image(process, plan, creation)
                 suffix = "/" if plan.mode == "live" else "/dashboard"
                 url = f"http://127.0.0.1:{plan.port}{suffix}"
                 ready_child = True
+                owner = DesktopSessionV1()
+                _SESSIONS[owner] = (process, plan, nonce, creation)
                 try:
                     opened = webbrowser.open(url, new=2, autoraise=True)
                 except Exception:  # noqa: BLE001 -- retain a genuinely ready child; never expose browser internals.
                     opened = False
                 if opened is not True:
-                    raise BrowserNotOpened(plan.mode, plan.port) from None
-                return
+                    raise BrowserNotOpened(plan.mode, plan.port, owner) from None
+                return owner
             time.sleep(0.2)
         _need(False)
     finally:
@@ -350,6 +410,38 @@ def launch(plan):
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 _need(False)
+
+
+def _session(owner):
+    _need(type(owner) is DesktopSessionV1 and owner in _SESSIONS)
+    return _SESSIONS[owner]
+
+
+def reopen_owned_desktop_v1(owner):
+    process, plan, nonce, creation = _session(owner)
+    _need(_plan(plan.profile) == plan)
+    _owned_process_image(process, plan, creation)
+    _need(_ready(plan, nonce, process.pid))
+    _owned_process_image(process, plan, creation)
+    _need(_listening_pid(plan.port) == process.pid)
+    import webbrowser
+
+    suffix = "/" if plan.mode == "live" else "/dashboard"
+    _need(
+        webbrowser.open(f"http://127.0.0.1:{plan.port}{suffix}", new=2, autoraise=True)
+        is True
+    )
+
+
+def stop_owned_desktop_v1(owner):
+    process, _, _, _ = _session(owner)
+    # Popen retains the original native process handle. No PID lookup, process
+    # tree enumeration, token, HTTP authority, cancel or exchange write exists.
+    if process.poll() is None:
+        process.terminate()
+        process.wait(timeout=5)
+    _need(process.poll() is not None)
+    _SESSIONS.pop(owner)
 
 
 def _message(text):
@@ -366,18 +458,31 @@ def _message(text):
 
 
 def main():
+    owner = None
     try:
         selected = _select_profile()
         if selected is None:
             return 0
-        launch(_plan(selected))
-        return 0
+        owner = launch(_plan(selected))
     except BrowserNotOpened as error:
         _message("工具已啟動，但瀏覽器未能自動開啟。\n請在瀏覽器開啟：" + error.url)
-        return 1
+        owner = error.owner
+        if owner is None:
+            return 1
     except Exception:  # noqa: BLE001 -- no private path, settings or error text is displayed/logged.
         _message(
             "設定或啟動核對未通過，工具尚未啟用。\n請確認已安裝此版本，並選擇此版本的私人設定檔。\n既有交易與保護單不會因此變更。"
+        )
+        return 1
+    try:
+        from scripts.desktop_windows_supervisor_v1 import supervise_owned_desktop_v1
+
+        supervise_owned_desktop_v1(owner)
+        return 0
+    except Exception:  # noqa: BLE001 -- a UI failure must not conceal or stop a genuinely ready child.
+        _message(
+            "本機工具已啟動，但管理視窗未能完成核對。\n"
+            "請保留已開啟的工具頁面與交易紀錄；這不會自動停止或重送交易。"
         )
         return 1
 

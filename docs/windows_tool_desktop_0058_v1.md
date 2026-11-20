@@ -14,6 +14,11 @@
 正常開啟後，仍須在頁面輸入私人目錄中的本機存取碼。不要將存取碼放入網址、
 聊天、日誌或發行檔。
 
+啟動後會保留「CTCC 工具」小視窗。關閉瀏覽器分頁不會停止本機工具；
+可按「重新開啟頁面」回到同一次啟動。結束使用時，按「停止本機工具」並確認。
+這只會停止本機程式，不會平倉、取消交易所保護單或清除交易紀錄。
+若停止時仍有未完成操作，下次啟動必須重新核對結果。關閉管理視窗也會先詢問。
+
 ## Source and process boundary
 
 The tracked batch file calls only this release's `runtime/Scripts/pythonw.exe`
@@ -21,6 +26,17 @@ and fixed source script with isolated Python flags. It accepts no batch
 arguments and changes no PowerShell policy. A native existing-file picker makes
 the user's profile choice; no credential prompt or automatic configuration is
 part of launch.
+
+On Windows, the virtual-environment executable is a redirector. The child
+therefore uses the genuine isolated interpreter's absolute base executable,
+with a freshly source-derived `__PYVENV_LAUNCHER__` naming this release's exact
+`runtime/Scripts/python.exe`. Ambient launcher variables are stripped. This
+is the protocol used by [CPython 3.12 Windows multiprocessing](https://github.com/python/cpython/blob/v3.12.14/Lib/multiprocessing/popen_spawn_win32.py).
+The child independently verifies `sys.executable`, `sys.prefix` and all 41
+locked distributions. The parent retains the actual native process handle
+and checks its PID, creation time, executable image path and SHA256; the PID
+must equal the native TCP listener owner. No process-tree or existing-PID
+fallback is supported.
 
 The existing private profile independently pins the exact package. Parent and
 child reread that owner-only profile and bind its byte hash. The hash and a fresh
@@ -42,6 +58,14 @@ the exact newly created child PID, nonce and package, rather than accepting a
 successful response from another process. A port conflict never opens a browser.
 Only its own new child can be terminated on failed startup; existing services,
 databases, journals and protection are never selected.
+
+The native supervisor retains an opaque same-process session for that original
+child. Reopening rereads the matching profile/package and repeats native
+handle/image, listener PID, nonce and readiness checks. A later launcher still
+refuses a port collision. Stopping requires an explicit native confirmation
+and terminates only the held child process handle. It adds no HTTP shutdown,
+Arm, order, position-close or protection-cancel authority. A forced stop may
+leave a pending operation requiring the existing durable recovery procedure.
 
 The desktop helper supplies no qualification, Arm, reconciliation, order or
 release authority. It cannot migrate DB0017, adopt an older private profile,
