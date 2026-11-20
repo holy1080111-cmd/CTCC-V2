@@ -176,7 +176,7 @@ def _owned_rest_origin(source):
     state = _state(source)
     _fence_v2_demo_transport(state)
     plan = state["plan"]
-    if plan.get("schema_version") == _runtime_journal.GLOBAL_INITIAL_PLAN:
+    if plan.get("schema_version") in _runtime_journal.GLOBAL_PLANS:
         return _runtime_journal.GLOBAL_REST_ORIGIN
     route = _planned_public_route(plan)
     return quotes.BASE_URL if route is None else route.rest_origin
@@ -184,8 +184,8 @@ def _owned_rest_origin(source):
 
 def _owned_ws_endpoint(source):
     plan = _state(source)["plan"]
-    if plan.get("schema_version") == _runtime_journal.GLOBAL_INITIAL_PLAN:
-        _runtime_journal._validate_global_initial_plan(plan)
+    if plan.get("schema_version") in _runtime_journal.GLOBAL_PLANS:
+        _runtime_journal._validate_global_plan(plan)
         return _runtime_journal.GLOBAL_WS_ORIGIN
     route = _owned_public_route(source)
     return (
@@ -205,8 +205,8 @@ def _fence_v2_demo_transport(state):
     """
     plan = state.get("plan")
     if type(plan) is dict:
-        if plan.get("schema_version") == _runtime_journal.GLOBAL_INITIAL_PLAN:
-            _runtime_journal._validate_global_initial_plan(plan)
+        if plan.get("schema_version") in _runtime_journal.GLOBAL_PLANS:
+            _runtime_journal._validate_global_plan(plan)
             return
         if plan.get("schema_version") == "ctcc.public.initial_runtime_plan.v4":
             _require_owned_v4_route(state)
@@ -387,6 +387,7 @@ def _new_owned_client(source, role):
         "ctcc.public.initial_runtime_plan.v4",
         "ctcc.public.runtime_plan.v3",
         _runtime_journal.GLOBAL_INITIAL_PLAN,
+        _runtime_journal.GLOBAL_STAGED_PLAN,
     }
     v3_time = v3 and role in {"time_pre", "time_post"}
     if (
@@ -471,7 +472,7 @@ def _http_tls(source, client, response):
     route = _planned_public_route(plan)
     hostname = (
         _runtime_journal._plan_tls_hostnames(plan)[0]
-        if plan.get("schema_version") == _runtime_journal.GLOBAL_INITIAL_PLAN
+        if plan.get("schema_version") in _runtime_journal.GLOBAL_PLANS
         else "www.okx.com"
         if route is None
         else route.rest_hostname
@@ -503,9 +504,7 @@ def _request_scope(source, client, request, started):
     _fence_v2_demo_transport(state)
     role, _ = _verified_client(source, client)
     route = _planned_public_route(state["plan"])
-    global_public = (
-        state["plan"].get("schema_version") == _runtime_journal.GLOBAL_INITIAL_PLAN
-    )
+    global_public = state["plan"].get("schema_version") in _runtime_journal.GLOBAL_PLANS
     host = (
         _runtime_journal._plan_tls_hostnames(state["plan"])[0]
         if global_public
@@ -521,6 +520,7 @@ def _request_scope(source, client, request, started):
             "ctcc.public.initial_runtime_plan.v4",
             "ctcc.public.runtime_plan.v3",
             _runtime_journal.GLOBAL_INITIAL_PLAN,
+            _runtime_journal.GLOBAL_STAGED_PLAN,
         }
         and not time_role
     ):
@@ -530,6 +530,7 @@ def _request_scope(source, client, request, started):
         "ctcc.public.initial_runtime_plan.v4",
         "ctcc.public.runtime_plan.v3",
         _runtime_journal.GLOBAL_INITIAL_PLAN,
+        _runtime_journal.GLOBAL_STAGED_PLAN,
     }:
         raise PublicSourceRuntimeError("public_request_scope_invalid")
     if (
@@ -935,6 +936,7 @@ async def _fetch_owned_public_time_v3(source, role):
             "ctcc.public.runtime_plan.v3",
             "ctcc.public.initial_runtime_plan.v4",
             _runtime_journal.GLOBAL_INITIAL_PLAN,
+            _runtime_journal.GLOBAL_STAGED_PLAN,
         }
         or role not in {"time_pre", "time_post"}
         or role in state.get("time_http", {})
@@ -953,9 +955,7 @@ async def _fetch_owned_public_time_v3(source, role):
     else:
         _require_v3_post_time_phase(source)
     route = _planned_public_route(state["plan"])
-    global_public = (
-        state["plan"].get("schema_version") == _runtime_journal.GLOBAL_INITIAL_PLAN
-    )
+    global_public = state["plan"].get("schema_version") in _runtime_journal.GLOBAL_PLANS
     if route is None and not global_public:
         raise PublicSourceRuntimeError("public_v3_time_route_invalid")
     client = _new_owned_client(source, role)
@@ -1032,6 +1032,7 @@ def _ws_options(source, started):
         "ctcc.public.initial_runtime_plan.v4",
         "ctcc.public.runtime_plan.v3",
         _runtime_journal.GLOBAL_INITIAL_PLAN,
+        _runtime_journal.GLOBAL_STAGED_PLAN,
     }:
         _require_v3_pre_market_phase(source)
     endpoint = _owned_ws_endpoint(source)
@@ -1154,7 +1155,7 @@ def _check_packet_binding_v2(
 
 
 def _check_bracket_packet_binding(state, packet, *, expected_roles):
-    if state["plan"].get("schema_version") == _runtime_journal.GLOBAL_INITIAL_PLAN:
+    if state["plan"].get("schema_version") in _runtime_journal.GLOBAL_PLANS:
         from app.trade_qualification.global_public_runtime_v1 import _checked_packet
 
         checked = _checked_packet(packet)
@@ -1628,7 +1629,7 @@ def _replay_captured_packet(plan_raw, summary_raw, packet_raw):
     summary = decode(summary_raw, MAX_RAW)
     if summary["disposition"] != "captured":
         raise PublicSourceRuntimeError("public_capture_incomplete")
-    if plan["schema_version"] == _runtime_journal.GLOBAL_INITIAL_PLAN:
+    if plan["schema_version"] in _runtime_journal.GLOBAL_PLANS:
         from app.trade_qualification.global_public_runtime_v1 import _replay_packet
 
         return _replay_packet(plan_raw, plan, summary, packet_raw)

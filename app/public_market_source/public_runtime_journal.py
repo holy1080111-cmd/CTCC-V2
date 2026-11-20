@@ -37,6 +37,8 @@ MAX_EVENTS = 4096
 MAX_RAW = 32 * 1024 * 1024
 MAX_TOTAL = 64 * 1024 * 1024
 GLOBAL_INITIAL_PLAN = "ctcc.public.initial_global_runtime_plan.v1"
+GLOBAL_STAGED_PLAN = "ctcc.public.post_g12_global_staged_runtime_plan.v2"
+GLOBAL_PLANS = frozenset({GLOBAL_INITIAL_PLAN, GLOBAL_STAGED_PLAN})
 GLOBAL_PACKET = "ctcc.public.global_component_packet.v1"
 GLOBAL_ENVIRONMENT = "anonymous_global_public"
 GLOBAL_REST_ORIGIN = "https://openapi.okx.com"
@@ -124,6 +126,8 @@ _KINDS = frozenset(
         "ws_ticker",
         "ws_closed",
         "component_failed",
+        "ohlc_stage_complete",
+        "account_stage_ready",
         "packet",
     }
 )
@@ -439,6 +443,7 @@ def _replay_open_v3_prefix(attempt, *, market_packet=None):
             "ctcc.public.runtime_plan.v3",
             "ctcc.public.initial_runtime_plan.v4",
             GLOBAL_INITIAL_PLAN,
+            GLOBAL_STAGED_PLAN,
         }
     ):
         raise PublicReceiptError("runtime_v3_prefix_plan_invalid")
@@ -527,6 +532,8 @@ def _time(value):
 
 
 def _validate_plan(plan):
+    if type(plan) is dict and plan.get("schema_version") == GLOBAL_STAGED_PLAN:
+        return _validate_global_staged_plan(plan)
     if type(plan) is dict and plan.get("schema_version") == GLOBAL_INITIAL_PLAN:
         return _validate_global_initial_plan(plan)
     if (
@@ -656,6 +663,65 @@ def _validate_global_initial_plan(plan):
     _validate_initial_identity(plan)
 
 
+def _validate_global_plan(plan):
+    if type(plan) is dict and plan.get("schema_version") == GLOBAL_STAGED_PLAN:
+        return _validate_global_staged_plan(plan)
+    return _validate_global_initial_plan(plan)
+
+
+def _validate_global_staged_plan(plan):
+    if (
+        type(plan) is not dict
+        or set(plan)
+        != _INITIAL_PLAN_FIELDS | {"global_route_sha256", "original_publication"}
+        or plan.get("schema_version") != GLOBAL_STAGED_PLAN
+        or plan.get("stage") != "post_g12_staged_public"
+    ):
+        raise PublicReceiptError("runtime_global_staged_plan_invalid")
+    # Reuse the unchanged anonymous route and initial observation identities;
+    # the additional original-publication binding never relabels their bytes.
+    ancestor = {k: v for k, v in plan.items() if k != "original_publication"}
+    ancestor["schema_version"] = GLOBAL_INITIAL_PLAN
+    ancestor["stage"] = "initial_public"
+    _validate_global_initial_plan(ancestor)
+    original = plan["original_publication"]
+    if (
+        type(original) is not dict
+        or set(original)
+        != {
+            "report_id",
+            "candidate_sha256",
+            "receipt_sha256",
+            "barrier",
+            "policy_sha256",
+        }
+        or type(original["report_id"]) is not str
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,95}", original["report_id"])
+        is None
+        or any(
+            type(original[name]) is not str
+            or re.fullmatch(r"[a-f0-9]{64}", original[name]) is None
+            for name in ("candidate_sha256", "receipt_sha256", "policy_sha256")
+        )
+    ):
+        raise PublicReceiptError("runtime_global_staged_plan_invalid")
+    ClockStamp.model_validate(original["barrier"])
+    validate_stamps((original["barrier"], plan["invocation_started"]))
+    if (
+        any(
+            plan["invocation_started"][key] <= original["barrier"][key]
+            for key in ("utc_ns", "monotonic_ns")
+        )
+        or not 0
+        < (
+            _time(plan["expires_at"])
+            - utc_from_ns(plan["invocation_started"]["utc_ns"])
+        ).total_seconds()
+        <= 30
+    ):
+        raise PublicReceiptError("runtime_global_staged_chronology_invalid")
+
+
 def _validate_v2_plan(plan):
     initial = plan["schema_version"] == "ctcc.public.initial_runtime_plan.v2"
     required = {
@@ -780,6 +846,7 @@ def _plan_start(plan):
         "ctcc.public.initial_runtime_plan.v3",
         "ctcc.public.initial_runtime_plan.v4",
         GLOBAL_INITIAL_PLAN,
+        GLOBAL_STAGED_PLAN,
     }:
         return plan["invocation_started"]
     return plan["barrier"]
@@ -787,8 +854,8 @@ def _plan_start(plan):
 
 def _plan_tls_hostnames(plan):
     """Use the validated exact route table; do not parse a caller URL here."""
-    if plan["schema_version"] == GLOBAL_INITIAL_PLAN:
-        _validate_global_initial_plan(plan)
+    if plan["schema_version"] in GLOBAL_PLANS:
+        _validate_global_plan(plan)
         return "openapi.okx.com", "ws.okx.com"
     if "registration_region" in plan:
         rest, ws, rest_hostname, ws_hostname = demo_public_v2_route(
@@ -812,6 +879,7 @@ def _packet_stage_matches(plan, barrier, *, exact=False):
         "ctcc.public.initial_runtime_plan.v3",
         "ctcc.public.initial_runtime_plan.v4",
         GLOBAL_INITIAL_PLAN,
+        GLOBAL_STAGED_PLAN,
     }:
         return barrier is None
     return barrier is not None and (
@@ -899,14 +967,17 @@ def _replay_semantics(plan, summary, events, payloads, *, market_packet=None):
     complete = summary["disposition"] == "captured"
     before_seen, after_seen = False, False
     first_clock = None
-    global_public = plan["schema_version"] == GLOBAL_INITIAL_PLAN
+    global_public = plan["schema_version"] in GLOBAL_PLANS
     v3 = plan["schema_version"] in {
         "ctcc.public.initial_runtime_plan.v3",
         "ctcc.public.initial_runtime_plan.v4",
         "ctcc.public.runtime_plan.v3",
         GLOBAL_INITIAL_PLAN,
+        GLOBAL_STAGED_PLAN,
     }
     time_ids, time_validated = [], {}
+    staged = plan["schema_version"] == GLOBAL_STAGED_PLAN
+    ohlc_stage, account_stage = None, None
     for event, raw in zip(events, payloads, strict=True):
         kind, meta = event["kind"], event["metadata"]
         stamp = None
@@ -1063,6 +1134,26 @@ def _replay_semantics(plan, summary, events, payloads, *, market_packet=None):
             ):
                 raise PublicReceiptError("runtime_global_request_headers_invalid")
             stamp = meta["started"]
+            if staged:
+                role = meta["role"]
+                if (
+                    (role == "candles" and ohlc_stage is not None)
+                    or (
+                        role in {"quote", "market_aux", "time_post"}
+                        and account_stage is None
+                    )
+                    or (role == "time_pre" and ohlc_stage is not None)
+                ):
+                    raise PublicReceiptError(
+                        "runtime_global_staged_request_order_invalid"
+                    )
+                if role in {"quote", "market_aux", "time_post"} and any(
+                    stamp[key] <= account_stage[key]
+                    for key in ("utc_ns", "monotonic_ns")
+                ):
+                    raise PublicReceiptError(
+                        "runtime_global_staged_request_order_invalid"
+                    )
             requests[meta["id"]] = {
                 "request": meta,
                 "body": bytearray(),
@@ -1291,6 +1382,14 @@ def _replay_semantics(plan, summary, events, payloads, *, market_packet=None):
                 ):
                     raise PublicReceiptError("runtime_ws_scope_invalid")
                 stamp = meta["started"]
+                if staged and (
+                    account_stage is None
+                    or any(
+                        stamp[key] <= account_stage[key]
+                        for key in ("utc_ns", "monotonic_ns")
+                    )
+                ):
+                    raise PublicReceiptError("runtime_global_staged_ws_order_invalid")
             elif kind == "ws_connected":
                 if (
                     set(meta) != {"connected", "tls"}
@@ -1332,6 +1431,70 @@ def _replay_semantics(plan, summary, events, payloads, *, market_packet=None):
                     raise PublicReceiptError("runtime_ws_event_invalid")
                 stamp = meta["observed"]
             websocket[kind] = (stamp, raw)
+        elif kind == "ohlc_stage_complete":
+            if (
+                not staged
+                or ohlc_stage is not None
+                or account_stage is not None
+                or after_seen
+                or websocket
+                or raw is None
+                or set(meta) != {"completed", "candles_sha256"}
+                or meta["candles_sha256"] != sha(raw)
+                or len(time_validated) != 1
+                or not any(v["request"]["role"] == "candles" for v in requests.values())
+                or any(
+                    v["request"]["role"] not in {"time_pre", "candles"}
+                    or v["closed"] is None
+                    or v["failed"]
+                    or v["truncated"]
+                    for v in requests.values()
+                )
+            ):
+                raise PublicReceiptError("runtime_global_ohlc_stage_invalid")
+            # This journal layer joins exact persisted observations, just like
+            # _packet_join below. It issues no component admission. The original
+            # collector, each exposed typed OHLC stage and the complete typed
+            # Global packet independently run the unchanged candle validators.
+            document = decode(raw, MAX_RAW)
+            if (
+                canonical(document) != raw
+                or document["report_id"] != plan["report_id"]
+                or (
+                    document["instrument_id"] != plan["instrument_id"]
+                    or document["barrier_completed_at"] is not None
+                    or _time(document["completed_at"])
+                    > utc_from_ns(meta["completed"]["utc_ns"])
+                )
+            ):
+                raise PublicReceiptError("runtime_global_ohlc_stage_invalid")
+            _join_http_records(
+                [page for frame in document["frames"] for page in frame["pages"]],
+                [v for v in requests.values() if v["request"]["role"] == "candles"],
+                global_public=True,
+            )
+            ohlc_stage = (meta["completed"], sha(raw), sha(canonical(event)))
+            stamp = meta["completed"]
+        elif kind == "account_stage_ready":
+            if (
+                not staged
+                or ohlc_stage is None
+                or account_stage is not None
+                or after_seen
+                or websocket
+                or raw is not None
+                or set(meta)
+                != {"completed", "source_revision_sha256", "ohlc_prefix_sha256"}
+                or meta["ohlc_prefix_sha256"] != ohlc_stage[2]
+                or type(meta["source_revision_sha256"]) is not str
+                or re.fullmatch(r"[a-f0-9]{64}", meta["source_revision_sha256"]) is None
+                or any(
+                    meta["completed"][key] <= ohlc_stage[0][key]
+                    for key in ("utc_ns", "monotonic_ns")
+                )
+            ):
+                raise PublicReceiptError("runtime_global_account_stage_invalid")
+            stamp = account_stage = meta["completed"]
         elif kind == "component_failed":
             if (
                 complete
@@ -1360,6 +1523,7 @@ def _replay_semantics(plan, summary, events, payloads, *, market_packet=None):
                     "ctcc.public.initial_runtime_plan.v4",
                     "ctcc.public.runtime_plan.v3",
                     GLOBAL_INITIAL_PLAN,
+                    GLOBAL_STAGED_PLAN,
                 }
                 else observations[0].get("bundle_sha256")
             )
@@ -1389,6 +1553,14 @@ def _replay_semantics(plan, summary, events, payloads, *, market_packet=None):
             )
             or len(websocket) != 7
             or len(observations) != 1
+            or (
+                staged
+                and (
+                    ohlc_stage is None
+                    or account_stage is None
+                    or sha(canonical(observations[0]["candles"])) != ohlc_stage[1]
+                )
+            )
             or (
                 v3
                 and (
@@ -1429,7 +1601,7 @@ def _replay_semantics(plan, summary, events, payloads, *, market_packet=None):
 
 
 def _packet_join(plan, packet, requests, websocket):
-    global_public = plan["schema_version"] == GLOBAL_INITIAL_PLAN
+    global_public = plan["schema_version"] in GLOBAL_PLANS
     if global_public and (
         packet.get("schema_version") != GLOBAL_PACKET
         or packet.get("environment") != GLOBAL_ENVIRONMENT
@@ -1501,27 +1673,7 @@ def _packet_join(plan, packet, requests, websocket):
         *(page for frame in packet["candles"]["frames"] for page in frame["pages"]),
         *packet["market_aux"]["provenance"],
     ]
-    remaining = list(requests.values())
-    for record in records:
-        if global_public and record.get("origin") != GLOBAL_REST_ORIGIN:
-            raise PublicReceiptError("runtime_global_packet_origin_mismatch")
-        matched = [
-            item
-            for item in remaining
-            if item["request"]["endpoint"] == record["endpoint"]
-            and item["request"]["query"] == record["parameters"]
-            and bytes(item["body"]) == record["response_body"].encode("utf-8")
-            and utc_from_ns(item["request"]["started"]["utc_ns"])
-            == _time(record["request_started_at"])
-            and utc_from_ns(item["headers"]["received"]["utc_ns"])
-            == _time(record["received_at"])
-            and utc_from_ns(item["closed"]["utc_ns"]) == _time(record["completed_at"])
-        ]
-        if len(matched) != 1:
-            raise PublicReceiptError("runtime_packet_raw_join_mismatch")
-        remaining.remove(matched[0])
-    if remaining:
-        raise PublicReceiptError("runtime_packet_inventory_mismatch")
+    _join_http_records(records, list(requests.values()), global_public=global_public)
     wire = packet["ws"]
     expected = {
         "ws_connect": (wire["connection_started_at"], None),
@@ -1546,3 +1698,27 @@ def _packet_join(plan, packet, requests, websocket):
         for k, v in expected.items()
     ):
         raise PublicReceiptError("runtime_packet_ws_join_mismatch")
+
+
+def _join_http_records(records, requests, *, global_public):
+    remaining = list(requests)
+    for record in records:
+        if global_public and record.get("origin") != GLOBAL_REST_ORIGIN:
+            raise PublicReceiptError("runtime_global_packet_origin_mismatch")
+        matched = [
+            item
+            for item in remaining
+            if item["request"]["endpoint"] == record["endpoint"]
+            and item["request"]["query"] == record["parameters"]
+            and bytes(item["body"]) == record["response_body"].encode("utf-8")
+            and utc_from_ns(item["request"]["started"]["utc_ns"])
+            == _time(record["request_started_at"])
+            and utc_from_ns(item["headers"]["received"]["utc_ns"])
+            == _time(record["received_at"])
+            and utc_from_ns(item["closed"]["utc_ns"]) == _time(record["completed_at"])
+        ]
+        if len(matched) != 1:
+            raise PublicReceiptError("runtime_packet_raw_join_mismatch")
+        remaining.remove(matched[0])
+    if remaining:
+        raise PublicReceiptError("runtime_packet_inventory_mismatch")

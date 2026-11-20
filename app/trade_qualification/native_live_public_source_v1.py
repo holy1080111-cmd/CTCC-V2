@@ -13,6 +13,7 @@ import hashlib
 import os
 import re
 import sys
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -50,6 +51,8 @@ _CONTROLLED_QUOTE_PURPOSE_V1 = object()
 _ENTRY_QUOTE_PURPOSE_V1 = object()
 _OWNERS = WeakKeyDictionary()
 _INFLIGHT = set()
+_OHLC_STAGES = WeakKeyDictionary()
+_STAGED_RUNTIME_KEY_V2 = object()
 _MAX_OWNERS = 16
 _FILE = "live-public.json"
 _SCHEMA = "ctcc.native_live.production_public_envelope.v1"
@@ -196,6 +199,22 @@ class OwnedLivePublicSourceV1:
         _OWNERS.pop(self, None)
 
 
+class OwnedLivePublicOHLCStageV2:
+    __slots__ = ("__weakref__",)
+
+    def __new__(cls):
+        _need(False, "native_live_public_stage_not_constructible")
+
+    def __copy__(self):
+        _need(False, "native_live_public_stage_not_transferable")
+
+    def __deepcopy__(self, memo):
+        _need(False, "native_live_public_stage_not_transferable")
+
+    def __reduce_ex__(self, protocol):
+        _need(False, "native_live_public_stage_not_transferable")
+
+
 @dataclass(frozen=True, slots=True, repr=False)
 class LivePublicRawFileV1:
     name: str
@@ -294,7 +313,7 @@ def _barrier(value):
     return _stamp({"utc_ns": value.utc_ns, "monotonic_ns": value.monotonic_ns})
 
 
-def _parameters(value):
+def _parameters(value, *, staged=False):
     _need(type(value) is LivePublicCaptureParametersV1)
     _need(type(value.root) is type(Path()) and value.root.is_absolute())
     _need(
@@ -313,12 +332,18 @@ def _parameters(value):
     _need(type(value.expires_at) is datetime and value.expires_at.tzinfo is UTC)
     _need(type(value.expires_monotonic_ns) is int and value.expires_monotonic_ns > 0)
     expected_policy = (
-        CLOSE_POLICY_SHA256 if value.stage == "controlled_exit" else POLICY_SHA256
+        STAGED_POLICY_SHA256
+        if staged is True and value.stage == "post_g12"
+        else CLOSE_POLICY_SHA256
+        if value.stage == "controlled_exit"
+        else POLICY_SHA256
     )
+    _need(staged is False or staged is True and value.stage == "post_g12")
     _need(
         value.public_policy_sha256 == expected_policy
         and sha(POLICY_BYTES) == POLICY_SHA256
         and sha(CLOSE_POLICY_BYTES) == CLOSE_POLICY_SHA256
+        and sha(STAGED_POLICY_BYTES) == STAGED_POLICY_SHA256
     )
     _need(
         value.candidate_sha256 is None
@@ -435,12 +460,19 @@ def _audit(raw_root, *, root_identity, plan_sha256, journal_sha256, params, not_
         )
         plan = decode(plan_raw, journal.MAX_RAW)
         _need(
-            plan["schema_version"] == journal.GLOBAL_INITIAL_PLAN
+            plan["schema_version"]
+            == (
+                journal.GLOBAL_STAGED_PLAN
+                if params.public_policy_sha256 == STAGED_POLICY_SHA256
+                else journal.GLOBAL_INITIAL_PLAN
+            )
             and plan["environment"] == journal.GLOBAL_ENVIRONMENT
             and plan["instrument_id"] == params.instrument_id
             and plan["policy_sha256"] == _WIRE_POLICY_SHA256
             and plan["global_route_sha256"] == journal.GLOBAL_ROUTE_SHA256
         )
+        if params.public_policy_sha256 == STAGED_POLICY_SHA256:
+            _need(plan["original_publication"] == _original_staged_binding(params))
         _after(plan["invocation_started"], not_before)
         starts = []
         for event in events:
@@ -727,6 +759,248 @@ async def capture_owned_live_public_v1(request, *, key):
         _INFLIGHT.discard(token)
 
 
+def _original_staged_binding(params):
+    return {
+        "report_id": params.report_id,
+        "candidate_sha256": params.candidate_sha256,
+        "receipt_sha256": params.publication_receipt_sha256,
+        "barrier": _barrier(params.publication_barrier),
+        "policy_sha256": STAGED_POLICY_SHA256,
+    }
+
+
+@asynccontextmanager
+async def begin_owned_live_post_g12_public_v2(request, *, key):
+    """Consume once, retain original OHLC, then yield only an incomplete owner."""
+    from app.trade_qualification import global_public_staged_v2 as staged_runtime
+
+    consumer = _coordinator(key)
+    params = _parameters(
+        consumer(request, key=_COORDINATOR_REQUEST_KEY_V1), staged=True
+    )
+    _need(len(_OWNERS) + len(_INFLIGHT) < _MAX_OWNERS)
+    task = asyncio.current_task()
+    _need(task is not None and not task.cancelling())
+    started = _stamp(native_stamp())
+    state = {
+        "params": params,
+        "task": task,
+        "loop": asyncio.get_running_loop(),
+        "pid": os.getpid(),
+        "thread": get_ident(),
+        "last": started,
+        "expires_at": params.expires_at,
+        "expires_monotonic_ns": params.expires_monotonic_ns,
+        "not_before": started,
+        "completed_owner": None,
+    }
+    _after(_current(state), _barrier(params.publication_barrier))
+    token, stage = object(), object.__new__(OwnedLivePublicOHLCStageV2)
+    _INFLIGHT.add(token)
+    try:
+        with transport._reopen_runtime_journal(params.root) as directory:
+            _need(not directory.names(), "native_live_public_root_not_empty")
+            state["root_identity"] = transport._native_recheck_root_identity(
+                params.root
+            )
+            directory.mkdir("raw")
+            state["raw_root"] = params.root / "raw"
+            state["raw_identity"] = transport._native_recheck_root_identity(
+                state["raw_root"]
+            )
+            _need(state["raw_identity"] != state["root_identity"])
+        async with staged_runtime.begin_global_public_ohlc_v2(
+            state["raw_root"],
+            instrument_id=params.instrument_id,
+            market_policy=_market_policy(),
+            original_publication=_original_staged_binding(params),
+            expires_at=params.expires_at,
+            expires_monotonic_ns=params.expires_monotonic_ns,
+            key=_STAGED_RUNTIME_KEY_V2,
+        ) as runtime_stage:
+            state["runtime_stage"] = runtime_stage
+            _OHLC_STAGES[stage] = state
+            replay_owned_live_public_ohlc_stage_v2(stage, key=key)
+            yield stage
+            _need(
+                state["completed_owner"] is not None,
+                "native_live_public_stage_incomplete",
+            )
+            _current(state)
+    except BaseException:
+        if state["completed_owner"] is not None:
+            _OWNERS.pop(state["completed_owner"], None)
+        raise
+    finally:
+        _OHLC_STAGES.pop(stage, None)
+        _INFLIGHT.discard(token)
+        state.pop("completed_owner", None)
+
+
+def replay_owned_live_public_ohlc_stage_v2(stage, *, key):
+    """Independently reopen the exact incomplete prefix; never emit a quote."""
+    from app.trade_qualification import global_public_staged_v2 as staged_runtime
+
+    _coordinator(key)
+    state = (
+        _OHLC_STAGES.get(stage) if type(stage) is OwnedLivePublicOHLCStageV2 else None
+    )
+    _need(state is not None)
+    try:
+        _current(state)
+        completed, collected, plan_pin, prefix, captured_files = (
+            staged_runtime.replay_global_public_ohlc_v2(
+                state["runtime_stage"], key=_STAGED_RUNTIME_KEY_V2
+            )
+        )
+        files = tuple(
+            LivePublicRawFileV1(name, raw, sha(raw)) for name, raw in captured_files
+        )
+        _need("summary.json" not in {item.name for item in files})
+        _need(
+            transport._native_recheck_root_identity(state["raw_root"])
+            == state["raw_identity"]
+        )
+        _need(
+            transport._native_recheck_root_identity(state["params"].root)
+            == state["root_identity"]
+        )
+        state["ohlc_completed"] = _stamp(completed.model_dump())
+        state["ohlc_prefix"] = prefix
+        params = state["params"]
+        return LivePublicOHLCStageDataV2(
+            params.invocation,
+            params.report_id,
+            params.instrument_id,
+            params.candidate_sha256,
+            ClockStamp.model_validate(_barrier(params.publication_barrier)),
+            params.publication_receipt_sha256,
+            completed,
+            collected,
+            files,
+            plan_pin,
+            prefix,
+        )
+    except BaseException:
+        _OHLC_STAGES.pop(stage, None)
+        raise
+
+
+async def complete_owned_live_post_g12_public_v2(stage, *, key):
+    """Fresh account replay precedes the single mutable quote/aux/WS attempt."""
+    from app.trade_qualification import global_public_staged_v2 as staged_runtime
+
+    _coordinator(key)
+    replay_owned_live_public_ohlc_stage_v2(stage, key=key)
+    # A failed callback, cancellation or failed mutable attempt spends this stage.
+    state = _OHLC_STAGES.pop(stage)
+    params = state["params"]
+    module = sys.modules[_COORDINATOR]
+    ready_consumer = getattr(module, "_consume_live_staged_account_ready_v2", None)
+    _need(
+        type(ready_consumer) is FunctionType
+        and ready_consumer.__module__ == _COORDINATOR
+        and ready_consumer.__globals__ is vars(module)
+    )
+    ready = ready_consumer(stage, key=_ACCOUNT_READY_KEY_V2)
+    _need(
+        type(ready) is LiveStagedAccountReadyV2
+        and ready.invocation is params.invocation
+        and ready.source_owner is not None
+        and type(ready.completed) is ClockStamp
+        and type(ready.source_revision_sha256) is str
+        and _HEX.fullmatch(ready.source_revision_sha256) is not None
+        and ready.execution_authority is False
+    )
+    account_completed = _stamp(ready.completed.model_dump())
+    _after(account_completed, state["ohlc_completed"])
+    _after(_current(state), account_completed)
+    captured = await staged_runtime.complete_global_public_v2(
+        state["runtime_stage"],
+        account_completed=account_completed,
+        source_revision_sha256=ready.source_revision_sha256,
+        key=_STAGED_RUNTIME_KEY_V2,
+    )
+    audit = _audit(
+        state["raw_root"],
+        root_identity=state["raw_identity"],
+        plan_sha256=captured.plan_sha256,
+        journal_sha256=captured.journal_sha256,
+        params=params,
+        not_before=state["not_before"],
+    )
+    replayed, plan, _summary, packet, files, inventory_pin, size, starts = audit
+    _need(packet.packet_json == captured.packet.packet_json)
+    state["expires_at"] = min(params.expires_at, replayed.invocation_expires_at)
+    state["expires_monotonic_ns"] = min(
+        params.expires_monotonic_ns,
+        plan["invocation_started"]["monotonic_ns"] + 30_000_000_000,
+    )
+    finished = _current(state)
+    _project(packet, report_id=params.report_id, at=utc_from_ns(finished["utc_ns"]))
+    receipt = canonical(
+        {
+            "schema_version": "ctcc.native_live.production_public_staged_envelope.v2",
+            "capture_id": uuid4().hex,
+            "environment": "live",
+            "source_environment": packet.environment,
+            "source_report_id": packet.report_id,
+            "report_id": params.report_id,
+            "instrument_id": params.instrument_id,
+            "stage": params.stage,
+            "candidate_sha256": params.candidate_sha256,
+            "publication_receipt_sha256": params.publication_receipt_sha256,
+            "publication_barrier": _barrier(params.publication_barrier),
+            "policy_sha256": STAGED_POLICY_SHA256,
+            "ohlc_completed": state["ohlc_completed"],
+            "ohlc_prefix_sha256": state["ohlc_prefix"],
+            "account_completed": account_completed,
+            "account_source_revision_sha256": ready.source_revision_sha256,
+            "plan_sha256": captured.plan_sha256,
+            "journal_sha256": captured.journal_sha256,
+            "packet_sha256": packet.bundle_sha256,
+            "raw_inventory_sha256": inventory_pin,
+            "raw_file_count": len(files),
+            "raw_total_bytes": size,
+            "root_identity": state["root_identity"],
+            "raw_root_identity": state["raw_identity"],
+            "capture_started": state["not_before"],
+            "readback_completed": finished,
+            "expires_at": state["expires_at"].isoformat(),
+            "expires_monotonic_ns": state["expires_monotonic_ns"],
+            "http_request_count": sum(kind == "request" for kind, _ in starts),
+            "ws_connection_count": 1,
+            "raw_packet_relabelled": False,
+            "account_complete": False,
+            "historical_availability_verified": False,
+            "execution_authority": False,
+        }
+    )
+    with transport._reopen_runtime_journal(params.root) as directory:
+        _need(set(directory.names()) == {"raw"})
+        _need(
+            transport._native_recheck_root_identity(params.root)
+            == state["root_identity"]
+        )
+        directory.publish(_FILE, receipt)
+        _need(
+            directory.read(_FILE, 16384) == receipt
+            and set(directory.names()) == {"raw", _FILE}
+        )
+    state.update(
+        plan_sha256=captured.plan_sha256,
+        journal_sha256=captured.journal_sha256,
+        packet_sha256=packet.bundle_sha256,
+        inventory_sha256=inventory_pin,
+        receipt=receipt,
+    )
+    _current(state)
+    owner = object.__new__(OwnedLivePublicSourceV1)
+    _OWNERS[owner] = state
+    state["completed_owner"] = owner
+    return owner
+
+
 def _replay_owned_live_public_v1(owner, *, key):
     """Freshly reopen the same retained source; saved files never mint an owner."""
     _coordinator(key)
@@ -845,10 +1119,10 @@ def _replay_owned_live_raw_quote_v1(owner, *, key, qualification_owner, purpose)
             params.stage
             == ("post_g12" if purpose is _ENTRY_QUOTE_PURPOSE_V1 else "controlled_exit")
             and params.public_policy_sha256
-            == (
-                POLICY_SHA256
+            in (
+                (POLICY_SHA256, STAGED_POLICY_SHA256)
                 if purpose is _ENTRY_QUOTE_PURPOSE_V1
-                else CLOSE_POLICY_SHA256
+                else (CLOSE_POLICY_SHA256,)
             )
         )
         _current(state)
@@ -879,7 +1153,12 @@ def _replay_owned_live_raw_quote_v1(owner, *, key, qualification_owner, purpose)
                     decode(summary_raw, journal.MAX_RAW),
                 )
                 _need(
-                    plan["schema_version"] == journal.GLOBAL_INITIAL_PLAN
+                    plan["schema_version"]
+                    == (
+                        journal.GLOBAL_STAGED_PLAN
+                        if params.public_policy_sha256 == STAGED_POLICY_SHA256
+                        else journal.GLOBAL_INITIAL_PLAN
+                    )
                     and plan["instrument_id"] == params.instrument_id
                     and summary["disposition"] == "captured"
                 )

@@ -235,7 +235,7 @@ def _replay_packet(plan_raw, plan, summary, packet_raw):
         or summary["plan_sha256"] != sha(plan_raw)
     ):
         raise GlobalPublicCaptureError("global_public_packet_readback_invalid")
-    journal._validate_global_initial_plan(plan)
+    journal._validate_global_plan(plan)
     packet = GlobalPublicComponentPacketV1.model_validate_json(packet_raw)
     if (
         packet.packet_json != packet_raw
