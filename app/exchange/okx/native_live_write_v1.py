@@ -50,7 +50,7 @@ from app.exchange.okx.live_account_config_observation_v1 import (
 from app.exchange.okx.private_rest import build_signature
 from app.okx_live import trusted_source_bridge_v1 as source
 from app.trade_qualification.native_continuation_guard_v1 import (
-    check_saved_native_guard_v1,
+    check_saved_native_guard_identity_v2,
     save_native_guard_v1,
 )
 
@@ -452,7 +452,8 @@ def _require_preparation_scope_v2(gate, *, key):
     record = _require_held_gate_scope_v2(gate, key=key)
     module, _calls = _require_api_integrity_v2(record["api"])
     _need(module._NATIVE_GUARD is record["native_source_guard"])
-    check_saved_native_guard_v1(record)
+    check_saved_native_guard_identity_v2(record)
+    _require_preparation_prefix_v2(record, module)
     facts = record["facts"]
     qualification = module._QUALIFIED.get(record["owner"])
     _need(
@@ -526,6 +527,69 @@ def _require_preparation_scope_v2(gate, *, key):
     )
     ledger._control(record["control"], facts.intent_data, utc_from_ns(_stamp().utc_ns))
     return record
+
+
+def _capture_preparation_prefix_v2(module):
+    """Fixed canonical function/global bindings only, never eligibility DATA."""
+    pins = []
+    for name in ("_session", "_task", "_need", "_NATIVE_GUARD"):
+        call = vars(module)[name]
+        _need(type(call) is FunctionType)
+        saved = {}
+        save_native_guard_v1(saved, call)
+        names = call.__code__.co_names
+        globals_pin = tuple(
+            (key, key in call.__globals__, call.__globals__.get(key)) for key in names
+        )
+        builtins_pin = tuple(
+            (key, call.__builtins__[key]) for key in names if key in call.__builtins__
+        )
+        pins.append(
+            (name, call, saved["native_source_guard_pin"], globals_pin, builtins_pin)
+        )
+    return tuple(pins)
+
+
+def _require_preparation_prefix_v2(record, module):
+    # Validate the exact original prefix BEFORE invoking _session, which then
+    # executes the genuine source guard itself. A foreign _session/_task/_need
+    # must not run even though the identity-only helper grants no authority.
+    entries = record["preparation_prefix"]
+    names = ("_session", "_task", "_need", "_NATIVE_GUARD")
+    _need(type(entries) is tuple and len(entries) == len(names))
+    for expected_name, entry in zip(names, entries, strict=True):
+        _need(type(entry) is tuple and len(entry) == 5)
+        name, call, pin, globals_pin, builtins_pin = entry
+        _need(
+            type(name) is str
+            and name == expected_name
+            and type(call) is FunctionType
+            and type(globals_pin) is tuple
+            and type(builtins_pin) is tuple
+            and all(
+                type(item) is tuple
+                and len(item) == 3
+                and type(item[0]) is str
+                and type(item[1]) is bool
+                for item in globals_pin
+            )
+            and all(
+                type(item) is tuple and len(item) == 2 and type(item[0]) is str
+                for item in builtins_pin
+            )
+        )
+        _need(vars(module).get(name) is call)
+        check_saved_native_guard_identity_v2(
+            {"native_source_guard": call, "native_source_guard_pin": pin}
+        )
+        _need(
+            all(
+                (key in call.__globals__) is present
+                and call.__globals__.get(key) is value
+                for key, present, value in globals_pin
+            )
+            and all(call.__builtins__.get(key) is value for key, value in builtins_pin)
+        )
 
 
 def _require_physical_gate_v1(gate, *, key):
@@ -867,6 +931,7 @@ def _new_gate(record):
     # Only source-integrity and immutable lineage are pinned. No mathematical
     # PASS, clock freshness, risk eligibility or write permission is cached.
     save_native_guard_v1(record, module._NATIVE_GUARD)
+    record["preparation_prefix"] = _capture_preparation_prefix_v2(module)
     rid, raw, digest = exact_live_intent_document_v1(record["facts"].intent_data)
     record["preparation_qualification"] = qualified
     record["preparation_session"] = qualified["session"]

@@ -164,6 +164,7 @@ async def _scope(monkeypatch):
             "preparation_lineage": (rid, raw, digest, b"{}", request, sha(request)),
         }
         save_native_guard_v1(record, guard)
+        record["preparation_prefix"] = write._capture_preparation_prefix_v2(q)
         write._GATES[gate] = record
         write._HELD[session] = record
         token = write._ACTIVE.set(gate)
@@ -325,6 +326,26 @@ async def test_preparation_cannot_move_to_another_task(monkeypatch):
 
         with pytest.raises(write.NativeLiveWriteError):
             await asyncio.create_task(foreign_task())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["_session", "_task", "_need", "_NATIVE_GUARD"])
+async def test_changed_canonical_prefix_cannot_execute_foreign_callback(
+    monkeypatch, name
+):
+    async with _scope(monkeypatch) as scope:
+        called = []
+
+        def foreign(*_args, **_kwargs):
+            called.append(True)
+            raise AssertionError("foreign canonical prefix ran")
+
+        monkeypatch.setattr(q, name, foreign)
+        with pytest.raises(ValueError):
+            write._require_preparation_scope_v2(
+                scope.gate, key=write.transport._TRANSPORT_KEY
+            )
+        assert not called
 
 
 def test_genuine_guard_accepts_existing_api_cache_population_without_runtime_authority():

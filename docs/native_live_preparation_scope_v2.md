@@ -51,3 +51,24 @@ retained in this first phase measurement. Response-only DATA retention is also
 unchanged here. Subsequent changes need independent source-integrity/no-callback
 tests and the same native write/expiry/EStop controls; they cannot infer readiness
 from this checkpoint.
+
+## Identity-only follow-up
+
+The shared continuation checker now factors an inert callable-metadata helper.
+The existing checker still validates metadata and executes the guard. Preparation
+uses the identity-only check immediately before the original canonical session,
+which executes the actual source guard itself. Fixed session/task/error/guard
+function, global and builtin bindings are checked before delegation, so a
+foreign prefix callback cannot run first. These are source-integrity pins, not
+eligibility results. No runtime replay, clock or actual write guard is removed.
+
+The new helper/prefix tests plus unchanged continuation, physical and source
+closure suites pass 142 tests, zero skips (`N388_IDENTITY_PREFIX_FOCUSED.xml`).
+The corresponding faithful loopback run has two passing cases and one failing
+observed ACK case (`N388_IDENTITY_PREFIX_FAITHFUL443.xml`). The unobserved case
+delivers one complete synthetic request, validates its reply and reads back the
+synthetic disarm successor. The observed case also delivers the complete request,
+but the existing execution expiry gate prevents late response validation.
+Its first native application enqueue is 4.412 seconds after the mutable quote;
+71 inert source-guard calls occur after intent, 17 after that enqueue.
+This is still a lower bound, not configured-runtime or whole-route acceptance.

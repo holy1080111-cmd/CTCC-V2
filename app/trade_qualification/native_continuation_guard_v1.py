@@ -361,7 +361,15 @@ def _guard_snapshot(guard):
     )
 
 
-def _check_guard(guard, snapshot):
+def _check_guard_identity_v2(guard, snapshot):
+    """Inert callable metadata only; this performs no source/eligibility check."""
+    if (
+        type(guard) is not FunctionType
+        or type(snapshot) is not tuple
+        or len(snapshot) != 6
+        or type(snapshot[5]) is not tuple
+    ):
+        raise NativeSourceClosureError("native_continuation_source_changed")
     code, namespace, defaults, kw, closure, cells = snapshot
     if (
         guard.__code__ is not code
@@ -381,6 +389,11 @@ def _check_guard(guard, snapshot):
         )
     ):
         raise NativeSourceClosureError("native_continuation_source_changed")
+
+
+def _check_guard(guard, snapshot):
+    # Existing semantics remain metadata validation AND actual guard execution.
+    _check_guard_identity_v2(guard, snapshot)
     guard()
 
 
@@ -391,6 +404,13 @@ def save_native_guard_v1(state, guard):
 
 def check_saved_native_guard_v1(state):
     _check_guard(state["native_source_guard"], state["native_source_guard_pin"])
+
+
+def check_saved_native_guard_identity_v2(state):
+    """No callback, authority, freshness result or permission is returned."""
+    _check_guard_identity_v2(
+        state["native_source_guard"], state["native_source_guard_pin"]
+    )
 
 
 def _finalized_close(closer):
