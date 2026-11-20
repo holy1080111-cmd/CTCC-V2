@@ -370,7 +370,7 @@ class _RawTransport:
 
 
 class _TLSBytes(anyio.abc.ByteStream):
-    __slots__ = ("_gate", "_native")
+    __slots__ = ("_entry_record", "_gate", "_native")
 
     def __init__(self, native, gate):
         _need(
@@ -381,6 +381,10 @@ class _TLSBytes(anyio.abc.ByteStream):
         _unshadowed(native._ssl_object, {"write", "read"})
         _need(ssl.SSLObject.write is _SSL_WRITE, "native_live_transport_ssl_changed")
         self._native, self._gate = native, _preparation_gate_v2(gate)
+        authority = _authority(gate)
+        from app.exchange.okx import native_live_write_v1 as entry
+
+        self._entry_record = entry._record(gate) if authority is entry else None
 
     async def send(self, item):
         def write(data):
@@ -390,12 +394,56 @@ class _TLSBytes(anyio.abc.ByteStream):
                 self._native._ssl_object, data
             )
 
-        _preparation_gate_v2(self._gate)
-        await _TLS_CALL(self._native, write, item)
-        _gate(self._gate)
+        authority = _authority(self._gate)
+        from app.exchange.okx import native_live_write_v1 as entry
+
+        if authority is not entry:
+            # The separately reviewed controlled-close family is unchanged.
+            _preparation_gate_v2(self._gate)
+            await _TLS_CALL(self._native, write, item)
+            _gate(self._gate)
+            return
+        try:
+            record, wire = entry._collect_entry_wire_v2(
+                self._gate, item, key=_TRANSPORT_KEY
+            )
+            _need(
+                record is self._entry_record,
+                "native_live_transport_entry_owner_changed",
+            )
+            if wire is None:
+                return
+            offset = 0
+            while offset < len(wire):
+                # A partial SSL acceptance only advances this original suffix.
+                # WantRead/WantWrite resumes inside the unchanged vendor helper
+                # and invokes the full SSL/raw gates after every internal await.
+                accepted = await _TLS_CALL(self._native, write, wire[offset:])
+                _need(
+                    type(accepted) is int and 0 < accepted <= len(wire) - offset,
+                    "native_live_transport_ssl_progress_invalid",
+                )
+                offset += accepted
+            _gate(self._gate)
+            entry._complete_entry_wire_v2(self._gate, key=_TRANSPORT_KEY)
+        except BaseException:
+            # Captured private DATA cleanup invokes no mutable helper callback.
+            # It cannot free risk, restore an event, retry or emit any bytes.
+            record = self._entry_record
+            if type(record) is dict:
+                record["entry_wire_state"] = "aborted"
+                record["entry_chunk_offset"] = 0
+                if record["phase"] != "spent":
+                    record["phase"] = "unknown"
+            raise
 
     async def receive(self, max_bytes=65536):
         _gate(self._gate)
+        authority = _authority(self._gate)
+        from app.exchange.okx import native_live_write_v1 as entry
+
+        if authority is entry:
+            entry._require_entry_response_ready_v2(self._gate, key=_TRANSPORT_KEY)
         value = await self._native.receive(max_bytes)
         # New reads still require the live gate BEFORE their await. Once bytes
         # have actually arrived they are DATA: retain and return them to the
@@ -412,6 +460,13 @@ class _TLSBytes(anyio.abc.ByteStream):
     async def aclose(self):
         # Never flush an application request or a TLS close handshake while
         # handling an expired, revoked, cancelled or ambiguous submission.
+        record = self._entry_record
+        if type(record) is dict:
+            if record["entry_wire_state"] != "complete":
+                record["entry_wire_state"] = "aborted"
+                record["entry_chunk_offset"] = 0
+            if record["phase"] != "spent":
+                record["phase"] = "unknown"
         self._native.transport_stream._transport.abort()
 
     @property

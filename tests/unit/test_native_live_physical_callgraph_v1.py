@@ -144,6 +144,10 @@ async def test_original_staged_worker_real_vendor_loopback_first_post_budget(
             "physical_phase": record.get("phase"),
             "physical_attempted": record.get("attempted", False),
             "physical_response_validated": record.get("response_checked", False),
+            "entry_original_wire_bytes": len(record.get("wire", b"")),
+            "entry_original_wire_accepted_bytes": record.get("accepted"),
+            "entry_plaintext_chunks_validated": record.get("entry_chunk_count"),
+            "entry_wire_collection_state": record.get("entry_wire_state"),
             "durable_inhibit_unconfirmed": record.get(
                 "durable_inhibit_unconfirmed", False
             ),

@@ -63,6 +63,8 @@ _HELD = WeakKeyDictionary()
 _NEGATIVE_TASKS = set()
 _ACTIVE = ContextVar("ctcc_owned_live_physical_v1", default=None)
 _ORDER_PATH = "/api/v5/trade/order"
+_MAX_ENTRY_WIRE_V2 = 16 * 1024
+_MAX_ENTRY_WIRE_CHUNKS_V2 = 16
 _COORDINATOR = "app.okx_live.owned_qualification_v1"
 # This existing API-integrity cache has one source-owned mutable slot. Its
 # namespace binding never changes and therefore remains fully source guarded.
@@ -910,10 +912,77 @@ def _bind_request(record, request):
     wire += connection.send(h11.Data(data=request.content)) + connection.send(
         h11.EndOfMessage()
     )
+    _need(0 < len(wire) <= _MAX_ENTRY_WIRE_V2, "native_live_entry_wire_bound")
     if record["wire"]:
         _need(record["wire"] == wire)
     else:
         record["wire"] = wire
+
+
+def _collect_entry_wire_v2(gate, data, *, key):
+    """Validate a bounded exact prefix; buffering creates no write permission.
+
+    No caller bytes are retained. Only an offset into the already owned complete
+    h11 request advances. The final chunk consumes this one-use collection state
+    before the first SSL callback; all actual writes still require full proof.
+    """
+    _need(key is transport._TRANSPORT_KEY)
+    record = _require_preparation_scope_v2(gate, key=key)
+    valid = (
+        record["entry_wire_state"] == "collecting"
+        and record["tls_ready"] is True
+        and record["transport_taken"] is True
+        and record["accepted"] == 0
+        and record["attempted"] is False
+        and type(record["wire"]) is bytes
+        and 0 < len(record["wire"]) <= _MAX_ENTRY_WIRE_V2
+        and type(record["entry_chunk_offset"]) is int
+        and 0 <= record["entry_chunk_offset"] < len(record["wire"])
+        and type(record["entry_chunk_count"]) is int
+        and 0 <= record["entry_chunk_count"] < _MAX_ENTRY_WIRE_CHUNKS_V2
+        and type(data) is bytes
+        and bool(data)
+        and record["wire"][
+            record["entry_chunk_offset"] : record["entry_chunk_offset"] + len(data)
+        ]
+        == data
+    )
+    if not valid:
+        record["entry_wire_state"], record["phase"] = "aborted", "unknown"
+        record["entry_chunk_offset"] = 0
+        _need(False, "native_live_entry_wire_prefix_denied")
+    record["entry_chunk_offset"] += len(data)
+    record["entry_chunk_count"] += 1
+    complete = record["entry_chunk_offset"] == len(record["wire"])
+    if complete:
+        record["entry_wire_state"] = "sending"
+    return record, record["wire"] if complete else None
+
+
+def _complete_entry_wire_v2(gate, *, key):
+    """Record successful vendor flushing, not a permit or exchange result."""
+    _need(key is transport._TRANSPORT_KEY)
+    record = _require_preparation_scope_v2(gate, key=key)
+    _need(
+        record["entry_wire_state"] == "sending"
+        and record["entry_chunk_offset"] == len(record["wire"])
+        and record["accepted"] == len(record["wire"]) > 0
+        and record["attempted"] is True,
+        "native_live_entry_wire_incomplete",
+    )
+    record["entry_wire_state"] = "complete"
+
+
+def _require_entry_response_ready_v2(gate, *, key):
+    # The immediately preceding full transport gate owns source/liveness checks.
+    # This additional DATA condition cannot authorize any network write.
+    _need(key is transport._TRANSPORT_KEY)
+    record = _record(gate)
+    _need(
+        record["entry_wire_state"] == "complete"
+        and record["accepted"] == len(record["wire"]) > 0,
+        "native_live_entry_wire_incomplete",
+    )
 
 
 def _new_gate(record):
@@ -969,6 +1038,9 @@ def _new_gate(record):
         request=None,
         wire=b"",
         accepted=0,
+        entry_wire_state="collecting",
+        entry_chunk_offset=0,
+        entry_chunk_count=0,
         transport_taken=False,
         tls_ready=False,
         attempted=False,
