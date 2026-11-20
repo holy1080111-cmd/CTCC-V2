@@ -36,9 +36,11 @@ def _request_record():
         "OK-ACCESS-SIGN": "synthetic-signature",
         "OK-ACCESS-TIMESTAMP": "2026-11-20T00:00:00.000Z",
         "OK-ACCESS-PASSPHRASE": "synthetic-passphrase",
-        "expTime": "1795132800000",
+        "expTime": str(source._utc_ns(value.deadline) // 1_000_000),
     }
-    facts = SimpleNamespace(request_json=body, request_sha256=sha(body))
+    facts = SimpleNamespace(
+        request_json=body, request_sha256=sha(body), deadline_utc=value.deadline
+    )
     record = {"facts": facts, "origin": "https://openapi.okx.com", "wire": b""}
     return record, httpx.Request(
         "POST", record["origin"] + subject._ORDER_PATH, headers=headers, content=body
@@ -67,6 +69,9 @@ def test_live_exact_wire_has_fok_bound_and_never_simulated_trading_header():
         "host",
         "path",
         "method",
+        "extended_deadline",
+        "shortened_deadline",
+        "invalid_deadline",
     ),
 )
 def test_live_wire_refuses_header_body_route_or_method_substitution(mutation):
@@ -89,6 +94,19 @@ def test_live_wire_refuses_header_body_route_or_method_substitution(mutation):
         url = "https://openapi.okx.com/api/v5/trade/close-position"
     elif mutation == "method":
         method = "GET"
+    elif mutation.endswith("deadline"):
+        expected = int(request.headers["exptime"])
+        replacement = (
+            str(expected + 1)
+            if mutation == "extended_deadline"
+            else str(expected - 1)
+            if mutation == "shortened_deadline"
+            else "not-a-deadline"
+        )
+        headers = [
+            (name, replacement.encode("ascii") if name.lower() == b"exptime" else value)
+            for name, value in headers
+        ]
     changed = httpx.Request(method, url, headers=headers, content=body)
     with pytest.raises(subject.NativeLiveWriteError):
         subject._bind_request(record, changed)

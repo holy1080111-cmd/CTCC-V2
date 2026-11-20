@@ -690,6 +690,8 @@ def _bind_request(record, request):
         and request.headers["host"] == urlsplit(record["origin"]).hostname
         and request.headers["content-length"] == str(len(facts.request_json))
         and request.headers["accept-encoding"] == "identity"
+        and request.headers["exptime"]
+        == str(source._utc_ns(facts.deadline_utc) // 1_000_000)
     )
     connection = h11.Connection(h11.CLIENT)
     wire = connection.send(
