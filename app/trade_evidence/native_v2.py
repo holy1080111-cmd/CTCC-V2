@@ -9,6 +9,7 @@ import hashlib
 from dataclasses import fields
 from datetime import datetime
 from decimal import Context, Decimal, localcontext
+from enum import Enum
 from types import MappingProxyType
 from typing import Annotated, Literal
 
@@ -39,7 +40,9 @@ from app.trade_qualification.location import (
 from app.trade_qualification.models import EntryQualificationResult
 
 
-def _replay_native_evidence_quote_v2(value, handler):
+def _replay_evidence_quote_profile(
+    value, handler, *, quote_type, quote_schema, inspector
+):
     """Keep every fixed V2 field while reconstructing its original dataclasses.
 
     Pydantic's strict dataclass revalidation treats init=False metadata as extra
@@ -47,11 +50,11 @@ def _replay_native_evidence_quote_v2(value, handler):
     ONLY the already checked fixed constructor arguments. Original V2 inspectors
     replay all funding bytes, hashes, pair semantics, clocks and false flags.
     """
-    if type(value) is ExecutableQuoteV2:
+    if type(value) is quote_type:
         quote = value
     elif type(value) is dict:
         if (
-            set(value) != {item.name for item in fields(ExecutableQuoteV2)}
+            set(value) != {item.name for item in fields(quote_type)}
             or type(value.get("funding")) is not dict
             or set(value["funding"])
             != {item.name for item in fields(FundingObservationV2)}
@@ -72,7 +75,7 @@ def _replay_native_evidence_quote_v2(value, handler):
             (
                 copied,
                 (
-                    ("schema_version", "ctcc.executable_quote.v2"),
+                    ("schema_version", quote_schema),
                     ("region", "global"),
                     ("source_authenticity_verified", False),
                     ("execution_authority", False),
@@ -103,19 +106,48 @@ def _replay_native_evidence_quote_v2(value, handler):
         # The wrap handler receives parsed Python values; the explicit JSON
         # adapter preserves strict JSON datetime/Decimal/bytes semantics.
         # Its target is the original dataclass, without this evidence wrapper.
-        quote = TypeAdapter(ExecutableQuoteV2).validate_json(
-            canonical(copied), strict=True
-        )
+        quote = TypeAdapter(quote_type).validate_json(canonical(copied), strict=True)
     else:
         raise ValueError("native_v2_exact_quote_type_required")
-    if type(quote) is not ExecutableQuoteV2:
+    if type(quote) is not quote_type:
         raise ValueError("native_v2_exact_quote_type_required")
-    inspected = inspect_executable_quote_v2(
-        quote, current_time=quote.capture_completed_at
-    )
+    inspected = inspector(quote, current_time=quote.capture_completed_at)
     if decode(inspected.receipt_json)["profile_satisfied"] is not True:
         raise ValueError("native_v2_quote_observation_replay_invalid")
     return quote
+
+
+def _replay_native_evidence_quote_v2(value, handler):
+    return _replay_evidence_quote_profile(
+        value,
+        handler,
+        quote_type=ExecutableQuoteV2,
+        quote_schema="ctcc.executable_quote.v2",
+        inspector=inspect_executable_quote_v2,
+    )
+
+
+class NativeEvidenceProfileV1(Enum):
+    DEMO = "demo"
+    LIVE = "live"
+
+
+def _profile(profile):
+    if type(profile) is not NativeEvidenceProfileV1:
+        raise service.EvidenceError("native_evidence_profile_required")
+    if profile is NativeEvidenceProfileV1.DEMO:
+        return ExecutableQuoteV2, inspect_executable_quote_v2, NativeEvidenceSnapshotV2
+    from app.trade_evidence.live_v1 import LiveEvidenceSnapshotV1
+    from app.trade_qualification.executable_quote_live_v1 import (
+        LiveExecutableQuoteV1,
+        inspect_live_executable_quote_v1,
+    )
+
+    return (
+        LiveExecutableQuoteV1,
+        inspect_live_executable_quote_v1,
+        LiveEvidenceSnapshotV1,
+    )
 
 
 class NativeEvidenceSnapshotV2(EvidenceSnapshot):
@@ -202,7 +234,7 @@ def _family_protection_v3(protection, event, market, analysis, qualification):
     return actual.to_audit_json(), policy["tick_size"]
 
 
-def prepare_native_evidence_v2(
+def _prepare_native_evidence_profile(
     market,
     analysis,
     *,
@@ -213,7 +245,9 @@ def prepare_native_evidence_v2(
     prepared_at,
     zone_tick_size,
     candle_limit=80,
+    _profile_choice=NativeEvidenceProfileV1.DEMO,
 ):
+    quote_type, inspect_quote, base_snapshot_type = _profile(_profile_choice)
     if (
         type(qualification)
         not in (
@@ -222,7 +256,7 @@ def prepare_native_evidence_v2(
         )
         or len(qualification.gates) != 11
         or not all(gate.passed for gate in qualification.gates)
-        or type(quote) is not ExecutableQuoteV2
+        or type(quote) is not quote_type
         or type(candle_limit) is not int
         or not 80 <= candle_limit <= 200
     ):
@@ -230,6 +264,8 @@ def prepare_native_evidence_v2(
     family = (
         type(qualification) is _owned_family_v3.OwnedFamilyEntryQualificationResultV2
     )
+    if family and _profile_choice is NativeEvidenceProfileV1.LIVE:
+        raise service.EvidenceError("live_exact_family_profile_required")
     expected_type = (
         _owned_family_v3.OwnedFamilyEntryQualificationResultV2
         if family
@@ -265,7 +301,7 @@ def prepare_native_evidence_v2(
     )
     if code != "passed" or zone != q.entry_zone:
         raise service.EvidenceError("native_v2_original_zone_changed")
-    inspection = inspect_executable_quote_v2(quote, current_time=q.evaluated_at)
+    inspection = inspect_quote(quote, current_time=q.evaluated_at)
     reference = quote.ticker.ask if q.direction == "long" else quote.ticker.bid
     if (
         decode(inspection.receipt_json)["profile_satisfied"] is not True
@@ -306,9 +342,7 @@ def prepare_native_evidence_v2(
         "candle_limit": candle_limit,
         "zone_tick_size": zone_tick_size,
     }
-    snapshot_type = (
-        NativeFamilyEvidenceSnapshotV3 if family else NativeEvidenceSnapshotV2
-    )
+    snapshot_type = NativeFamilyEvidenceSnapshotV3 if family else base_snapshot_type
     initial = snapshot_type(**values)
     doc = initial.model_dump(mode="json", round_trip=True)
     values["candidate_sha256"] = sha(
@@ -317,7 +351,11 @@ def prepare_native_evidence_v2(
                 "source_sha256": source_sha,
                 "qualification": doc["qualification"],
                 "detection": doc["detection"],
-                "quote_v2": doc["quote"],
+                (
+                    "quote_live_v1"
+                    if _profile_choice is NativeEvidenceProfileV1.LIVE
+                    else "quote_v2"
+                ): doc["quote"],
                 "protection_audit_json": audit,
                 "zone_tick_size": str(zone_tick_size),
             }
@@ -326,9 +364,32 @@ def prepare_native_evidence_v2(
     return snapshot_type(**values)
 
 
-def validate_native_snapshot_v2(snapshot):
+def prepare_native_evidence_v2(
+    market,
+    analysis,
+    *,
+    qualification,
+    detection,
+    quote,
+    protection,
+    prepared_at,
+    zone_tick_size,
+    candle_limit=80,
+):
+    return _prepare_native_evidence_profile(**locals())
+
+
+def _validate_native_evidence_profile(
+    snapshot, *, _profile_choice=NativeEvidenceProfileV1.DEMO
+):
+    quote_type, inspect_quote, base_snapshot_type = _profile(_profile_choice)
+    allowed = (
+        (NativeEvidenceSnapshotV2, NativeFamilyEvidenceSnapshotV3)
+        if _profile_choice is NativeEvidenceProfileV1.DEMO
+        else (base_snapshot_type,)
+    )
     if (
-        type(snapshot) not in (NativeEvidenceSnapshotV2, NativeFamilyEvidenceSnapshotV3)
+        type(snapshot) not in allowed
         or set(snapshot.__dict__) != set(type(snapshot).model_fields)
         or snapshot.__pydantic_extra__
         or type(snapshot.qualification)
@@ -337,15 +398,17 @@ def validate_native_snapshot_v2(snapshot):
             if type(snapshot) is NativeFamilyEvidenceSnapshotV3
             else EntryQualificationResult
         )
-        or type(snapshot.quote) is not ExecutableQuoteV2
+        or type(snapshot.quote) is not quote_type
         or type(snapshot.panels) is not tuple
         or any(type(panel) is not EvidencePanel for panel in snapshot.panels)
     ):
         raise service.EvidenceError("native_v2_exact_snapshot_required")
     # Validate quote components BEFORE any snapshot serializer traverses them.
-    inspect_executable_quote_v2(
+    inspected = inspect_quote(
         snapshot.quote, current_time=snapshot.qualification.evaluated_at
     )
+    if decode(inspected.receipt_json)["profile_satisfied"] is not True:
+        raise service.EvidenceError("native_evidence_quote_profile_denied")
     for field_name, value in snapshot.__dict__.items():
         if field_name != "quote":
             service._guard(value)
@@ -382,7 +445,7 @@ def validate_native_snapshot_v2(snapshot):
     )
     if protection.to_audit_json() != snapshot.protection_audit_json:
         raise service.EvidenceError("native_v2_original_protection_changed")
-    rebuilt = prepare_native_evidence_v2(
+    rebuilt = _prepare_native_evidence_profile(
         market,
         analysis,
         qualification=snapshot.qualification,
@@ -392,15 +455,24 @@ def validate_native_snapshot_v2(snapshot):
         prepared_at=snapshot.prepared_at,
         zone_tick_size=snapshot.zone_tick_size,
         candle_limit=snapshot.candle_limit,
+        _profile_choice=_profile_choice,
     )
     if rebuilt != snapshot:
         raise service.EvidenceError("native_v2_snapshot_rebuild_mismatch")
     return rebuilt
 
 
-def render_native_evidence_v2(snapshot):
+def validate_native_snapshot_v2(snapshot):
+    return _validate_native_evidence_profile(snapshot)
+
+
+def _render_native_evidence_profile(
+    snapshot, *, _profile_choice=NativeEvidenceProfileV1.DEMO
+):
     """Reuse the existing chart primitives and exact immutable six-file protocol."""
-    checked = validate_native_snapshot_v2(snapshot)
+    checked = _validate_native_evidence_profile(
+        snapshot, _profile_choice=_profile_choice
+    )
     output, notes = {}, {}
     with localcontext(Context(prec=100)):
         for panel, name in zip(checked.panels, renderer.IMAGE_NAMES[:4], strict=True):
@@ -425,7 +497,9 @@ def render_native_evidence_v2(snapshot):
         "report_id": checked.report_id,
         "snapshot": checked.model_dump(mode="json", round_trip=True),
         "renderer": renderer._renderer_identity(liquidity_summary=True),
-        "native_source_contract": "ctcc.native_original_candidate.v2",
+        "native_source_contract": "ctcc.native_live_original_candidate.v1"
+        if _profile_choice is NativeEvidenceProfileV1.LIVE
+        else "ctcc.native_original_candidate.v2",
         "images": {
             name: {
                 "sha256": hashlib.sha256(output[name]).hexdigest(),
@@ -442,3 +516,7 @@ def render_native_evidence_v2(snapshot):
     if len(output["report.json"]) > renderer.MAX_REPORT_BYTES:
         raise service.EvidenceError("native_v2_report_byte_limit_exceeded")
     return MappingProxyType(output)
+
+
+def render_native_evidence_v2(snapshot):
+    return _render_native_evidence_profile(snapshot)

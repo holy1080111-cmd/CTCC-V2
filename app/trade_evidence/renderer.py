@@ -242,10 +242,11 @@ def _label_positions(actual, top, bottom):
 
 def _quote_display(snapshot):
     """Display V2 source clocks directly; never build a legacy quote."""
+    from app.trade_qualification.executable_quote_live_v1 import LiveExecutableQuoteV1
     from app.trade_qualification.executable_quote_v2 import ExecutableQuoteV2
 
     quote = snapshot.quote
-    if type(quote) is ExecutableQuoteV2:
+    if type(quote) in (ExecutableQuoteV2, LiveExecutableQuoteV1):
         return (
             quote.ticker.ask if snapshot.direction == "long" else quote.ticker.bid,
             quote.ticker.source_generated_at,
