@@ -4,11 +4,126 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import sys
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 
 from scripts import windows_tool_0058_v1 as package
+
+
+def _desktop_startup(stream):
+    """A bounded readiness nonce is DATA, never the API token or an Arm."""
+    from scripts.desktop_windows_tool_0058_v1 import STARTUP_SCHEMA
+
+    raw = stream.read(257)
+    package.need(type(raw) is bytes and 0 < len(raw) <= 256)
+    value = package.json.loads(raw)
+    package.need(
+        type(value) is dict and set(value) == {"schema", "nonce", "profile_sha256"}
+    )
+    package.need(package.canonical(value) == raw and value["schema"] == STARTUP_SCHEMA)
+    package.need(
+        type(value["nonce"]) is str
+        and re.fullmatch(r"[a-f0-9]{64}", value["nonce"]) is not None
+    )
+    package.need(
+        type(value["profile_sha256"]) is str
+        and re.fullmatch(r"[a-f0-9]{64}", value["profile_sha256"]) is not None
+    )
+    return value
+
+
+class _DesktopReadiness:
+    """Only launcher-wrapped apps expose this closed loopback DATA route."""
+
+    def __init__(self, application, document, nonce):
+        from scripts.desktop_windows_tool_0058_v1 import (
+            READINESS_PATH,
+            READINESS_SCHEMA,
+        )
+
+        package.need(
+            type(nonce) is str and re.fullmatch(r"[a-f0-9]{64}", nonce) is not None
+        )
+        identity = package.verify(
+            Path(document["package_root"]), document["package_identity_sha256"]
+        )
+        self.application, self.path, self.port = (
+            application,
+            READINESS_PATH,
+            document["port"],
+        )
+        package.need(type(self.port) is int and 1024 <= self.port <= 65535)
+        self.body = package.canonical(
+            {
+                "schema": READINESS_SCHEMA,
+                "nonce": nonce,
+                "pid": os.getpid(),
+                "package_identity_sha256": document["package_identity_sha256"],
+                "source_commit": identity["source_commit"],
+                "mode": document["mode"],
+                "execution_authority": False,
+            }
+        )
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope.get("path") != self.path:
+            return await self.application(scope, receive, send)
+        from starlette.responses import Response
+
+        headers = scope.get("headers", ())
+        shape = (
+            type(headers) in (tuple, list)
+            and len(headers) <= 64
+            and all(
+                type(pair) in (tuple, list)
+                and len(pair) == 2
+                and all(type(part) is bytes for part in pair)
+                for pair in headers
+            )
+        )
+        rows = [(key.lower(), value) for key, value in headers] if shape else []
+        names = [key for key, _ in rows]
+        expected = f"127.0.0.1:{self.port}".encode("ascii")
+        origin = b"http://" + expected
+        peer = scope.get("client")
+        server = scope.get("server")
+        valid = (
+            shape
+            and scope.get("method") == "GET"
+            and scope.get("scheme") == "http"
+            and scope.get("query_string", b"") == b""
+            and type(peer) in (tuple, list)
+            and len(peer) == 2
+            and peer[0] == "127.0.0.1"
+            and type(server) in (tuple, list)
+            and tuple(server) == ("127.0.0.1", self.port)
+            and names.count(b"host") == 1
+            and dict(rows).get(b"host") == expected
+            and len(names) == len(set(names))
+            and not set(names).intersection(
+                {
+                    b"forwarded",
+                    b"x-forwarded-host",
+                    b"x-forwarded-for",
+                    b"x-forwarded-proto",
+                    b"authorization",
+                    b"cookie",
+                    b"x-ctcc-token",
+                    b"transfer-encoding",
+                }
+            )
+            and dict(rows).get(b"origin", origin) == origin
+            and dict(rows).get(b"content-length", b"0") == b"0"
+        )
+        response = Response(
+            self.body if valid else b'{"status":"REFUSED"}',
+            status_code=200 if valid else 403,
+            media_type="application/json",
+            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+        )
+        return await response(scope, receive, send)
 
 
 @contextmanager
@@ -126,10 +241,21 @@ def main(arguments=None):
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--check", action="store_true")
     mode.add_argument("--serve", action="store_true")
+    parser.add_argument("--desktop-readiness-stdin", action="store_true")
     args = parser.parse_args(arguments)
     try:
+        package.need(not args.desktop_readiness_stdin or args.serve)
+        startup = (
+            _desktop_startup(sys.stdin.buffer) if args.desktop_readiness_stdin else None
+        )
         profile = args.profile.absolute()
+        if startup is not None:
+            from app.config.windows_tool_profile_0058_v1 import _private
+
+            package.need(package.sha(_private(profile)) == startup["profile_sha256"])
         document = configure_process(profile)
+        if startup is not None:
+            package.need(package.sha(_private(profile)) == startup["profile_sha256"])
         root = Path(document["package_root"])
         package.need(package._SOURCE == root / "source")
         # The isolated interpreter is mandatory; host packages never silently
@@ -158,8 +284,11 @@ def main(arguments=None):
                 return 0
             import uvicorn
 
+            application = build_tool(document)
+            if startup is not None:
+                application = _DesktopReadiness(application, document, startup["nonce"])
             uvicorn.run(
-                build_tool(document),
+                application,
                 host="127.0.0.1",
                 port=document["port"],
                 workers=1,

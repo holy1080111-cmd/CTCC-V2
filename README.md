@@ -15,6 +15,12 @@ integration; they are not the installed deployment or release acceptance.
 By the user's revised scope, Gate3 and real trading examples are deferred;
 neither is reported as passed, and no profitability claim is made.
 
+After installing and configuring a reviewed Windows release, double-click
+`source/Open-CTCC.cmd` and choose that release's `tool-profile.json`. The
+[desktop launcher](docs/windows_tool_desktop_0058_v1.md) verifies the private
+profile, exact package and new local process before opening the page. It does
+not configure an account or supply trading authorization.
+
 ## Use CTCC analysis with a saved market snapshot
 
 The [Windows offline viewer](docs/offline_snapshot_only_windows.md) opens saved

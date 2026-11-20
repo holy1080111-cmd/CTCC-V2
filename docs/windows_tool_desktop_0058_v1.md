@@ -1,0 +1,48 @@
+# 開啟 CTCC 工具
+
+安裝並完成這個版本的設定後，雙擊發行目錄內的 `source/Open-CTCC.cmd`，
+選擇設定精靈產生的 `tool-profile.json`。程式會先核對設定、版本與本機服務，
+完成後才開啟頁面。啟動核對可能需要幾十秒。
+
+設定檔決定開啟分析、Demo 或 Live 工具。程式不會自動挑選舊設定，
+不會代為設定帳戶，也不會因為開啟頁面而授予交易權限。Live 預設關閉；
+原本的當次人工確認程序仍然適用。
+
+若尚未安裝隔離執行環境，啟動器會提示先完成安裝。設定不屬於這個版本、
+核對失敗或連接埠已被其他程式占用時，頁面不會開啟。
+若服務已完成核對但瀏覽器未能開啟，提示會提供固定的本機網址；服務會保留。
+正常開啟後，仍須在頁面輸入私人目錄中的本機存取碼。不要將存取碼放入網址、
+聊天、日誌或發行檔。
+
+## Source and process boundary
+
+The tracked batch file calls only this release's `runtime/Scripts/pythonw.exe`
+and fixed source script with isolated Python flags. It accepts no batch
+arguments and changes no PowerShell policy. A native existing-file picker makes
+the user's profile choice; no credential prompt or automatic configuration is
+part of launch.
+
+The existing private profile independently pins the exact package. Parent and
+child reread that owner-only profile and bind its byte hash. The hash and a fresh
+readiness nonce travel only through the newly created child's bounded stdin
+pipe. No API token or credential enters process arguments, environment, output,
+readiness metadata or browser URLs. The child uses the existing closed settings
+loader and exact isolated dependency inventory.
+
+Only launcher-wrapped applications expose `/_ctcc/desktop-ready/v1`. It accepts
+an exact loopback peer/server/Host and same-origin GET without query or private
+headers. The fixed response contains only child PID, nonce, mode and public
+package/source identity, with no account or Arm state. Ordinary application and
+lifespan handling are delegated unchanged. Manual CLI launch without the
+desktop flag does not add this endpoint.
+
+The parent checks native Windows TCP listener ownership before its zero-proxy,
+zero-redirect readiness GET and again before opening the browser. It requires
+the exact newly created child PID, nonce and package, rather than accepting a
+successful response from another process. A port conflict never opens a browser.
+Only its own new child can be terminated on failed startup; existing services,
+databases, journals and protection are never selected.
+
+The desktop helper supplies no qualification, Arm, reconciliation, order or
+release authority. It cannot migrate DB0017, adopt an older private profile,
+choose a live account, clear a stop or substitute for exact-source CI.

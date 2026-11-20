@@ -56,6 +56,16 @@ source directory, private profile, database, accepted journal or outbox. A
 partial stage or failed install refuses; it is not automatically repaired,
 deleted or activated. Keep it for diagnosis and stage a different directory.
 
+The actual Windows PowerShell5.1 rehearsal found that embedded double quotes
+in a native `-c` argument were removed before Python received them. The reviewed
+bridge now uses a Python single-quoted `__main__` literal, preserving native
+argument boundaries and source identity checks. A default Windows policy may
+refuse `.ps1` execution. For a locally reviewed, hash-verified release, the
+operator can invoke only that process as `powershell.exe -NoProfile
+-ExecutionPolicy Bypass -File ...`; no machine/user policy change is needed.
+The [double-click desktop launcher](windows_tool_desktop_0058_v1.md) uses the
+release's isolated Python directly and does not invoke PowerShell.
+
 ## Private configuration and launch
 
 `Configure` prompts locally and never accepts secrets as command arguments or
@@ -79,6 +89,12 @@ token remains in the private `api_token` file; paste it only into the local
 tool password field, never chat, a URL, logs or a report. The page holds it in
 memory. Notion worker flags default OFF; existing reviewed destination/token
 files can be bound by the private profile without moving them into a package.
+
+For normal use, double-click `source/Open-CTCC.cmd`, select the matching private
+`tool-profile.json`, and wait for the local page. Selection is explicit on each
+launch. The desktop route opens a page only after checking the newly launched
+process's real listener PID, one-use startup nonce and exact package identity.
+It does not select an existing profile, run the wizard or restore Arm.
 
 `CTCC_WINDOWS_TOOL_CONFIG_FILE` is the single opt-in configuration route. It
 requires owner-only regular files, exact source/package/schema pins and a
