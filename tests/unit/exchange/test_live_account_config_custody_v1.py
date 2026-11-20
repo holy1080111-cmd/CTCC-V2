@@ -8,25 +8,20 @@ import pytest
 from app.domain.source_primitives import canonical, decode, sha
 from app.exchange.okx import live_account_config_custody_v1 as custody
 from app.exchange.okx.live_read_lease_v1 import OkxLivePinnedGetClientV1
+from tests.native_private_temp_v1 import (
+    _private_root_path as _private_root_path,  # noqa: PLC0414 -- compatibility re-export.
+)
+from tests.native_private_temp_v1 import (
+    _set_protected_directory_dacl as _set_protected_directory_dacl,  # noqa: PLC0414 -- compatibility re-export.
+)
 from tests.unit.exchange.test_live_account_config_observation_v1 import (
     _http,
     _raw_response,
     _settings,
     _success,
 )
-from tests.unit.test_native_private_root_inheritance_windows_v2 import (
-    _set_protected_directory_dacl,
-)
 
 ATTEMPT = "a" * 32
-
-
-def _private_root_path(tmp_path):
-    root = tmp_path / "private-custody"
-    root.mkdir(mode=0o700)
-    if os.name == "nt":
-        _set_protected_directory_dacl(root, initialize_owner=True)
-    return root
 
 
 @pytest.fixture

@@ -17,7 +17,7 @@ from app.domain.native_clock import native_stamp as observed_native_stamp
 from app.domain.source_primitives import ClockStamp, canonical, sha, utc_from_ns
 from app.okx_live import owned_qualification_v1 as q
 from app.trade_qualification.engine import PreEvidencePolicy
-from tests.unit.exchange.test_live_account_config_custody_v1 import _private_root_path
+from tests.native_private_temp_v1 import _private_root_path
 from tests.unit.qualification_engine_fixtures import engine_inputs
 from tests.unit.research import test_native_live_public_source_v1 as public_fixture
 from tests.unit.research.test_owned_public_runtime_p1 import SyntheticClock
