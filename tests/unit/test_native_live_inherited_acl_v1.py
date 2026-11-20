@@ -95,3 +95,18 @@ def test_unknown_missing_duplicate_or_extra_routine_never_becomes_allowlisted():
     ):
         with pytest.raises(ValueError):
             subject.verify_inherited_live_helper_rows_v1(changed, owner_oid=16384)
+
+
+def test_actual58_expected_helper_uses_only_reviewed_new_report_body_and_refuses_old_body():
+    rows = _rows()
+    row = next(
+        row for row in rows if row["name"] == "qualification_native_report_eligible_v55"
+    )
+    assert row["source"] == subject.protective_reports.ELIGIBLE_SQL.split("$ctcc$")[1]
+    old = subject.reports.ELIGIBLE_SQL.split("$ctcc$")[1]
+    assert row["source"] != old
+    row["source"] = old
+    with pytest.raises(
+        ValueError, match="native_live_inherited_helper_catalog_refused"
+    ):
+        subject.verify_inherited_live_helper_rows_v1(rows, owner_oid=16384)

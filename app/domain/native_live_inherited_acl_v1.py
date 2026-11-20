@@ -12,6 +12,7 @@ from app.domain import native_closed_report_schema_v55 as reports
 from app.domain import native_filled_flat_closure_schema_v55 as filled
 from app.domain import native_leverage_configuration_schema_v55 as leverage
 from app.domain import native_protective_hold_schema_v58 as protective
+from app.domain import native_protective_report_schema_v58 as protective_reports
 from app.domain.source_primitives import canonical, sha
 
 
@@ -34,6 +35,12 @@ def inherited_live_data_helper_specs_v1():
     }
     for name, args, returns, sql, delimiter, public in reports.FUNCTIONS:
         if public and returns != "trigger":
+            if name == "qualification_native_report_eligible_v55":
+                # This module describes the actual physical58 Live profile.
+                # Its same-name report helper has an explicit source58 body;
+                # the physical55/56/57 catalog inspectors stay frozen.
+                protective_reports.statements()
+                sql = protective_reports.ELIGIBLE_SQL
             specs[name] = (
                 args,
                 returns,
