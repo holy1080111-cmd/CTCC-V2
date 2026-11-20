@@ -11,6 +11,7 @@ from app.domain import collector_current_0055_catalog_v1 as inherited
 from app.domain import controlled_history_current55_schema_v2 as history55
 from app.domain import g12_custody_catalog_0057_v1 as g12
 from app.domain import native_database_profile_v1 as profiles
+from app.domain import native_protective_catalog_0058_v1 as protective58
 from app.domain.source_primitives import canonical
 
 SCHEMA = "ctcc.collector_current0056.actual_inherited_catalog.v1"
@@ -322,13 +323,14 @@ def observe_controlled_history_0056(
 
 def _observe_inherited_graph(value, *, owner_mode, read_only, profile=profiles.DB0056):
     profiles.checked(profile)
-    if profile is profiles.DB0057 and owner_mode:
+    if profile in (profiles.DB0057, profiles.DB0058) and owner_mode:
         inherited._deny()
     if (
         type(value) is not dict
         or set(value)
         != inherited.CATALOG_KEYS
-        | ({"g12_0057"} if profile is profiles.DB0057 else set())
+        | ({"g12_0057"} if profile in (profiles.DB0057, profiles.DB0058) else set())
+        | ({"native_protective58"} if profile is profiles.DB0058 else set())
         or value["schema"] != profiles.schema(profile, SCHEMA)
     ):
         inherited._deny()
@@ -400,15 +402,24 @@ def _observe_inherited_graph(value, *, owner_mode, read_only, profile=profiles.D
     )
     g12_defs = (
         g12.observe_catalog_0057(
-            value["g12_0057"], owner=owner, writer=controlled_defs["writer_role_oid"]
+            value["g12_0057"],
+            owner=owner,
+            writer=controlled_defs["writer_role_oid"],
+            **({"profile": profile} if profile is profiles.DB0058 else {}),
         )
-        if profile is profiles.DB0057
+        if profile in (profiles.DB0057, profiles.DB0058)
         else None
     )
-    submission_def = inherited._submission55(value["native_submission55"], owner=owner)
-    closure_defs = inherited._closure55(
-        value["native_closure55"], owner=owner, configuration=configuration
-    )
+    submission_def = (
+        protective58.observe_submission58
+        if profile is profiles.DB0058
+        else inherited._submission55
+    )(value["native_submission55"], owner=owner)
+    closure_defs = (
+        protective58.observe_closure58
+        if profile is profiles.DB0058
+        else inherited._closure55
+    )(value["native_closure55"], owner=owner, configuration=configuration)
     terminal_defs = inherited.native_terminal.observe_catalog(
         value["native_terminal55"], owner=owner
     )
@@ -421,6 +432,15 @@ def _observe_inherited_graph(value, *, owner_mode, read_only, profile=profiles.D
         actor=role["oid"],
         owner_mode=owner_mode,
         configuration=configuration,
+    )
+    protective_defs = (
+        protective58.observe_catalog(
+            value["native_protective58"],
+            owner=owner,
+            original_close=value["native_close_intent55"],
+        )
+        if profile is profiles.DB0058
+        else None
     )
     # Only now reuse unchanged54 body/table structural validators. Their old
     # native admission functions and head54 predicates are never called.
@@ -607,6 +627,11 @@ def _observe_inherited_graph(value, *, owner_mode, read_only, profile=profiles.D
                     if g12_defs is not None
                     else {}
                 ),
+                **(
+                    {"native_protective58": protective_defs}
+                    if protective_defs is not None
+                    else {}
+                ),
             }
         )
     ).hexdigest()
@@ -617,8 +642,16 @@ def _observe_inherited_graph(value, *, owner_mode, read_only, profile=profiles.D
         "legacy_0053_lineage_ddl_sha256": inherited.lineage.DDL_SHA256,
         "operator_ddl_sha256": inherited.FROZEN_OPERATOR_DDL_SHA256,
         "controlled_history_ddl_sha256": inherited.controlled_history.DDL_SHA256,
-        "native_submission_body_sha256": inherited.native_submission.CURRENT_BODY_SHA256,
-        "native_closure_body_sha256": inherited.native_closure.CURRENT_BODY_SHA256,
+        "native_submission_body_sha256": (
+            protective58.submission.CURRENT_BODY_SHA256
+            if profile is profiles.DB0058
+            else inherited.native_submission.CURRENT_BODY_SHA256
+        ),
+        "native_closure_body_sha256": (
+            protective58.schema.CURRENT_BODY_SHA256
+            if profile is profiles.DB0058
+            else inherited.native_closure.CURRENT_BODY_SHA256
+        ),
         "native_zero_closure_body_sha256": inherited.native_closure.ZERO_BODY_SHA256,
         "native_filled_flat_body_sha256": terminal_defs[
             "qualification_native_filled_flat_data_v55"
@@ -634,6 +667,16 @@ def _observe_inherited_graph(value, *, owner_mode, read_only, profile=profiles.D
         "native_baseline_admission": False,
         "account_complete": False,
         "execution_authority": False,
+        **(
+            {
+                "native_protective_flat_body_sha256": protective58.schema.PREDICATE_BODY_SHA256,
+                "native_protective_indexes_sha256": hashlib.sha256(
+                    canonical(protective_defs["indexes"])
+                ).hexdigest(),
+            }
+            if protective_defs is not None
+            else {}
+        ),
     }
 
 
@@ -683,11 +726,12 @@ def observe_owner_readwrite_installation_0056(value):
 def actor_catalog_sql(profile=profiles.DB0056):
     """Capture the real head and G12 successor metadata in one SQL snapshot."""
     query = profiles.catalog_query(profile, ACTOR_CATALOG_SQL, SCHEMA)
-    if profile is profiles.DB0057:
+    if profile in (profiles.DB0057, profiles.DB0058):
+        additions = "'g12_0057',(" + g12.CATALOG_SQL + ")"
+        if profile is profiles.DB0058:
+            additions += ",'native_protective58',(" + protective58.CATALOG_SQL + ")"
         return (
-            "SELECT captured.value || jsonb_build_object('g12_0057',("
-            + g12.CATALOG_SQL
-            + ")) "
+            "SELECT captured.value || jsonb_build_object(" + additions + ") "
             "FROM (" + query + ") AS captured(value)"
         )
     return query

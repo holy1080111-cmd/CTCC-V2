@@ -65,7 +65,7 @@ class NativeLockedDemoControl0056V1:
     writer_catalog: writer56.NativeWriter0056ObservationV1
     server_incarnation_sha256: str
     role_route_sha256: str
-    database_head: Literal["0056", "0057"] = field(default="0056")
+    database_head: Literal["0056", "0057", "0058"] = field(default="0056")
     issuance_authority: Literal[False] = field(default=False, init=False)
     execution_authority: Literal[False] = field(default=False, init=False)
 

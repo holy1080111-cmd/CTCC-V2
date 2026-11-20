@@ -1077,7 +1077,7 @@ async def _current0055_custody_schema_identity(session, role, *, expected_head):
             diagnostic_category="current55_schema_identity",
         ) from None
 
-    if expected_head not in ("0055", "0056", "0057"):
+    if expected_head not in ("0055", "0056", "0057", "0058"):
         deny()
     baseline = current55._required_baseline()
     if (
@@ -1309,6 +1309,7 @@ class RuntimeBundleCustodyRepository:
                 "0055",
                 "0056",
                 "0057",
+                "0058",
             }:
                 raise RuntimeBundleCustodyError(
                     "runtime_bundle_custody_unavailable",
@@ -1372,14 +1373,14 @@ class RuntimeBundleCustodyRepository:
                     session,
                     (
                         _INCOMING_CUSTODY_FK_SQL_CURRENT0054
-                        if migration_head in {"0054", "0055", "0056", "0057"}
+                        if migration_head in {"0054", "0055", "0056", "0057", "0058"}
                         else _INCOMING_CUSTODY_FK_SQL
                     ),
                     category="trigger_query",
                 )
             ).all()
         )
-        if migration_head in {"0055", "0056", "0057"}:
+        if migration_head in {"0055", "0056", "0057", "0058"}:
             current55_identity = await _current0055_custody_schema_identity(
                 session, role, expected_head=migration_head
             )

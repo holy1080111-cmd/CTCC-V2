@@ -148,7 +148,7 @@ def _source(record):
         or value.current_plan.environment != "demo"
         or value.current_plan.settlement_currency != "USDT"
         or type(value.database_head) is not str
-        or value.database_head not in {"0055", "0056", "0057"}
+        or value.database_head not in {"0055", "0056", "0057", "0058"}
         or type(value.writer_role_oid) is not int
         or value.writer_role_oid <= 0
         or value.execution_authority is not False

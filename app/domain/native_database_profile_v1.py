@@ -36,6 +36,16 @@ def from_head(value: str) -> NativeDatabaseProfileV1:
     return NativeDatabaseProfileV1(value)
 
 
+def reservation_update_body(profile: NativeDatabaseProfileV1) -> str:
+    """Exact source pin, meaningful only inside a genuine held catalog check."""
+    checked(profile)
+    if profile is DB0058:
+        from app.domain.native_protective_hold_schema_v58 import CURRENT_BODY_SHA256
+    else:
+        from app.domain.native_filled_flat_closure_schema_v55 import CURRENT_BODY_SHA256
+    return CURRENT_BODY_SHA256
+
+
 def schema(profile: NativeDatabaseProfileV1, previous: str) -> str:
     """Version a source-defined wire label, never an observed database record."""
     checked(profile)

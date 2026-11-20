@@ -339,9 +339,9 @@ async def _catalog_metadata(session, state, transition=None):
 async def _read_current_control(session, scope, catalog):
     if catalog.head == "0056":
         return await issuer_transaction.read_actual_issuer_control_0056(session, scope)
-    if catalog.head == "0057":
+    if catalog.head in ("0057", "0058"):
         return await issuer_transaction.read_actual_issuer_control_0056(
-            session, scope, database_head="0057"
+            session, scope, database_head=catalog.head
         )
     return await DemoControlRepositoryV2.read_in_transaction(session, scope)
 

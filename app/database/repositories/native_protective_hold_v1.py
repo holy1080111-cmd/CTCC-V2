@@ -12,6 +12,7 @@ from sqlalchemy import text
 
 from app.database.repositories import native_postsubmit_v1 as journal
 from app.domain import native_protective_hold_schema_v58 as schema
+from app.domain import native_submission_binding_schema_v58 as submission
 from app.domain.source_primitives import canonical, decode, sha
 from app.trade_qualification import native_protective_exit_facts_v1 as facts
 
@@ -46,7 +47,7 @@ async def _require_installed_schema(binding, session):
                     "pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(p.prosrc,'UTF8')),'hex'),"
                     "p.prosecdef,p.proconfig FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n "
                     "ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname IN "
-                    "('qualification_native_protective_flat_data_v58','qualification_reservation_update')"
+                    "('qualification_native_protective_flat_data_v58','qualification_reservation_update','qualification_submission_binding')"
                 )
             )
         ).all()
@@ -68,9 +69,16 @@ async def _require_installed_schema(binding, session):
             False,
             ("search_path=pg_catalog, pg_temp",),
         ),
+        (
+            submission.FUNCTION,
+            "",
+            submission.CURRENT_BODY_SHA256,
+            False,
+            (),
+        ),
     }
     journal.need(
-        len(rows) == 2
+        len(rows) == 3
         and {(row[0], row[1], row[2], row[3], tuple(row[4] or ())) for row in rows}
         == expected,
         "native_protective58_installed_schema_unavailable",

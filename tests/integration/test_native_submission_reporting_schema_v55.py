@@ -156,7 +156,8 @@ async def insert_case(connection, case):
     )
     await connection.execute(
         text(
-            "INSERT INTO qualification_reservations VALUES "
+            "INSERT INTO qualification_reservations "
+            "(reservation_id,environment,account_id,settlement_currency,request_json,request_sha256,created_at,state) VALUES "
             "(:id,:environment,:account_id,:settlement_currency,:raw,:sha,:stamp,:state)"
         ),
         {
@@ -194,7 +195,12 @@ async def insert_case(connection, case):
                 "intent": sha(outer_json),
                 "at": stamp,
                 "status": case["closed_witness"][0],
-                "capture": dump({"version": case["closed_witness"][1]}),
+                "capture": dump(
+                    {
+                        "version": case["closed_witness"][1],
+                        **case.get("closed_witness_capture", {}),
+                    }
+                ),
             },
         )
         await connection.execute(

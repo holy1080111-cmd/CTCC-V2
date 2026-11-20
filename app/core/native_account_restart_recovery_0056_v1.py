@@ -26,7 +26,7 @@ class NativeAccountRestartRecovery0056V1:
     status: Literal["STOP_PERSISTED", "STOP_OBSERVED"]
     revision: int
     control_event_sha256: str
-    database_head: Literal["0056", "0057"] = field(default="0056")
+    database_head: Literal["0056", "0057", "0058"] = field(default="0056")
     emergency_stop: Literal[True] = field(default=True, init=False)
     armed: Literal[False] = field(default=False, init=False)
     positions_reconciled: Literal[False] = field(default=False, init=False)

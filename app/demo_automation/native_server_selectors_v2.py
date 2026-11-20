@@ -348,10 +348,8 @@ async def select_configured_demo_identity_v2(
             for purpose in (_RUNTIME_CONTROLLED, _RUNTIME_HISTORY, _RUNTIME_RECOVERY)
         ):
             head = await _observe_runtime_database_head_v2(factories)
-            if head in ("0056", "0057"):
-                database_profile = (
-                    profiles.DB0056 if head == "0056" else profiles.DB0057
-                )
+            if head in ("0056", "0057", "0058"):
+                database_profile = profiles.from_head(head)
                 _source_use = (
                     _RECOVERY_0056
                     if _source_use is _RUNTIME_RECOVERY
@@ -598,7 +596,7 @@ async def _observe_runtime_database_head_v2(factories):
         _need(
             len(rows) == 1
             and type(rows[0]) is str
-            and rows[0] in ("0055", "0056", "0057")
+            and rows[0] in ("0055", "0056", "0057", "0058")
             and history._factory_pin(writer) == pin,
             "native_demo_runtime_database_profile_refused",
         )
@@ -663,14 +661,10 @@ def _profile_for_original_roles_0056(roles):
     _need(
         type(roles) is RestrictedNativeRoles0056WitnessV1
         and type(roles.observation) is old.RestrictedNativeRoles0056ObservationV1
-        and roles.observation.database_head in ("0056", "0057"),
+        and roles.observation.database_head in ("0056", "0057", "0058"),
         "native_demo_selector_database_profile_refused",
     )
-    profile = (
-        profiles.DB0056
-        if roles.observation.database_head == "0056"
-        else profiles.DB0057
-    )
+    profile = profiles.from_head(roles.observation.database_head)
     _need(
         roles.schema
         == profiles.schema(

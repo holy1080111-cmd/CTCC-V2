@@ -46,7 +46,7 @@ class NativeCurrentSource0056Error(ValueError):
 @dataclass(frozen=True, slots=True)
 class NativeCurrentSource0056ObservationV1:
     receipt_sha256: str
-    database_head: Literal["0056", "0057"] = field(default="0056")
+    database_head: Literal["0056", "0057", "0058"] = field(default="0056")
     admission: Literal["DENY"] = field(default="DENY", init=False)
     account_complete: Literal[False] = field(default=False, init=False)
     execution_authority: Literal[False] = field(default=False, init=False)
@@ -192,7 +192,7 @@ async def _observe_qualification_ledger(factories, roles, plan):
 def _qualification_source_document(operands, plan, plan_sha, before, after):
     _need(
         type(before) is type(after) is ledger56.NativeLedgerPreflight0056V1
-        and before.database_head in ("0056", "0057")
+        and before.database_head in ("0056", "0057", "0058")
         and before == replace(after, observed_at=before.observed_at)
         and before.emergency_stop is True
         and before.stored_arm_present is False
@@ -202,7 +202,7 @@ def _qualification_source_document(operands, plan, plan_sha, before, after):
         ),
         "native_qualification_0056_local_state_changed",
     )
-    profile = profiles.DB0056 if before.database_head == "0056" else profiles.DB0057
+    profile = profiles.from_head(before.database_head)
     source = _source_packet_document(
         operands, plan, plan_sha, **profiles.arguments(profile)
     )
@@ -374,7 +374,7 @@ def _publish(
             "native_current_0056_receipt_changed",
         )
     _need(
-        document.get("database_head") in ("0056", "0057"),
+        document.get("database_head") in ("0056", "0057", "0058"),
         "native_current_0056_head_required",
     )
     return NativeCurrentSource0056ObservationV1(

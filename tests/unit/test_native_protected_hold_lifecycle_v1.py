@@ -14,6 +14,7 @@ from app.demo_automation.native_requests_v2 import (
     NativeDemoProtectedEntryRequestV1,
 )
 from app.domain import native_protective_hold_schema_v58 as hold_schema
+from app.domain import native_submission_binding_schema_v58 as submission_schema
 from app.domain.demo_automation import ARM_PHRASE, EXECUTE_PHRASE
 from app.trade_qualification import native_protected_hold_lifecycle_v1 as holding
 from app.trade_qualification import native_protected_hold_recovery_v1 as recovery
@@ -154,6 +155,13 @@ async def test_installed_schema_uses_bare_pg_argument_types_and_refuses_named_su
             hold_schema.CURRENT_BODY_SHA256,
             False,
             ["search_path=pg_catalog, pg_temp"],
+        ),
+        (
+            submission_schema.FUNCTION,
+            "",
+            submission_schema.CURRENT_BODY_SHA256,
+            False,
+            None,
         ),
     ]
 

@@ -501,13 +501,11 @@ def _database_profile_from_roles_v6(roles):
         type(roles) is not witness56.RestrictedNativeRoles0056WitnessV1
         or type(roles.observation)
         is not frame56.roles56.RestrictedNativeRoles0056ObservationV1
-        or roles.observation.database_head not in {"0056", "0057"}
+        or roles.observation.database_head not in {"0056", "0057", "0058"}
     ):
         _deny("controlled_account_original_database_profile_required")
     profile = (
-        database_profiles.DB0056
-        if roles.observation.database_head == "0056"
-        else database_profiles.DB0057
+        database_profiles.from_head(roles.observation.database_head)
     )
     if (
         roles.schema
@@ -2291,7 +2289,7 @@ def _finish_owned_account_issuer_v1(state, readback, *, key):
     if (
         readback.source != source
         or readback.claims_json != state["claims_json"]
-        or readback.database_head not in {"0055", "0056", "0057"}
+        or readback.database_head not in {"0055", "0056", "0057", "0058"}
         or sha(readback.proof_json) != readback.transition.issuer_sha256
         or readback.write_metadata[3] != readback.readback_metadata[3]
         or readback.transition.write_role_oid != readback.write_metadata[3]
@@ -8318,6 +8316,9 @@ def _install_source_kernel_v6():
             issuer55.issuer_transaction.locked,
             issuer55.issuer_transaction.writer56,
             issuer55.issuer_transaction.writer56.inherited,
+            issuer55.issuer_transaction.writer56.inherited.protective58,
+            issuer55.issuer_transaction.writer56.inherited.protective58.schema,
+            issuer55.issuer_transaction.writer56.inherited.protective58.submission,
             database_profiles,
             g12_acl57,
             g12_acl57.g12,

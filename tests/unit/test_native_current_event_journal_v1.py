@@ -23,7 +23,7 @@ async def test_caller_witness_never_reaches_current_event_write(witness):
         )
 
 
-@pytest.mark.parametrize("head", ["0055", "0056", "0057", "0058"])
+@pytest.mark.parametrize("head", ["0055", "0056", "0057", "0058", "0059"])
 async def test_current_journal_dispatch_preserves_old55_and_checks_original_profile(
     monkeypatch, head
 ):
@@ -45,7 +45,7 @@ async def test_current_journal_dispatch_preserves_old55_and_checks_original_prof
         await runtime.require_event_journal_write_v2(object(), object(), session, SCOPE)
         legacy.assert_awaited_once_with(session, SCOPE)
         session_guard.assert_not_awaited()
-    elif head in {"0056", "0057"}:
+    elif head in {"0056", "0057", "0058"}:
         with pytest.raises(ValueError, match="SYNTHETIC_CATALOG_DRIFT"):
             await runtime.require_event_journal_write_v2(
                 object(), object(), session, SCOPE

@@ -76,8 +76,8 @@ async def read_actual_native_issuer_transaction(
             result = NativeIssuerCatalogIdentity(
                 "0055", metadata[3], observed["catalog_sha256"]
             )
-        elif rows in (["0056"], ["0057"]):
-            profile = profiles.DB0056 if rows == ["0056"] else profiles.DB0057
+        elif rows in (["0056"], ["0057"], ["0058"]):
+            profile = profiles.from_head(rows[0])
             route = locked._direct_tls_route(engine)
             before = await writer56._session_identity(
                 session, engine, **profiles.arguments(profile)
@@ -120,7 +120,7 @@ async def read_actual_native_issuer_transaction(
                 ),
                 native_definitions_sha256=(
                     observed.native_definitions_sha256
-                    if profile is profiles.DB0057
+                    if profile in (profiles.DB0057, profiles.DB0058)
                     else None
                 ),
             )
@@ -140,7 +140,7 @@ async def require_actual_issued_writer_v1(
     """Compare actual writer evidence to the original issued role and head."""
     _require(
         type(database_head) is str
-        and database_head in {"0055", "0056", "0057"}
+        and database_head in {"0055", "0056", "0057", "0058"}
         and type(role_oid) is int
         and role_oid > 0
     )
@@ -154,7 +154,7 @@ async def read_actual_issuer_control_0056(
     """Replay the inherited Control journal with the exact DB0056 writer."""
     catalog, before = await read_actual_native_issuer_transaction(session)
     _require(
-        database_head in {"0056", "0057"}
+        database_head in {"0056", "0057", "0058"}
         and catalog.head == database_head
         and type(scope) is ControlScope
     )

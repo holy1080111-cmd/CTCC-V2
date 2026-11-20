@@ -23,8 +23,10 @@ from app.database.repositories import account_revision_collector_lineage as line
 from app.database.repositories import qualification_ledger as ledger
 from app.database.repositories.qualification_native_checkpoint_v2 import (
     _finite_payload,
+    _profile_for_original_roles_v1,
     _validate_held_finite_checkpoint_rows,
 )
+from app.domain import native_database_profile_v1 as profiles
 from app.domain import native_filled_flat_closure_schema_v55 as closure
 from app.domain.source_primitives import canonical, decode, sha
 from app.trade_qualification import control_bound_ledger as bound
@@ -177,7 +179,7 @@ async def _actual_transaction(session, held):
     )
 
 
-async def _verify_journal(session, held):
+async def _verify_journal(session, held, *, profile=profiles.DB0056):
     await ledger._require_event_journal_session(session)
     held()
     rows = await ledger._read_event_journal_schema_rows(session)
@@ -187,7 +189,7 @@ async def _verify_journal(session, held):
         {
             **ledger._EVENT_GUARD_FUNCTIONS,
             closure.FUNCTION: (
-                closure.CURRENT_BODY_SHA256,
+                profiles.reservation_update_body(profile),
                 ("search_path=pg_catalog, pg_temp",),
             ),
         },
@@ -260,6 +262,7 @@ async def held_native_qualification_writer_0056_v1(
             and type(expected) is QualificationWriterPins0056V1
         )
         expected.__post_init__()
+        profile = _profile_for_original_roles_v1(roles)
         expected = QualificationWriterPins0056V1(
             bound.freeze_expectation(expected.control),
             expected.account_revision,
@@ -296,6 +299,7 @@ async def held_native_qualification_writer_0056_v1(
             control_scope,
             roles=roles,
             purpose=locked.NativeWriterControlPurpose0056.PREPARE_OBSERVATION,
+            **profiles.arguments(profile),
         ) as held:
             original = held.observation.control
             repo = ledger.QualificationLedgerRepository(
@@ -307,11 +311,13 @@ async def held_native_qualification_writer_0056_v1(
                 await session.execute(stmt)
                 held.check_held()
             catalog = await locked.writer56.observe_restricted_readwrite_writer_0056_v1(
-                session
+                session, **profiles.arguments(profile)
             )
             held.check_held()
             _need(catalog == held.observation.writer_catalog)
-            await _verify_journal(session, held.check_held)
+            await _verify_journal(
+                session, held.check_held, **profiles.arguments(profile)
+            )
             opened = await _actual_transaction(session, held.check_held)
             frontier = opened.observed_at
             accepted_issue = None
@@ -415,7 +421,7 @@ async def held_native_qualification_writer_0056_v1(
             )
             _need(
                 await locked.writer56.observe_restricted_readwrite_writer_0056_v1(
-                    session
+                    session, **profiles.arguments(profile)
                 )
                 == catalog
             )

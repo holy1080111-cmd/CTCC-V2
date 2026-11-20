@@ -78,7 +78,7 @@ class NativeLedgerPreflight0056V1:
     native_definitions_sha256: str
     uid_ledger_checkpoint_sha256: str
     observed_at: datetime
-    database_head: Literal["0056", "0057"] = field(default="0056")
+    database_head: Literal["0056", "0057", "0058"] = field(default="0056")
     reconciliation_verified: Literal[False] = field(default=False, init=False)
     account_complete: Literal[False] = field(default=False, init=False)
     execution_authority: Literal[False] = field(default=False, init=False)
@@ -589,7 +589,7 @@ async def read_locked_native_ledger_preflight_0056_v1(
                 {
                     **ledger._EVENT_GUARD_FUNCTIONS,
                     closure.FUNCTION: (
-                        closure.CURRENT_BODY_SHA256,
+                        profiles.reservation_update_body(profile),
                         ("search_path=pg_catalog, pg_temp",),
                     ),
                 },

@@ -14,6 +14,7 @@ from app.trade_qualification import demo_control as control
 from app.trade_qualification import native_prepare_owner_0056_v1 as subject
 from app.trade_qualification.control_bound_ledger import ControlExpectation
 from app.trade_qualification.reservations import LedgerScope
+from tests.native_role_profile_fixtures_v1 import restricted_roles_fixture
 
 _AT = datetime(2026, 11, 14, tzinfo=UTC)
 _SCOPE = LedgerScope(account_id="700006", settlement_currency="USDT")
@@ -75,7 +76,9 @@ def ready(monkeypatch):
     facts = subject.QualificationWriterTransaction0056V1(
         11, 212, "343", _AT + timedelta(seconds=1)
     )
-    roles = object.__new__(subject.RestrictedNativeRoles0056WitnessV1)
+    # Complete declared synthetic DATA; the held SQL primitive remains mocked.
+    # Uninitialized typed objects cannot select a current database profile.
+    roles = restricted_roles_fixture()
     case = SimpleNamespace(
         session=session,
         selected=object(),
@@ -160,6 +163,15 @@ async def test_bootstrap_scope_can_check_exact_issue_write_preconditions(ready):
     ]
     with pytest.raises(subject.NativeQualificationWriter0056Error):
         writer.check_held()
+
+
+async def test_uninitialized_typed_witness_cannot_default_to_previous_profile(ready):
+    ready.roles = object.__new__(subject.RestrictedNativeRoles0056WitnessV1)
+    with pytest.raises(subject.NativeQualificationWriter0056Error):
+        async with _enter(ready):
+            pytest.fail("uninitialized witness reached writer")
+    assert ready.active is False
+    ready.session.execute.assert_not_awaited()
 
 
 @pytest.mark.parametrize(

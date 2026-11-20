@@ -90,7 +90,7 @@ class RestrictedNativeRoles0056ObservationV1:
     raw_custody_catalog_sha256: str
     granted_inherited_acl_shape_sha256: str
     schema: str = field(default="ctcc.native_only.restricted0056_role_observation.v1")
-    database_head: Literal["0056", "0057"] = field(default="0056")
+    database_head: Literal["0056", "0057", "0058"] = field(default="0056")
     native_reference_sealed: Literal[False] = field(default=False, init=False)
     native_baseline_admission: Literal[False] = field(default=False, init=False)
     startup_admission: Literal[False] = field(default=False, init=False)

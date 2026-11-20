@@ -55,7 +55,7 @@ class NativeTerminalReportResumed0056V1:
     server_incarnation_sha256: str
     role_route_sha256: str
     schema: str = field(default="ctcc.db0056.native_terminal_report_resume.v1")
-    database_head: Literal["0056", "0057"] = field(default="0056")
+    database_head: Literal["0056", "0057", "0058"] = field(default="0056")
     delivery_authority: Literal[False] = field(default=False, init=False)
     execution_authority: Literal[False] = field(default=False, init=False)
     admission: Literal["DENY"] = field(default="DENY", init=False)

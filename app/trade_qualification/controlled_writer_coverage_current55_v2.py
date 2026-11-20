@@ -383,13 +383,15 @@ def _database_profile(source):
 
 def _coverage_receipt_context_v2(source):
     database = _database_profile(source)
-    if (
-        database is not None
-        and checkpoint56._profile_for_original_roles_v1(database[1]) is profiles.DB0057
-    ):
+    if database is not None and checkpoint56._profile_for_original_roles_v1(
+        database[1]
+    ) in (profiles.DB0057, profiles.DB0058):
+        head = profiles.head(checkpoint56._profile_for_original_roles_v1(database[1]))
         return {
-            "schema_version": "ctcc.controlled_source_coverage.current57.v2",
-            "database_head": "0057",
+            "schema_version": "ctcc.controlled_source_coverage.current"
+            + head[2:]
+            + ".v2",
+            "database_head": head,
         }
     return {"schema_version": "ctcc.controlled_source_coverage.current55.v2"}
 

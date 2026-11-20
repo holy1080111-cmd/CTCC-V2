@@ -31,6 +31,7 @@ from app.database.repositories import (
 )
 from app.database.repositories import native_zero_fok_event_schema_v55 as _zero_event55
 from app.database.repositories import qualification_ledger as _native_repository
+from app.domain import native_database_profile_v1 as _database_profiles
 from app.domain import native_zero_fok_closure_schema_v55 as _zero_schema55
 from app.domain.native_clock import native_stamp
 from app.domain.source_primitives import sha, utc_from_ns
@@ -707,7 +708,7 @@ async def require_event_journal_write_v2(repository, binding, session, scope):
         await journal._require_event_journal_write_schema(session, scope)
         _actual_session(repository, binding, session)
         return
-    if issued.database_head not in {"0056", "0057"}:
+    if issued.database_head not in {"0056", "0057", "0058"}:
         _deny("native_ledger_issued_database_changed")
     await journal._require_event_journal_session(session)
     _actual_session(repository, binding, session)
@@ -733,7 +734,9 @@ async def require_event_journal_write_v2(repository, binding, session, scope):
         {
             **journal._EVENT_GUARD_FUNCTIONS,
             closure.FUNCTION: (
-                closure.CURRENT_BODY_SHA256,
+                _database_profiles.reservation_update_body(
+                    _database_profiles.from_head(issued.database_head)
+                ),
                 ("search_path=pg_catalog, pg_temp",),
             ),
         },
@@ -754,9 +757,9 @@ async def read_control_v2(repository, binding, session, scope):
         state, event = await _native_issuer_transaction.read_actual_issuer_control_0056(
             session, control_scope
         )
-    elif issued.database_head == "0057":
+    elif issued.database_head in ("0057", "0058"):
         state, event = await _native_issuer_transaction.read_actual_issuer_control_0056(
-            session, control_scope, database_head="0057"
+            session, control_scope, database_head=issued.database_head
         )
     else:
         (

@@ -9,6 +9,7 @@ import pytest
 from app.domain import collector_current_0056_inherited_catalog_v1 as inherited
 from app.domain import native_database_profile_v1 as profiles
 from scripts import current0055_native_lifecycle_acl_v1 as previous_acl
+from tests.historical_source_prefix_v1 import trim_synthetic_migration_tree
 from tests.unit.test_controlled_history_current55_schema_v2 import _catalog
 from tests.unit.test_g12_restricted_writer_0057_v1 import _fixture
 
@@ -93,10 +94,11 @@ def test_context_checks_physical57_without_relabeling_input(read_only):
     assert value == original
 
 
-def test_successor_migration_inventory_supports_exact_source57_for_profile56_and57():
+def test_successor_migration_inventory_supports_exact_source58_and_proven_ancestors():
     root = Path(__file__).resolve().parents[2]
     profiles.require_migration(profiles.DB0056, root)
     profiles.require_migration(profiles.DB0057, root)
+    profiles.require_migration(profiles.DB0058, root)
 
 
 @pytest.fixture
@@ -112,8 +114,9 @@ def migration_copy(tmp_path):
 
 
 def test_source56_prefix_remains_supported_without_successor_promotion(migration_copy):
-    successor = migration_copy / "migrations/versions/0057_g12_restricted_writer.py"
-    successor.unlink()
+    trim_synthetic_migration_tree(
+        migration_copy, source_root=Path(__file__).resolve().parents[2], target="0056"
+    )
     profiles.require_migration(profiles.DB0056, migration_copy)
     with pytest.raises(ValueError):
         profiles.require_migration(profiles.DB0057, migration_copy)
@@ -124,8 +127,8 @@ def test_migration_dispatch_refuses_changed_prefix_successor_or_unknown_head(
     migration_copy, fault
 ):
     if fault == "extra_revision":
-        (migration_copy / "migrations/versions/0058_unreviewed.py").write_text(
-            'revision="0058"\ndown_revision="0057"\n', encoding="utf-8"
+        (migration_copy / "migrations/versions/0059_unreviewed.py").write_text(
+            'revision="0059"\ndown_revision="0058"\n', encoding="utf-8"
         )
     else:
         name = (

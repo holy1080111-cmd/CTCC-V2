@@ -45,7 +45,7 @@ class NativeWriter0056ObservationV1:
     schema: str = field(
         default="ctcc.current0056.restricted_readwrite_writer_observation.v1",
     )
-    database_head: Literal["0056", "0057"] = field(default="0056")
+    database_head: Literal["0056", "0057", "0058"] = field(default="0056")
     native_baseline_admission: Literal[False] = field(default=False, init=False)
     startup_admission: Literal[False] = field(default=False, init=False)
     account_complete: Literal[False] = field(default=False, init=False)

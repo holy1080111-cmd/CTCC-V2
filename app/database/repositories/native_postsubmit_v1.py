@@ -802,6 +802,32 @@ async def _append(binding, parts, capture_document, *, kind, status="uncertain")
         closure = state.get("verified_flat_closure") or state.get(
             "verified_filled_flat_closure"
         )
+        if closure is None:
+            from app.database.repositories import (
+                native_protective_hold_v1 as protective,
+            )
+
+            need(protective.protected_schema_selected_v1(binding))
+            await protective._require_installed_schema(binding, session)
+            _source(binding)
+            closure = state.get("verified_protective_flat_closure")
+            need(
+                type(closure) is tuple
+                and len(closure) == 4
+                and type(state.get("normal_protected_history"))
+                is protective.NativeProtectedHistoryV1
+                and type(closure[1])
+                is protective.facts.NativeProtectiveExitAssessmentV1
+                and type(closure[2]) is tuple
+                and bool(closure[2])
+                and type(closure[3]) is tuple
+                and capture_document.get("version")
+                in (
+                    "ctcc.native_read_page_metadata.v1",
+                    "ctcc.native_read_raw_part.v1",
+                    "ctcc.native_read_manifest.v1",
+                )
+            )
         need(
             state["kind"] == "recovery"
             and kind == "reconciliation"

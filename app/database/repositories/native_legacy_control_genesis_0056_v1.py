@@ -203,7 +203,7 @@ async def _stopped_scope(session, event_sha256, *, read_only):
 class LegacyControlGenesisResult0056V1:
     status: str
     updated_at: datetime
-    database_head: Literal["0056", "0057"] = field(default="0056")
+    database_head: Literal["0056", "0057", "0058"] = field(default="0056")
     control_revision: Literal[1] = field(default=1, init=False)
     emergency_stop: Literal[True] = field(default=True, init=False)
     armed: Literal[False] = field(default=False, init=False)

@@ -73,7 +73,7 @@ class NativeTerminalLineage0056V1:
     server_incarnation_sha256: str
     role_route_sha256: str
     schema: str = field(default="ctcc.db0056.native_terminal_lineage_observation.v1")
-    database_head: Literal["0056", "0057"] = field(default="0056")
+    database_head: Literal["0056", "0057", "0058"] = field(default="0056")
     local_outbox_verified: Literal[False] = field(default=False, init=False)
     delivery_authority: Literal[False] = field(default=False, init=False)
     execution_authority: Literal[False] = field(default=False, init=False)
@@ -89,7 +89,7 @@ class NativeTerminalLocalProjection0056V1:
     server_incarnation_sha256: str
     role_route_sha256: str
     schema: str = field(default="ctcc.db0056.native_terminal_local_projection.v1")
-    database_head: Literal["0056", "0057"] = field(default="0056")
+    database_head: Literal["0056", "0057", "0058"] = field(default="0056")
     local_outbox_verified: Literal[True] = field(default=True, init=False)
     delivery_authority: Literal[False] = field(default=False, init=False)
     execution_authority: Literal[False] = field(default=False, init=False)
@@ -342,6 +342,8 @@ def _profile_from_expected_identity(expected):
         if expected.schema == "ctcc.native_only.restricted_role_identity0056.v2"
         else profiles.DB0057
         if expected.schema == "ctcc.native_only.restricted_role_identity0057.v2"
+        else profiles.DB0058
+        if expected.schema == "ctcc.native_only.restricted_role_identity0058.v2"
         else None
     )
     _need(
@@ -374,12 +376,12 @@ async def _profile_from_selected_head(selected):
             _need(
                 len(rows) == 1
                 and type(rows[0][0]) is str
-                and rows[0][0] in ("0056", "0057")
+                and rows[0][0] in ("0056", "0057", "0058")
             )
         finally:
             await transaction.rollback()
     _need(_factory_pins(selected) == pins and locked._direct_tls_route(engine) == route)
-    return profiles.DB0056 if rows[0][0] == "0056" else profiles.DB0057
+    return profiles.from_head(rows[0][0])
 
 
 async def _require_matching_roles(selected, expected):

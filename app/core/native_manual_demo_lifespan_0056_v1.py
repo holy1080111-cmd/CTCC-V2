@@ -74,8 +74,8 @@ async def start_manual_demo_0056_v1(settings, session_factory, automation):
         selected = selectors.select_configured_native_demo_factories_v2()
         _need(selected.writer_factory is session_factory)
         actual_head = await selectors._observe_runtime_database_head_v2(selected)
-        _need(actual_head in ("0056", "0057"))
-        profile = profiles.DB0056 if actual_head == "0056" else profiles.DB0057
+        _need(actual_head in ("0056", "0057", "0058"))
+        profile = profiles.from_head(actual_head)
         first = await roles56.observe_restricted_native_roles_0056_witness_v1(
             selected, source=_SOURCE, **profiles.arguments(profile)
         )

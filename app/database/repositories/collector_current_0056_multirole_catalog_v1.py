@@ -25,7 +25,8 @@ def verify_0056_pair(
             type(value) is not dict
             or set(value)
             != policy.CATALOG_KEYS
-            | ({"g12_0057"} if profile is profiles.DB0057 else set())
+            | ({"g12_0057"} if profile in (profiles.DB0057, profiles.DB0058) else set())
+            | ({"native_protective58"} if profile is profiles.DB0058 else set())
             or value["schema"] != profiles.schema(profile, actual56.SCHEMA)
         ):
             current55._deny()
@@ -41,7 +42,15 @@ def verify_0056_pair(
     qualified_writer = actual56.observe_writer_0056(
         writer, **profiles.arguments(profile)
     )
-    if profile is profiles.DB0057 and raw["g12_0057"] != writer["g12_0057"]:
+    if (
+        profile in (profiles.DB0057, profiles.DB0058)
+        and raw["g12_0057"] != writer["g12_0057"]
+    ):
+        current55._deny()
+    if (
+        profile is profiles.DB0058
+        and raw["native_protective58"] != writer["native_protective58"]
+    ):
         current55._deny()
     for component, parents, schema_name in (
         (
