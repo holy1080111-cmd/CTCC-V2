@@ -108,7 +108,10 @@ async def test_actual0057_owner58_rehearsal_and_commit_preserve_every_row_actor_
         selected, owner, pins, "0057"
     )
     before = await subject._inventory(owner, pins)
-    final = await subject._commit_once(script, pins, owner, before)
+    try:
+        final = await subject._commit_once(script, pins, owner, before)
+    except subject.OwnerProfileUpgrade0058Refused as error:
+        pytest.fail("owner58_declared_diagnostic_stage:" + error.stage)
     prepared = subject.route._source_for_profile(subject.profiles.DB0058)
     pin_context = type(
         "PinContext", (), {"migration_sha256": prepared.actual_migration_sha256}

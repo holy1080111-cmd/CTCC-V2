@@ -309,6 +309,7 @@ def _migrate(connection, script):
 
 async def _commit_once(script, pins, owner, expected):
     attempted = committed = False
+    stage = "INPUT_VALIDATION"
     try:
         _pins(pins)
         _need(pins.route.database_head == "0057")
@@ -320,21 +321,31 @@ async def _commit_once(script, pins, owner, expected):
                 await connection.execute(parent.old._OWNER_LOCK)
                 await connection.exec_driver_sql(parent.old._LOCK_REVISION)
                 await parent._relations(connection, lock=True)
+                stage = "LOCKED_PREVIOUS_INVENTORY"
                 before = await _held_inventory(connection, pins, "0057")
                 _need(before == expected)
                 # No grants are executed. The preview determines the exact
                 # logical catalog delta of this reviewed migration and is then
                 # actually rolled back, including the Alembic revision.
                 rehearsal = await connection.begin_nested()
+                stage = "REHEARSAL_MIGRATION"
                 await connection.run_sync(_migrate, script)
+                stage = "REHEARSAL_INVENTORY"
                 preview = await _held_inventory(connection, pins, "0058")
+                stage = "REHEARSAL_PRESERVATION"
                 _preserved(before, preview)
                 await rehearsal.rollback()
+                stage = "ROLLBACK_READBACK"
                 _need(await _held_inventory(connection, pins, "0057") == before)
+                stage = "FINAL_MIGRATION"
                 await connection.run_sync(_migrate, script)
+                stage = "FINAL_INVENTORY"
                 final = await _held_inventory(connection, pins, "0058")
+                stage = "FINAL_PRESERVATION"
                 _preserved(before, final)
+                stage = "REHEARSAL_FINAL_CATALOG_MATCH"
                 _need(final["logical"] == preview["logical"])
+                stage = "FINAL_SOURCE_READBACK"
                 current_source = route._source_for_profile(profiles.DB0058)
                 _need(
                     current_source.actual_source_head == "0058"
@@ -359,7 +370,11 @@ async def _commit_once(script, pins, owner, expected):
             raise OwnerProfileUpgrade0058CommitUnknown(
                 "owner_profile_0058_commit_unknown_do_not_retry"
             ) from None
-        raise OwnerProfileUpgrade0058Refused("owner_profile_0058_refused") from None
+        failure = OwnerProfileUpgrade0058Refused("owner_profile_0058_refused")
+        # A closed source-defined stage aids diagnosis without SQL, routes,
+        # credentials, provider errors or arbitrary exception text.
+        failure.stage = stage
+        raise failure from None
 
 
 async def install_reviewed_owner_profile_0058_v1(

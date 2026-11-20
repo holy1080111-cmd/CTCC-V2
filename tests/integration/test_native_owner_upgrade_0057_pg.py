@@ -168,7 +168,7 @@ async def test_actual0056_owner_upgrade_refuses_uncertain_local_state_before_ddl
             "LOCK TABLE public.demo_automation_state IN ACCESS EXCLUSIVE MODE"
         )
         await connection.exec_driver_sql(
-            "UPDATE public.demo_automation_state SET last_error='injected_uncertain' WHERE id=1"
+            "UPDATE public.demo_automation_state SET last_error='injected_uncertain',control_revision=control_revision+1 WHERE id=1"
         )
     with pytest.raises(subject.OwnerProfileUpgrade0057Refused):
         await subject._commit_once(script, pins, owner, *before)
