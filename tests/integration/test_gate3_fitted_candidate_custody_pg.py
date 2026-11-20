@@ -3487,15 +3487,18 @@ async def test_actual0056_controlled_partition_uses_inherited_armed_append(
 
     owner, _, selected, _ = _actual_0056_role_observation_lab
     writer = selected.writer_factory
-    _, ledger_scope, _, _, batch = await stored(monkeypatch, (owner, writer))
+    # Test the real constructor before the synthetic ingestion fixture replaces
+    # pinned source functions. Restore those functions before native admission.
+    with pytest.raises(native.ControlledAccountSourceError):
+        repo.Db0056ControlledPartitionRepositoryV2({})
+    with monkeypatch.context() as ingestion:
+        _, ledger_scope, _, _, batch = await stored(ingestion, (owner, writer))
     scope = repo.previous.records.HistoryPartitionScopeV1(
         "demo", ledger_scope.account_id, "USDT"
     )
     roles = await observe_restricted_native_roles_0056_witness_v1(
         selected, source=_SOURCE_ROOT
     )
-    with pytest.raises(native.ControlledAccountSourceError):
-        repo.Db0056ControlledPartitionRepositoryV2({})
     timestamp = datetime.now(UTC)
     control_scope = demo_control.ControlScope("demo", scope.account_id)
     acquired = demo_control.acquire(
