@@ -130,6 +130,13 @@ LIVE_LIFECYCLE_CASES = tuple(
         "test_actual58_lifecycle_terminal_zero_fill_releases_only_authenticated_original_hold",
     )
 )
+STOPPED_SETUP_CASES = tuple(
+    ("tests.integration.test_native_stopped_setup_0058_pg", name)
+    for name in (
+        "test_actual0058_stopped_genesis_and_owner_legacy_seed_replay_same_real_incarnation",
+        "test_actual0058_wrong_owner_incarnation_refuses_without_legacy_write",
+    )
+)
 SUCCESSOR_CASES = (
     *base.SUCCESSOR_CASES,
     *live_cases.REQUIRED_CASES,
@@ -142,6 +149,7 @@ SUCCESSOR_CASES = (
     *ORIGINAL_OCO_REPORT_CASES,
     *LIVE_OPERATOR_CASES,
     *LIVE_LIFECYCLE_CASES,
+    *STOPPED_SETUP_CASES,
     (
         "tests.integration.test_native_protective_hold_schema_v58_pg",
         "test_actual0058_original_oco_predicate_compiles_and_missing_targets_never_resolve",
@@ -159,6 +167,7 @@ REQUIRED_CASES = (
     *ORIGINAL_OCO_REPORT_CASES,
     *LIVE_OPERATOR_CASES,
     *LIVE_LIFECYCLE_CASES,
+    *STOPPED_SETUP_CASES,
     SUCCESSOR_CASES[-1],
 )
 HISTORICAL_REPORTS = base.HISTORICAL_REPORTS
@@ -183,20 +192,49 @@ _SHA, _GIT = g12._HEX, g12._GIT
 migration_digest, migration_readback = g12.migration_digest, g12.migration_readback
 previous = base.previous
 component_report_paths = collection.report_paths
-component_is_anchor, requires_historical, requires_g12 = (
-    base.component_is_anchor,
-    base.requires_historical,
-    base.requires_g12,
-)
-component_test_stage, component_stage_names = (
-    base.component_test_stage,
-    base.component_stage_names,
-)
-cleanup_inventory, _read, _read_archive = (
-    base.cleanup_inventory,
-    base._read,
-    base._read_archive,
-)
+_read, _read_archive = base._read, base._read_archive
+
+
+def component_is_anchor(mode, index):
+    collection._mode(mode, index)
+    return mode == "full" or mode == "postgres" and index == 0
+
+
+def requires_historical(mode, index):
+    collection._mode(mode, index)
+    return mode == "full" or mode == "postgres" and index == 1
+
+
+def requires_g12(mode, index):
+    collection._mode(mode, index)
+    return mode == "full" or mode == "postgres" and index == 2
+
+
+def component_test_stage(mode, index):
+    collection._mode(mode, index)
+    return "pytest-" + mode + ("" if index is None else "-" + str(index))
+
+
+def component_stage_names(mode, index):
+    collection._mode(mode, index)
+    # New historical case-only workers use the unchanged non-anchor stages,
+    # named with their actual index. No old profile is relabelled or admitted.
+    template_index = 2 if mode == "postgres" and index >= 3 else index
+    old_stage = base.component_test_stage(mode, template_index)
+    return tuple(
+        component_test_stage(mode, index) if name == old_stage else name
+        for name in base.component_stage_names(mode, template_index)
+    )
+
+
+def cleanup_inventory(mode, index, prefix):
+    collection._mode(mode, index)
+    template_index = 2 if mode == "postgres" and index >= 3 else index
+    old_name = prefix + base.component_test_stage(mode, template_index)
+    return {
+        (kind, prefix + component_test_stage(mode, index) if name == old_name else name)
+        for kind, name in base.cleanup_inventory(mode, template_index, prefix)
+    }
 
 
 def require_host_code(files):

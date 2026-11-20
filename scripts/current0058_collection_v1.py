@@ -1,4 +1,4 @@
-"""One exact source58 pytest collection, three PostgreSQL owners and eight shards."""
+"""One exact source58 collection, five PostgreSQL owners and eight shards."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from scripts.evidence_json import read_evidence_json
 
 SCHEMA = "ctcc.current0058.collection.v1"
 SOURCE_HEAD = "0058"
-POSTGRES_COMPONENT_COUNT = 3
+POSTGRES_COMPONENT_COUNT = 5
 SHARD_COUNT = 8
 SUCCESSOR_PATHS = frozenset(
     {
@@ -20,6 +20,7 @@ SUCCESSOR_PATHS = frozenset(
         "tests/integration/test_native_live_physical_v1_pg.py",
         "tests/integration/test_native_live_operator_control_v1_pg.py",
         "tests/integration/test_native_live_lifecycle_v1_pg.py",
+        "tests/integration/test_native_stopped_setup_0058_pg.py",
         "tests/integration/test_native_demo_profile_0058_pg.py",
         "tests/integration/test_native_submission_binding_0058_pg.py",
         "tests/integration/test_native_original_oco_public_0058_pg.py",
@@ -34,6 +35,15 @@ SUCCESSOR_PATHS = frozenset(
     }
 )
 _OBSERVED = set()
+# Keep every historical receipt producer together on its original observer.
+# Other whole modules split deterministically; the complete collection/JUnit
+# union still has to prove every original and new case ran exactly once.
+HISTORICAL_PRODUCER_PATHS = frozenset(
+    {
+        "tests/integration/test_devval_campaign_custody_pg_v1.py",
+        "tests/integration/test_gate3_fitted_candidate_custody_pg.py",
+    }
+)
 
 
 def _need(condition):
@@ -56,11 +66,17 @@ def _mode(mode, index):
 
 def postgres_paths(index):
     _mode("postgres", index)
-    return (
-        SUCCESSOR_PATHS
-        if index == 2
-        else previous.postgres_paths(index) - SUCCESSOR_PATHS
+    if index == 2:
+        return SUCCESSOR_PATHS
+    parent = index if index < 2 else index - 3
+    paths = previous.postgres_paths(parent) - SUCCESSOR_PATHS
+    retained = previous.POSTGRES_ANCHOR_PATHS | HISTORICAL_PRODUCER_PATHS
+    moved = frozenset(
+        path
+        for path in paths
+        if path not in retained and previous.module_shard(path) >= 4
     )
+    return paths - moved if index < 2 else moved
 
 
 def selected_for(mode, index, node):

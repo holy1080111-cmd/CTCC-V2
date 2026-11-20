@@ -187,6 +187,8 @@ def test_source58_selection_executes_every_old_and_new_required_case_exactly_onc
     assert len(full.ORIGINAL_OCO_REPORT_CASES) == 3
     assert len(full.LIVE_OPERATOR_CASES) == 10
     assert len(full.LIVE_LIFECYCLE_CASES) == 11
+    assert len(full.STOPPED_SETUP_CASES) == 2
+    assert set(full.STOPPED_SETUP_CASES) <= set(full.REQUIRED_CASES)
     assert set(full.LIVE_LIFECYCLE_CASES) <= set(full.REQUIRED_CASES)
     assert set(full.LIVE_OPERATOR_CASES) <= set(full.REQUIRED_CASES)
     assert set(full.ORIGINAL_OCO_REPORT_CASES) <= set(full.REQUIRED_CASES)
@@ -226,12 +228,53 @@ def test_topology_uses_actual58_inventory_and_old57_prefix_stays_distinct():
         result = workflow.profile(
             archive, commit="a" * 40, tree=tree, archive_sha256=contract.digest(archive)
         )
-        assert result["source_head"] == target and result["postgres_components"] == [
-            0,
-            1,
-            2,
-        ]
+        assert result["source_head"] == target
+        assert result["postgres_components"] == list(
+            range(5 if target == "0058" else 3)
+        )
         assert result["validation_admission"] is False
+
+
+def test_five_pg_owners_preserve_every_whole_module_and_historical_producer():
+    from scripts import verify_linux_shard as legacy
+
+    owners = [full.collection.postgres_paths(index) for index in range(5)]
+    assert all(owners)
+    assert set.union(*(set(paths) for paths in owners)) == (
+        legacy.POSTGRES_TEST_PATHS | full.collection.SUCCESSOR_PATHS
+    )
+    for index, paths in enumerate(owners):
+        assert not paths.intersection(set().union(*owners[:index]))
+    assert legacy.POSTGRES_ANCHOR_PATHS <= owners[0]
+    assert full.collection.HISTORICAL_PRODUCER_PATHS <= owners[1]
+    assert owners[2] == full.collection.SUCCESSOR_PATHS
+    assert owners[3] <= legacy.postgres_paths(0)
+    assert owners[4] <= legacy.postgres_paths(1)
+
+
+@pytest.mark.parametrize("index", [3, 4])
+def test_extra_pg_workers_keep_actual_names_and_no_borrowed_receipts(index):
+    assert not full.component_is_anchor("postgres", index)
+    assert not full.requires_historical("postgres", index)
+    assert not full.requires_g12("postgres", index)
+    stages = full.component_stage_names("postgres", index)
+    assert stages[-1] == "pytest-postgres-" + str(index)
+    assert "pytest-postgres-2" not in stages
+    assert "migration-drift" in stages and "migration-upgrade" in stages
+    cleanup = full.cleanup_inventory("postgres", index, "ctcc-test-")
+    assert ("container", "ctcc-test-pytest-postgres-" + str(index)) in cleanup
+    assert ("container", "ctcc-test-pytest-postgres-2") not in cleanup
+    assert not set(full.HISTORICAL_REPORTS).intersection(
+        full.component_artifacts("postgres", index)
+    )
+    command = engine.test_command(full, "postgres", index)
+    assert "--ctcc-current58-index=" + str(index) in command
+
+
+@pytest.mark.parametrize("index", [-1, 5, True, "3"])
+def test_five_pg_topology_refuses_invalid_or_coerced_index(index):
+    with pytest.raises(ValueError):
+        full.collection.postgres_paths(index)
 
 
 def test_both_real_migration_heads_are_required_in_source58_readback():

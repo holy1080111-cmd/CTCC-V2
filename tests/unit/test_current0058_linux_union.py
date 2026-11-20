@@ -1,4 +1,4 @@
-"""Synthetic eleven-component join; component DB/runtime proof is mocked out."""
+"""Synthetic thirteen-component join; component DB/runtime proof is mocked out."""
 
 from __future__ import annotations
 
@@ -163,7 +163,7 @@ def _verify(path):
     )
 
 
-def test_synthetic_join_counts_its_own_eleven_reports_without_borrowing56(components):
+def test_synthetic_join_counts_its_own_thirteen_reports_without_borrowing56(components):
     path, _, _, full = components
     result = _verify(path)
     assert (
@@ -177,7 +177,7 @@ def test_synthetic_join_counts_its_own_eleven_reports_without_borrowing56(compon
         == result["actual0058_profiles"]["database_head"]
         == "0058"
     )
-    assert result["postgres_component_count"] == 3 and result["shard_count"] == 8
+    assert result["postgres_component_count"] == 5 and result["shard_count"] == 8
     assert result["execution_authority"] is result["trading_acceptance"] is False
 
 

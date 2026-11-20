@@ -1,4 +1,4 @@
-"""Independently read all eleven exact-source58 Docker regression components."""
+"""Independently read all thirteen exact-source58 Docker regression components."""
 
 from __future__ import annotations
 

@@ -44,7 +44,11 @@ def profile(raw, *, commit, tree, archive_sha256):
     return {
         "schema": "ctcc.hermetic_workflow_profile.v1",
         "source_head": f"{head:04}",
-        "postgres_components": [0, 1, 2] if head in {57, 58} else [0, 1],
+        "postgres_components": list(range(5))
+        if head == 58
+        else [0, 1, 2]
+        if head == 57
+        else [0, 1],
         "shard_indices": list(range(8)),
         "validation_admission": False,
     }
