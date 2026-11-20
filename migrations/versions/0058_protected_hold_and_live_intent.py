@@ -10,6 +10,7 @@ retained reservation, intent or evidence row is changed by this migration.
 from alembic import op
 
 from app.domain import native_filled_flat_closure_schema_v55 as previous
+from app.domain import native_live_controlled_close_schema_v1 as close
 from app.domain import native_live_financial_epoch_schema_v1 as financial
 from app.domain import native_live_ledger_schema_v1 as live
 from app.domain import native_live_lifecycle_schema_v1 as lifecycle
@@ -126,7 +127,7 @@ def _require_report_guard(sql):
  """)
 
 
-def _require_lifecycle_guards():
+def _require_lifecycle_guards(*, include_controlled_close=True):
     from hashlib import sha256
 
     sources = {
@@ -156,11 +157,58 @@ def _require_lifecycle_guards():
             False,
         ),
     }
+    if include_controlled_close:
+        sources.update(
+            {
+                sql.split("public.", 1)[1].split("(", 1)[0]: sql
+                for sql in close.UPGRADE_SQL
+                if sql.startswith("CREATE FUNCTION public.")
+            }
+        )
+        sources.update(close.LIFECYCLE_FUNCTION_OVERRIDES)
+        signatures.update(
+            {
+                close.FUNCTIONS[0]: (
+                    2,
+                    "25 25",
+                    "'pg_catalog.text'::regtype",
+                    True,
+                    False,
+                ),
+                close.FUNCTIONS[1]: (
+                    2,
+                    "25 25",
+                    "'pg_catalog.text'::regtype",
+                    True,
+                    False,
+                ),
+                close.FUNCTIONS[2]: (
+                    0,
+                    "",
+                    "'pg_catalog.trigger'::regtype",
+                    False,
+                    False,
+                ),
+            }
+        )
     if set(sources) != set(signatures):
         raise RuntimeError("protected58_lifecycle_source_changed")
     for name, sql in sources.items():
         pin = sha256(sql.split("$body$")[1].encode()).hexdigest()
         nargs, args, returns, security, returns_set = signatures[name]
+        declaration = sql.split("(", 1)[1].split(")", 1)[0].strip()
+        names = (
+            [part.strip().split()[0] for part in declaration.split(",")]
+            if declaration
+            else []
+        )
+        if len(names) != nargs or any(not part.isidentifier() for part in names):
+            raise RuntimeError("protected58_lifecycle_arguments_changed")
+        argument_names = (
+            "ARRAY[" + ",".join("'" + part + "'" for part in names) + "]::text[]"
+            if names
+            else "NULL::text[]"
+        )
         op.execute(f"""
  DO $check$ BEGIN
  IF NOT EXISTS (
@@ -173,9 +221,30 @@ def _require_lifecycle_guards():
    AND p.proretset={str(returns_set).lower()} AND NOT p.proisstrict AND NOT p.proleakproof
    AND p.prokind='f' AND p.provolatile='v' AND p.proparallel='u' AND p.prosupport=0
    AND p.pronargdefaults=0 AND p.provariadic=0 AND p.proargmodes IS NULL AND p.proallargtypes IS NULL
+   AND p.proargnames IS NOT DISTINCT FROM {argument_names}
+   AND p.probin IS NULL AND p.prosqlbody IS NULL
    AND p.proconfig=ARRAY['search_path=pg_catalog, pg_temp']::text[]
    AND pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(p.prosrc,'UTF8')),'hex')='{pin}'
  ) THEN RAISE EXCEPTION 'protected58_lifecycle_guard_changed'; END IF;
+ END $check$;
+ """)
+    if include_controlled_close:
+        op.execute(f"""
+ DO $check$ BEGIN
+ IF (SELECT count(*) FROM pg_catalog.pg_class c
+ JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+ WHERE n.nspname='public' AND c.relname IN ('{close.TABLES[0]}','{close.TABLES[1]}')
+ AND c.relkind='r' AND NOT c.relrowsecurity AND NOT c.relforcerowsecurity
+ AND c.relowner=(SELECT relowner FROM pg_catalog.pg_class WHERE oid='public.native_live_lifecycle_keys_v1'::regclass))<>2
+ OR (SELECT count(*) FROM pg_catalog.pg_trigger t
+ WHERE t.tgrelid IN ('public.{close.TABLES[0]}'::regclass,'public.{close.TABLES[1]}'::regclass)
+ AND t.tgfoid=pg_catalog.to_regprocedure('public.{close.FUNCTIONS[2]}()')
+ AND t.tgname=((SELECT relname FROM pg_catalog.pg_class WHERE oid=t.tgrelid)||'_immutable')
+ AND t.tgenabled='O' AND t.tgtype=31 AND NOT t.tgisinternal
+ AND t.tgnargs=0 AND t.tgconstraint=0 AND t.tgqual IS NULL
+ AND t.tgoldtable IS NULL AND t.tgnewtable IS NULL
+ AND t.tgattr::text='' AND pg_catalog.octet_length(t.tgargs)=0)<>2
+ THEN RAISE EXCEPTION 'protected58_controlled_close_tables_changed'; END IF;
  END $check$;
  """)
 
@@ -202,6 +271,9 @@ def upgrade():
     _require_financial_guard()
     for statement in lifecycle.UPGRADE_SQL:
         op.execute(statement)
+    _require_lifecycle_guards(include_controlled_close=False)
+    for statement in close.UPGRADE_SQL:
+        op.execute(statement)
     _require_lifecycle_guards()
 
 
@@ -211,7 +283,12 @@ def downgrade():
         "LOCK TABLE "
         + ", ".join(
             "public." + table
-            for table in (*live.TABLES, *financial.TABLES, *lifecycle.TABLES)
+            for table in (
+                *live.TABLES,
+                *financial.TABLES,
+                *lifecycle.TABLES,
+                *close.TABLES,
+            )
         )
         + " IN ACCESS EXCLUSIVE MODE NOWAIT"
     )
@@ -237,6 +314,8 @@ def downgrade():
  OR EXISTS(SELECT 1 FROM public.native_live_financial_samples_v1)
  OR EXISTS(SELECT 1 FROM public.native_live_lifecycle_keys_v1)
  OR EXISTS(SELECT 1 FROM public.native_live_lifecycle_proofs_v1)
+ OR EXISTS(SELECT 1 FROM public.native_live_controlled_close_intents_v1)
+ OR EXISTS(SELECT 1 FROM public.native_live_controlled_close_claims_v1)
  OR EXISTS(
   SELECT 1 FROM pg_catalog.pg_class c
   CROSS JOIN LATERAL pg_catalog.aclexplode(c.relacl) a
@@ -247,7 +326,9 @@ def downgrade():
                  'public.native_live_financial_epochs_v1'::regclass,
                  'public.native_live_financial_samples_v1'::regclass,
                  'public.native_live_lifecycle_keys_v1'::regclass,
-                 'public.native_live_lifecycle_proofs_v1'::regclass)
+                 'public.native_live_lifecycle_proofs_v1'::regclass,
+                 'public.native_live_controlled_close_intents_v1'::regclass,
+                 'public.native_live_controlled_close_claims_v1'::regclass)
    AND a.grantee<>c.relowner
  ) OR EXISTS(
   SELECT 1 FROM pg_catalog.pg_attribute a
@@ -258,7 +339,8 @@ def downgrade():
     'native_live_controls_v1','native_live_reservations_v1',
     'native_live_intents_v1','native_live_transitions_v1',
     'native_live_financial_epochs_v1','native_live_financial_samples_v1',
-    'native_live_lifecycle_keys_v1','native_live_lifecycle_proofs_v1')
+    'native_live_lifecycle_keys_v1','native_live_lifecycle_proofs_v1',
+    'native_live_controlled_close_intents_v1','native_live_controlled_close_claims_v1')
     AND x.grantee<>c.relowner
  ) OR EXISTS(
   SELECT 1 FROM pg_catalog.pg_proc p
@@ -270,7 +352,9 @@ def downgrade():
       'native_live_data_guard_v1','native_live_financial_guard_v1',
       'native_live_lifecycle_key_identity_v1','native_live_lifecycle_control_fence_v1',
       'native_live_lifecycle_inhibit_v1','native_live_lifecycle_append_v1',
-      'native_live_lifecycle_immutable_v1','native_live_lifecycle_catalog_v1')
+      'native_live_lifecycle_immutable_v1','native_live_lifecycle_catalog_v1',
+      'native_live_controlled_close_prepare_v1','native_live_controlled_close_claim_v1',
+      'native_live_controlled_close_immutable_v1')
     AND a.grantee<>p.proowner
  ) THEN RAISE EXCEPTION 'protected58_preserve_history_and_revoke_grants'; END IF;
  END $check$;
@@ -287,6 +371,9 @@ def downgrade():
         op.execute(statement)
     # Dependency order is explicit; a remaining function/reference blocks
     # rollback. CASCADE and removal of retained rows are never used.
+    for statement in close.DOWNGRADE_SQL:
+        op.execute(statement)
+    _require_lifecycle_guards(include_controlled_close=False)
     for statement in lifecycle.DOWNGRADE_SQL:
         op.execute(statement)
     for statement in financial.DOWNGRADE_SQL:

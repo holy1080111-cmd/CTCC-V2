@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.database.native_pg_tls_v1 import _read_bounded_regular_file_v1
 from app.domain import native_database_profile_v1 as profiles
+from app.domain import native_live_controlled_close_schema_v1 as close
 from app.domain import native_live_financial_epoch_schema_v1 as financial
 from app.domain import native_live_ledger_schema_v1 as live
 from app.domain import native_live_lifecycle_schema_v1 as lifecycle
@@ -35,7 +36,7 @@ from scripts.evidence_json import read_evidence_json
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIRMATION = "UPGRADE CTCC OWNER DB0057 TO DB0058"
-ADDED_TABLES = (*live.TABLES, *financial.TABLES, *lifecycle.TABLES)
+ADDED_TABLES = (*live.TABLES, *financial.TABLES, *lifecycle.TABLES, *close.TABLES)
 
 
 class OwnerProfileUpgrade0058Refused(ValueError):
@@ -209,6 +210,7 @@ def _live_functions():
             *live.UPGRADE_SQL,
             *financial.UPGRADE_SQL,
             *lifecycle.UPGRADE_SQL,
+            *close.UPGRADE_SQL,
         )
         if statement.startswith("CREATE FUNCTION public.")
     )
@@ -500,6 +502,7 @@ def _receipt(pins, prepared, before_identity, after_identity, before, after, *, 
         "live_spec_sha256": live.SPEC_SHA256,
         "financial_spec_sha256": financial.live_financial_epoch_spec_sha256_v1(),
         "lifecycle_spec_sha256": lifecycle.SPEC_SHA256,
+        "controlled_close_spec_sha256": close.SPEC_SHA256,
         "restricted_grant_statements_after": 44,
         "grants_executed": 0,
         "live_grants_executed": 0,
@@ -522,6 +525,7 @@ def _installed_pin(prepared, logical):
                 "live_spec_sha256": live.SPEC_SHA256,
                 "financial_spec_sha256": financial.live_financial_epoch_spec_sha256_v1(),
                 "lifecycle_spec_sha256": lifecycle.SPEC_SHA256,
+                "controlled_close_spec_sha256": close.SPEC_SHA256,
                 "catalog": logical,
             }
         )

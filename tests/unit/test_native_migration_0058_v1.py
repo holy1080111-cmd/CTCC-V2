@@ -5,10 +5,12 @@ from importlib import import_module
 from sqlalchemy.dialects.postgresql import dialect
 from sqlalchemy.schema import CreateIndex
 
+from app.database.models import native_live_controlled_close_v1 as close_models
 from app.database.models import native_live_financial_epoch_v1 as financial_models
 from app.database.models import native_live_ledger_v1 as live_models
 from app.database.models import native_live_lifecycle_v1 as lifecycle_models
 from app.database.models.submission_reporting import QualificationSubmissionOutcome
+from app.domain import native_live_controlled_close_schema_v1 as close
 from app.domain import native_live_financial_epoch_schema_v1 as financial
 from app.domain import native_live_ledger_schema_v1 as live
 from app.domain import native_live_lifecycle_schema_v1 as lifecycle
@@ -48,7 +50,19 @@ def test_actual58_is_additive_after57_and_never_grants_or_arms(monkeypatch):
     assert statements.index(financial.UPGRADE_SQL[-1]) < statements.index(
         lifecycle.UPGRADE_SQL[0]
     )
-    assert "protected58_lifecycle_guard_changed" in statements[-1]
+    assert all(statement in statements for statement in close.UPGRADE_SQL)
+    assert statements.index(lifecycle.UPGRADE_SQL[-1]) < statements.index(
+        close.UPGRADE_SQL[0]
+    )
+    assert "protected58_controlled_close_tables_changed" in statements[-1]
+    assert all(
+        any(
+            name in sql
+            for sql in statements
+            if "protected58_lifecycle_guard_changed" in sql
+        )
+        for name in close.FUNCTIONS
+    )
     assert not any(
         statement.lstrip().upper().startswith("GRANT ") for statement in statements
     )
@@ -80,11 +94,16 @@ def test_downgrade_checks_retained_custody_before_removing_only_new_objects(
     assert "native_live_financial_samples_v1" in statements[refusal]
     assert "native_live_lifecycle_keys_v1" in statements[refusal]
     assert "native_live_lifecycle_proofs_v1" in statements[refusal]
+    assert all(table in statements[refusal] for table in close.TABLES)
+    assert all(function in statements[refusal] for function in close.FUNCTIONS)
     assert "pg_catalog.pg_attribute" in statements[refusal]
     assert statements.index(lifecycle.DOWNGRADE_SQL[-1]) < statements.index(
         financial.DOWNGRADE_SQL[0]
     )
     assert "pg_catalog.acldefault('f',p.proowner)" in statements[refusal]
+    assert statements.index(close.DOWNGRADE_SQL[-1]) < statements.index(
+        lifecycle.DOWNGRADE_SQL[0]
+    )
     assert statements.index(financial.DOWNGRADE_SQL[-1]) < statements.index(
         live.DOWNGRADE_SQL[0]
     )
@@ -98,6 +117,16 @@ def test_downgrade_checks_retained_custody_before_removing_only_new_objects(
 
 
 def test_new_live_models_and_demo_indexes_match_source_spec_names_and_predicates():
+    assert (
+        tuple(
+            model.__tablename__
+            for model in (
+                close_models.NativeLiveControlledCloseIntentV1,
+                close_models.NativeLiveControlledCloseClaimV1,
+            )
+        )
+        == close.TABLES
+    )
     assert (
         tuple(
             model.__tablename__
