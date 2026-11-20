@@ -1,0 +1,16 @@
+{
+  "schema": "ctcc.native_live.private_runtime.v1",
+  "region": "global",
+  "database_oid": 0,
+  "owner_oid": 0,
+  "ca_file": "C:/Users/OPERATOR/AppData/Local/CTCC/private/live/ca.pem",
+  "ca_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "operator": {"oid": 0, "name": "ctcc_live_operator", "dsn": "postgresql+asyncpg://ctcc_live_operator:REPLACE_PRIVATELY@DB_HOST/DB_NAME"},
+  "writer": {"oid": 0, "name": "ctcc_live_writer", "dsn": "postgresql+asyncpg://ctcc_live_writer:REPLACE_PRIVATELY@DB_HOST/DB_NAME"},
+  "collector": {"oid": 0, "name": "ctcc_live_collector", "dsn": "postgresql+asyncpg://ctcc_live_collector:REPLACE_PRIVATELY@DB_HOST/DB_NAME"},
+  "reconciler": {"oid": 0, "name": "ctcc_live_reconciler", "dsn": "postgresql+asyncpg://ctcc_live_reconciler:REPLACE_PRIVATELY@DB_HOST/DB_NAME"},
+  "journal_key_file": {"path": "C:/Users/OPERATOR/AppData/Local/CTCC/private/live/journal-key.json", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+  "account_source_root": "C:/Users/OPERATOR/AppData/Local/CTCC/private/live/account",
+  "public_root": "C:/Users/OPERATOR/AppData/Local/CTCC/private/live/public",
+  "evidence_root": "C:/Users/OPERATOR/AppData/Local/CTCC/private/live/evidence"
+}

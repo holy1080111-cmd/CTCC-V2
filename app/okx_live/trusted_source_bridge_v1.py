@@ -315,6 +315,64 @@ def _bank_sha(pages):
     return sha(canonical(rows))
 
 
+def _retained_source_identity_v1(owner, *, depth=0):
+    """Replay immutable prior provenance, NEVER make its old snapshot fresh.
+
+    This private operation is only for a same-task, same-lease incremental
+    capture. It deliberately returns no account view or execution capability.
+    """
+    _need(type(owner) is OwnedLiveSourceV1 and type(depth) is int and 0 <= depth <= 2)
+    state = _SOURCES.get(owner)
+    _need(type(state) is dict and state["task"] is asyncio.current_task())
+    state["lease"].verify_current()
+    _need(_configured(state["plan"]) is state["settings"])
+    receipt = decode(state["receipt_json"], maximum=65536)
+    _need(
+        canonical(receipt) == state["receipt_json"]
+        and sha(state["receipt_json"]) == state["source_revision_sha256"]
+        and receipt["credential_session_sha256"] == state["credential_session_sha256"]
+        and receipt["financial_tail_sha256"] == sha(state["financial_tail_json"])
+        and receipt["raw_bank_sha256"] == state["raw_bank_sha256"]
+    )
+    retained = state.get("retained_history_pages", ())
+    _need(type(retained) is tuple)
+    _need(
+        _bank_sha(
+            (
+                *retained,
+                *state["history_pages"],
+                *state["baseline_current_pages"],
+                *state["current_pages"],
+            )
+        )
+        == state["raw_bank_sha256"]
+    )
+    _need(
+        state["history_selectors"] == tuple(item[1] for item in state["history"])
+        and receipt["history_custody_sha256"] == [item[2] for item in state["history"]]
+        and receipt["history_partitions"] == len(state["history"])
+    )
+    previous = state.get("previous_source_owner")
+    if previous is not None:
+        _retained_source_identity_v1(previous, depth=depth + 1)
+        old = _SOURCES[previous]
+        _need(
+            old["lease"] is state["lease"]
+            and old["credential_session_sha256"] == state["credential_session_sha256"]
+            and receipt["capture_mode"] == "incremental_refresh_v1"
+            and receipt["immutable_prefix_source_sha256"]
+            == old["source_revision_sha256"]
+            and receipt["immutable_prefix_bank_sha256"] == old["raw_bank_sha256"]
+            and retained
+            == (
+                *old.get("retained_history_pages", ()),
+                *old["history_pages"],
+                *old["baseline_current_pages"],
+                *old["current_pages"],
+            )
+        )
+
+
 def _replay_owned_live_source_v1(owner, *, key):
     _need(key is _SOURCE_KEY and type(owner) is OwnedLiveSourceV1)
     state = _SOURCES.get(owner)
@@ -325,16 +383,7 @@ def _replay_owned_live_source_v1(owner, *, key):
     end = state["current_completed"]
     validate_stamps((end.model_dump(), now.model_dump()))
     _need(0 <= now.monotonic_ns - end.monotonic_ns <= state["plan"].max_current_age_ns)
-    _need(
-        _bank_sha(
-            (
-                *state["history_pages"],
-                *state["baseline_current_pages"],
-                *state["current_pages"],
-            )
-        )
-        == state["raw_bank_sha256"]
-    )
+    _retained_source_identity_v1(owner)
     tail = decode(state["financial_tail_json"], maximum=16384)
     _need(
         canonical(tail) == state["financial_tail_json"]
@@ -376,6 +425,7 @@ def _replay_owned_live_source_v1(owner, *, key):
                 "raw_bank_sha256",
                 "financial_tail_json",
                 "baseline_current_pages",
+                "history_selectors",
             )
         }
     )
@@ -644,6 +694,7 @@ async def _capture_with_original_lease_v1(plan, private_root, settings, lease):
         "main_uid": main_uid,
         "credential_session_sha256": credential_session,
         "history": tuple(histories),
+        "history_selectors": tuple(item[1] for item in histories),
         "current_attempt": current_attempt,
         "current_digest": current_digest,
         "current_readback": readback,
@@ -709,10 +760,322 @@ async def refresh_owned_live_source_v1(owner, *, publication_barrier, invocation
         > state["current_completed"].monotonic_ns
     )
     try:
-        return await _capture_with_original_lease_v1(
-            plan, state["root"], state["settings"], state["lease"]
-        )
+        return await _capture_incremental_with_original_lease_v1(owner, plan)
     except asyncio.CancelledError:
         raise
     except Exception:  # noqa: BLE001 -- no private source diagnostics escape.
         raise LiveSourceBridgeError("owned_live_source_unavailable") from None
+
+
+def _incremental_selectors_v1(plan, *, cutoff_ms):
+    """Re-read authoritative cash archives and the entire new-event overlap.
+
+    Archive reads retain the original eight-day start. This detects late prior
+    cash rows rather than assuming that a short tail proves their absence.
+    Recent fills/bills close archive publication lag; closed position history
+    is fetched to its actual terminal page. Original order/algo history stays
+    explicitly historical; fresh pending/algo exposure is in the NEW current
+    capture, never inferred from old history.
+    """
+    _selectors(plan)
+    begin = str(_utc_ns(plan.history_start) // 1_000_000)
+    overlap = str(_utc_ns(plan.history_end) // 1_000_000 - 1000)
+    end = str(cutoff_ms)
+    _need(int(overlap) <= cutoff_ms and cutoff_ms - int(overlap) <= 86_400_000)
+    return (
+        *(
+            select_live_account_history_page_v1(
+                "fills_history", begin_ms=begin, end_ms=end, inst_type=product
+            )
+            for product in HISTORY_INST_TYPES
+        ),
+        select_live_account_history_page_v1(
+            "bills_archive", begin_ms=begin, end_ms=end
+        ),
+        *(
+            select_live_account_history_page_v1(
+                "orders_recent", begin_ms=overlap, end_ms=end, inst_type=product
+            )
+            for product in HISTORY_INST_TYPES
+        ),
+        select_live_account_history_page_v1("positions_history"),
+        *(
+            select_live_account_history_page_v1(
+                "fills_recent", begin_ms=overlap, end_ms=end, inst_type=product
+            )
+            for product in HISTORY_INST_TYPES
+        ),
+        select_live_account_history_page_v1(
+            "bills_recent", begin_ms=overlap, end_ms=end
+        ),
+    )
+
+
+def _prior_cash_rows_v1(pages, *, archives_only=False):
+    result = {"fills": {}, "bills": {}}
+    for page in pages:
+        kind = page.selector.kind
+        family = (
+            "fills"
+            if kind.startswith("fills_")
+            else "bills"
+            if kind.startswith("bills_")
+            else None
+        )
+        if family is None or (
+            archives_only and kind not in ("fills_history", "bills_archive")
+        ):
+            continue
+        for row in current._rows(page.raw_body):
+            identity, raw = row["billId"], canonical(row)
+            old = result[family].get(identity)
+            _need(old is None or old == raw)
+            result[family][identity] = raw
+    return result
+
+
+def _require_incremental_cash_continuity_v1(previous, incoming, *, previous_cutoff_ms):
+    """Known rows cannot vanish/change; newly late prior cash is INCOMPLETE."""
+    known = _prior_cash_rows_v1(previous)
+    old_archives = _prior_cash_rows_v1(previous, archives_only=True)
+    new_archives = _prior_cash_rows_v1(incoming, archives_only=True)
+    fresh = _prior_cash_rows_v1(incoming)
+    for family in ("fills", "bills"):
+        for identity, raw in old_archives[family].items():
+            _need(new_archives[family].get(identity) == raw)
+        for identity, raw in fresh[family].items():
+            row = decode(raw, maximum=65536)
+            field = "fillTime" if family == "fills" else "ts"
+            _need(type(row.get(field)) is str and row[field].isdecimal())
+            if identity in known[family]:
+                _need(known[family][identity] == raw)
+            else:
+                _need(int(row[field]) > previous_cutoff_ms)
+
+
+async def _capture_incremental_with_original_lease_v1(previous_owner, plan):
+    _retained_source_identity_v1(previous_owner)
+    old = _SOURCES[previous_owner]
+    _need(old.get("refresh_depth", 0) < 2)
+    lease, root, settings, identity = (
+        old["lease"],
+        old["root"],
+        old["settings"],
+        old["account_config"],
+    )
+    client = lease._owner
+    _need(
+        plan.region == old["plan"].region
+        and plan.history_start == old["plan"].history_start
+        and plan.history_end == old["plan"].history_end
+    )
+    started = _stamp()
+    validate_stamps((plan.publication_barrier.model_dump(), started.model_dump()))
+    _need(started.monotonic_ns > plan.publication_barrier.monotonic_ns)
+    spans = []
+
+    async def capture_current(label):
+        attempt = sha(canonical([plan.invocation_id, label]))[:32]
+        captured = await current.collect_live_current_account_v1(
+            client, lease, private_root=root, attempt_id=attempt
+        )
+        actual, first = _both_configs(
+            root,
+            attempt,
+            captured,
+            lease.binding_id,
+            lease._pin.origin,
+            old["uid"],
+            old["main_uid"],
+        )
+        _need(actual == identity and captured["synthetic_mock"] is False)
+        completed = ClockStamp.model_validate(captured["capture_completed"])
+        spans.extend((first, completed))
+        return (
+            attempt,
+            captured,
+            completed,
+            _read_original_page_bank(root, attempt, captured),
+        )
+
+    (
+        baseline_attempt,
+        baseline,
+        baseline_completed,
+        baseline_pages,
+    ) = await capture_current("incremental-current-baseline")
+    cutoff = _stamp()
+    validate_stamps((baseline_completed.model_dump(), cutoff.model_dump()))
+    end_ms = cutoff.utc_ns // 1_000_000 - 1
+    previous_tail = decode(old["financial_tail_json"], maximum=16384)
+    _need(int(previous_tail["end_ms"]) < end_ms)
+    anchor = _balance_tail_anchor_v1(baseline_pages, cutoff_ms=end_ms)
+    selectors = _incremental_selectors_v1(plan, cutoff_ms=end_ms)
+    fresh_history, fresh_pages, tail_custody = [], [], []
+    for index, selector in enumerate(selectors):
+        attempt = sha(canonical([plan.invocation_id, "incremental-history", index]))[
+            :32
+        ]
+        captured = await history.collect_live_account_history_v1(
+            client, lease, selector, private_root=root, attempt_id=attempt
+        )
+        actual, first = _both_configs(
+            root,
+            attempt,
+            captured,
+            lease.binding_id,
+            lease._pin.origin,
+            old["uid"],
+            old["main_uid"],
+        )
+        _need(
+            actual == identity
+            and captured["synthetic_mock"] is False
+            and captured["explicit_terminal_page_observed"] is True
+            and first.monotonic_ns > cutoff.monotonic_ns
+        )
+        spans.extend((first, ClockStamp.model_validate(captured["capture_completed"])))
+        fresh_history.append((attempt, selector, captured["custody_sha256"], captured))
+        _extend_original_history_bank_v1(
+            fresh_pages,
+            _read_original_page_bank(root, attempt, captured, selector=selector),
+            baseline=baseline_pages,
+        )
+        if selector.kind in ("fills_recent", "bills_recent"):
+            tail_custody.append(captured["custody_sha256"])
+    _need(len(tail_custody) == 7)
+    _require_incremental_cash_continuity_v1(
+        old["history_pages"],
+        fresh_pages,
+        previous_cutoff_ms=int(previous_tail["end_ms"]),
+    )
+    current_attempt, captured, completed, current_pages = await capture_current(
+        "incremental-current-final"
+    )
+    _need(_balance_tail_anchor_v1(current_pages, cutoff_ms=end_ms) == anchor)
+    # Keep original non-financial history and pre-cutover recent overlaps with
+    # their original timestamps. New archive/tail/positions chains supplement
+    # them; superseded raw bytes remain in the immutable prefix bank below.
+    base = {canonical(asdict(item)) for item in _selectors(plan)}
+    keep = tuple(
+        item
+        for item in old["history"]
+        if canonical(asdict(item[1])) in base
+        and item[1].kind not in ("fills_history", "bills_archive", "positions_history")
+    )
+    retained_active_pages = tuple(
+        page
+        for page in old["history_pages"]
+        if any(
+            history._partition(page.selector) == history._partition(item[1])
+            for item in keep
+        )
+    )
+    histories = (*keep, *fresh_history)
+    active_pages = (*retained_active_pages, *fresh_pages)
+    retained = (
+        *old.get("retained_history_pages", ()),
+        *old["history_pages"],
+        *old["baseline_current_pages"],
+        *old["current_pages"],
+    )
+    bank_sha = _bank_sha((*retained, *active_pages, *baseline_pages, *current_pages))
+    tail = canonical(
+        {
+            "schema": "ctcc.native_live.financial_tail_data.v1",
+            "environment": "live",
+            "begin_ms": str(_utc_ns(plan.history_end) // 1_000_000 - 1000),
+            "end_ms": str(end_ms),
+            "cutoff_measured": cutoff.model_dump(),
+            "balance_revision_sha256": anchor,
+            "baseline_custody_sha256": baseline["custody_sha256"],
+            "final_custody_sha256": captured["custody_sha256"],
+            "tail_custody_sha256": tail_custody,
+            "baseline_attempt": baseline_attempt,
+            "baseline_current_completed": baseline_completed.model_dump(),
+            "final_current_completed": completed.model_dump(),
+            "partition_count": 7,
+            "semantics": "same_native_balance_revision_before_and_after_complete_fill_bill_tail",
+            "account_complete": False,
+            "execution_authority": False,
+            "admission": "DENY",
+        }
+    )
+    validate_stamps(
+        (
+            plan.publication_barrier.model_dump(),
+            *(stamp.model_dump() for stamp in spans),
+        )
+    )
+    _need(
+        all(
+            stamp.monotonic_ns > plan.publication_barrier.monotonic_ns
+            for stamp in spans
+        )
+    )
+    readback = current.read_live_current_account_with_balance_v1(
+        root,
+        attempt_id=current_attempt,
+        expected_custody_sha256=captured["custody_sha256"],
+    )
+    receipt = canonical(
+        {
+            "schema": "ctcc.native_live.owned_source_data.v1",
+            "capture_mode": "incremental_refresh_v1",
+            "environment": "live",
+            "region": plan.region,
+            "origin": lease._pin.origin,
+            "invocation_id": plan.invocation_id,
+            "account_identity_sha256": sha(
+                canonical(["live", old["uid"], old["main_uid"]])
+            ),
+            "credential_session_sha256": old["credential_session_sha256"],
+            "publication_barrier": plan.publication_barrier.model_dump(),
+            "current_custody_sha256": captured["custody_sha256"],
+            "history_custody_sha256": [item[2] for item in histories],
+            "history_partitions": len(histories),
+            "raw_bank_sha256": bank_sha,
+            "financial_tail_sha256": sha(tail),
+            "current_completed": completed.model_dump(),
+            "immutable_prefix_source_sha256": old["source_revision_sha256"],
+            "immutable_prefix_bank_sha256": old["raw_bank_sha256"],
+            "all_mutable_requests_after_barrier": True,
+            "old_history_relabelled_fresh": False,
+            "late_prior_cash_detected": False,
+            "account_complete": False,
+            "financial_history_complete": False,
+            "qualification_verified": False,
+            "execution_authority": False,
+            "admission": "DENY",
+        }
+    )
+    owner = OwnedLiveSourceV1(_SOURCE_KEY)
+    _SOURCES[owner] = {
+        "task": asyncio.current_task(),
+        "settings": settings,
+        "plan": plan,
+        "root": root,
+        "lease": lease,
+        "uid": old["uid"],
+        "main_uid": old["main_uid"],
+        "credential_session_sha256": old["credential_session_sha256"],
+        "history": histories,
+        "history_selectors": tuple(item[1] for item in histories),
+        "history_pages": active_pages,
+        "current_attempt": current_attempt,
+        "current_digest": captured["custody_sha256"],
+        "current_readback": readback,
+        "current_pages": current_pages,
+        "baseline_current_pages": baseline_pages,
+        "account_config": identity,
+        "raw_bank_sha256": bank_sha,
+        "current_completed": completed,
+        "receipt_json": receipt,
+        "source_revision_sha256": sha(receipt),
+        "financial_tail_json": tail,
+        "retained_history_pages": retained,
+        "previous_source_owner": previous_owner,
+        "refresh_depth": old.get("refresh_depth", 0) + 1,
+    }
+    _replay_owned_live_source_v1(owner, key=_SOURCE_KEY)
+    return owner

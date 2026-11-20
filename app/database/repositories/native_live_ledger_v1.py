@@ -18,6 +18,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 from sqlalchemy.pool import NullPool
 
+from app.database.repositories import native_live_catalog_v1 as structural_catalog
 from app.domain import native_live_ledger_schema_v1 as schema
 from app.domain.native_live_inherited_acl_v1 import (
     require_inherited_live_data_helpers_v1,
@@ -173,6 +174,30 @@ async def _profile(session, pins):
             for name in sorted((*schema.EXECUTABLE_FUNCTIONS, *inherited_helpers))
         ]
     )
+    await _catalog(session, owner_oid=pins.owner_oid, actor_oid=pins.writer_oid)
+    return row
+
+
+async def _catalog(session, *, owner_oid, actor_oid):
+    """Same source-pinned tables/functions for separate restricted Live roles."""
+    _need(
+        await session.scalar(
+            text("""SELECT
+      has_schema_privilege(current_user,'public','USAGE')
+      AND NOT has_schema_privilege(current_user,'public','CREATE')
+      AND NOT has_database_privilege(current_user,current_database(),'CREATE')
+      AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_class c
+        JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace,
+        LATERAL pg_catalog.aclexplode(c.relacl) x
+        WHERE n.nspname='public' AND x.grantee IN (0,:actor) AND x.is_grantable)
+      AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_proc p
+        JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace,
+        LATERAL pg_catalog.aclexplode(p.proacl) x
+        WHERE n.nspname='public' AND x.grantee IN (0,:actor) AND x.is_grantable)"""),
+            {"actor": actor_oid},
+        )
+        is True
+    )
     expected_functions = {}
     for statement in schema.UPGRADE_SQL:
         if statement.startswith("CREATE FUNCTION public."):
@@ -193,7 +218,7 @@ async def _profile(session, pins):
     _need(len(functions) == len(expected_functions))
     for item in functions:
         expected = (
-            pins.owner_oid,
+            owner_oid,
             *expected_functions[item[0]],
             ["search_path=pg_catalog, pg_temp"],
             "f",
@@ -219,9 +244,7 @@ async def _profile(session, pins):
     ).all()
     _need(
         len(tables) == len(schema.TABLES)
-        and all(
-            tuple(item[1:]) == (pins.owner_oid, "r", False, False) for item in tables
-        )
+        and all(tuple(item[1:]) == (owner_oid, "r", False, False) for item in tables)
     )
     triggers = (
         await session.execute(
@@ -258,11 +281,11 @@ async def _profile(session, pins):
       AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
       WHERE n.nspname='public' AND c.relkind='S' AND
       (has_sequence_privilege(current_user,c.oid,'USAGE') OR has_sequence_privilege(current_user,c.oid,'SELECT') OR has_sequence_privilege(current_user,c.oid,'UPDATE')))"""),
-            {"writer": pins.writer_oid},
+            {"writer": actor_oid},
         )
         is True
     )
-    return row
+    await structural_catalog.require_live4_source_catalog_v1(session)
 
 
 def _source(value, owner):
@@ -358,6 +381,16 @@ class NativeLiveLedgerDataRepositoryV1:
     def __init__(self, factory, pins):
         _factory(factory, pins)
         self.factory, self.pins = factory, pins
+
+    async def preflight_data_v1(self):
+        """Read-only actor/catalog proof; no source, Arm or intent is created."""
+        async with self.factory() as session, session.begin():
+            for statement in (
+                "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY",
+                *_SETTINGS[1:],
+            ):
+                await session.execute(text(statement))
+            await _profile(session, self.pins)
 
     async def reserve_and_commit_intent_data_v1(self, value, *, owned_source):
         """One durable DATA hold and intent; duplicate events never replace it."""

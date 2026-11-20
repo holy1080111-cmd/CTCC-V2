@@ -177,6 +177,11 @@ def _original_rows(view):
             )
         }
     )
+    if "history_selectors" in view:
+        selectors = view["history_selectors"]
+        _need(type(selectors) is tuple and 1 <= len(selectors) <= 128)
+        expected = {_partition(selector) for selector in selectors}
+        _need(len(expected) == len(selectors))
     groups, families = {}, {"fills": {}, "bills": {}, "positions": {}}
     for page_index, page in enumerate(view["history_pages"]):
         _need(type(page) is bridge.LiveSourcePageDataV1)
