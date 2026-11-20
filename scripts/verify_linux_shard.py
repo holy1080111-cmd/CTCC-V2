@@ -22,6 +22,9 @@ DB0056_REPORT_RESUME_TEST_PATH = (
     "tests/integration/test_db0056_terminal_report_resume_pg.py"
 )
 DB0056_POSTSUBMIT_TEST_PATH = "tests/integration/test_native_postsubmit_db0056_pg.py"
+DB0056_NEGATIVE_CLOSE_TEST_PATH = (
+    "tests/integration/test_native_negative_close_db0056_pg.py"
+)
 DB0056_RESTART_CLEAR_TEST_PATH = (
     "tests/integration/test_native_restart_legacy_clear_db0056_pg.py"
 )
@@ -36,6 +39,7 @@ POSTGRES_TEST_PATHS = frozenset(
         DB0056_CONTROL_MONITOR_TEST_PATH,
         DB0056_REPORT_RESUME_TEST_PATH,
         DB0056_POSTSUBMIT_TEST_PATH,
+        DB0056_NEGATIVE_CLOSE_TEST_PATH,
         DB0056_RESTART_CLEAR_TEST_PATH,
         DB0056_MANUAL_STARTUP_TEST_PATH,
         "tests/integration/test_qualification_ledger_repository.py",
@@ -245,6 +249,7 @@ def postgres_component(path: str) -> int:
         DB0056_CONTROL_MONITOR_TEST_PATH,
         DB0056_REPORT_RESUME_TEST_PATH,
         DB0056_POSTSUBMIT_TEST_PATH,
+        DB0056_NEGATIVE_CLOSE_TEST_PATH,
         DB0056_RESTART_CLEAR_TEST_PATH,
         DB0056_MANUAL_STARTUP_TEST_PATH,
     ):

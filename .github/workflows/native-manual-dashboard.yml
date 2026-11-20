@@ -1,0 +1,77 @@
+name: Native manual dashboard
+
+on:
+  push:
+    branches: ['develop/**']
+  pull_request:
+    branches: [main, 'develop/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  browser-contract:
+    name: Manual dashboard DOM and security contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate the original dashboard script without starting a service
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          python3.12 -m venv "$RUNNER_TEMP/ctcc-ui-venv"
+          py="$RUNNER_TEMP/ctcc-ui-venv/bin/python"
+          "$py" -m pip --isolated install --require-hashes --only-binary=:all: \
+            -r requirements/validation-linux-py312.lock
+          node -e 'if (Number(process.versions.node.split(".")[0]) < 20) process.exit(1)'
+          "$py" -B -m scripts.manifest --check
+          out="$RUNNER_TEMP/ctcc-manual-dashboard"
+          mkdir "$out"
+          git -c core.autocrlf=false -c core.eol=lf archive --format=tar \
+            --output="$out/exact-source.tar" HEAD
+          "$py" -B -m scripts.render_native_manual_demo_dashboard \
+            --symbol BTC-USDT-SWAP --symbol ETH-USDT-SWAP \
+            --max-leverage 20 --max-contracts 1 --execution-enabled \
+            --output "$out/dashboard.html"
+          node scripts/verify_native_manual_demo_dashboard.mjs \
+            "$out/dashboard.html" "$out/dom-report.json"
+          "$py" - "$out" <<'PY'
+          import hashlib, json, pathlib, subprocess, sys
+          root = pathlib.Path(sys.argv[1])
+          sha = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
+          git = lambda *args: subprocess.check_output(["git", *args], text=True).strip()
+          record = {
+              "schema": "ctcc.native_manual_dashboard.ci.v1",
+              "commit": git("rev-parse", "HEAD"),
+              "tree": git("rev-parse", "HEAD^{tree}"),
+              "manifest_sha256": sha(pathlib.Path("MANIFEST.sha256")),
+              "dependency_lock_sha256": sha(pathlib.Path("requirements/validation-linux-py312.lock")),
+              "python_version": sys.version,
+              "node_version": subprocess.check_output(["node", "--version"], text=True).strip(),
+              "files_sha256": {p.name: sha(p) for p in sorted(root.iterdir()) if p.is_file()},
+              "scope": "synthetic DOM and response handling only",
+              "application_started": False,
+              "exchange_requests": 0,
+              "order_writes": 0,
+              "execution_authority": False,
+          }
+          with (root / "identity.json").open("x", encoding="utf-8") as output:
+              json.dump(record, output, indent=2, sort_keys=True)
+              output.write("\n")
+          PY
+
+      - name: Preserve exact source and browser evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ctcc-native-manual-dashboard-${{ github.sha }}
+          path: ${{ runner.temp }}/ctcc-manual-dashboard/
+          if-no-files-found: error
+          retention-days: 30

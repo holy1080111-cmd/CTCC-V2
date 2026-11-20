@@ -76,6 +76,7 @@ POSTGRES_INTEGRATION = (
     "test_db0056_control_monitor_pg.py",
     "test_db0056_terminal_report_resume_pg.py",
     "test_native_postsubmit_db0056_pg.py",
+    "test_native_negative_close_db0056_pg.py",
     "test_native_restart_legacy_clear_db0056_pg.py",
     "test_native_manual_startup_0056_pg.py",
     "test_demo_event_history_epoch_repository.py",

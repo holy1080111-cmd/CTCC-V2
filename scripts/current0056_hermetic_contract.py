@@ -26,6 +26,7 @@ from scripts.evidence_json import read_evidence_json
 from scripts.verify_linux_shard import (
     DB0056_CONTROL_MONITOR_TEST_PATH,
     DB0056_MANUAL_STARTUP_TEST_PATH,
+    DB0056_NEGATIVE_CLOSE_TEST_PATH,
     DB0056_POSTSUBMIT_TEST_PATH,
     DB0056_REPORT_RESUME_TEST_PATH,
     DB0056_RESTART_CLEAR_TEST_PATH,
@@ -112,6 +113,10 @@ INITIAL_TRANSPORT_CASE = (
     DB0056_REPORT_RESUME_TEST_PATH.removesuffix(".py").replace("/", "."),
     "test_actual0056_report_initial_transport_appends_atomically_without_eligibility[long-net]",
 )
+NEGATIVE_CLOSE_CASE = (
+    DB0056_NEGATIVE_CLOSE_TEST_PATH.removesuffix(".py").replace("/", "."),
+    "test_actual0056_negative_close_holds_control_catalog_and_estop_through_io",
+)
 POSTSUBMIT_SAFETY_CASE = (
     DB0056_POSTSUBMIT_TEST_PATH.removesuffix(".py").replace("/", "."),
     "test_actual0056_stopped_postsubmit_transactions_preserve_control_and_catalog",
@@ -135,6 +140,7 @@ CURRENT56_PG1_REQUIRED_CASES = (
     REPORT_RESUME_CASE,
     INITIAL_TRANSPORT_CASE,
     POSTSUBMIT_SAFETY_CASE,
+    NEGATIVE_CLOSE_CASE,
     RESTART_CLEAR_CASE,
     MANUAL_STARTUP_CASE,
 )

@@ -169,6 +169,7 @@ _FITTED_CASES = (
     contract.REPORT_RESUME_CASE,
     contract.INITIAL_TRANSPORT_CASE,
     contract.POSTSUBMIT_SAFETY_CASE,
+    contract.NEGATIVE_CLOSE_CASE,
     contract.RESTART_CLEAR_CASE,
     contract.MANUAL_STARTUP_CASE,
     (
