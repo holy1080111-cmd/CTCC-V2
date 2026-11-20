@@ -746,6 +746,7 @@ def _new_gate(record):
 
 
 async def _negative_control(facts, *, stop):
+    before = None
     async with facts.session_factory() as session, session.begin():
         for sql in ledger._SETTINGS:
             await session.execute(text(sql))
@@ -756,6 +757,20 @@ async def _negative_control(facts, *, stop):
                 {"uid": facts.account_uid},
             )
         else:
+            # This exact locked pre-state distinguishes our required disarm
+            # from an earlier external disarm with superficially equal flags.
+            before = dict(
+                (
+                    await session.execute(
+                        text(
+                            "SELECT * FROM public.native_live_control_fence_v1('live',:uid)"
+                        ),
+                        {"uid": facts.account_uid},
+                    )
+                )
+                .mappings()
+                .one()
+            )
             revision = await session.scalar(
                 text("SELECT public.native_live_disarm_v1('live',:uid,:arm)"),
                 {"uid": facts.account_uid, "arm": facts.arm_id},
@@ -772,7 +787,7 @@ async def _negative_control(facts, *, stop):
         row = (
             await session.execute(
                 text("""SELECT main_uid,process_sha256,armed,arm_id,arm_expires_at,
- emergency_stop,revision FROM public.native_live_controls_v1
+ emergency_stop,revision,credential_session_sha256,policy_sha256 FROM public.native_live_controls_v1
  WHERE environment='live' AND account_uid=:uid"""),
                 {"uid": facts.account_uid},
             )
@@ -790,6 +805,64 @@ async def _negative_control(facts, *, stop):
             and type(row[6]) is int
             and row[6] >= revision
         )
+    if not stop and before is not None:
+        expected = facts.intent_data
+        original = (
+            facts.account_uid,
+            facts.main_uid,
+            expected.process_sha256,
+            expected.credential_session_sha256,
+            expected.policy_sha256,
+            expected.expected_control_revision,
+            True,
+            facts.arm_id,
+            False,
+        )
+        observed = tuple(
+            before.get(name)
+            for name in (
+                "account_uid",
+                "main_uid",
+                "process_sha256",
+                "credential_session_sha256",
+                "policy_sha256",
+                "revision",
+                "armed",
+                "arm_id",
+                "emergency_stop",
+            )
+        )
+        if (
+            observed == original
+            and revision == expected.expected_control_revision + 1
+            and tuple(row)
+            == (
+                facts.main_uid,
+                expected.process_sha256,
+                False,
+                None,
+                None,
+                False,
+                revision,
+                expected.credential_session_sha256,
+                expected.policy_sha256,
+            )
+        ):
+            from app.domain import native_live_ledger_schema_v1 as schema
+
+            statements = tuple(
+                statement
+                for statement in schema.UPGRADE_SQL
+                if statement.startswith("CREATE FUNCTION public.native_live_disarm_v1(")
+            )
+            _need(len(statements) == 1)
+            return {
+                "schema": "ctcc.native_live.exact_disarm_successor_data.v1",
+                "before": original,
+                "after_revision": revision,
+                "source_statement_sha256": sha(statements[0].encode("utf8")),
+            }
+    return None
 
 
 async def _settle_negative_control(facts, record, *, stop):
@@ -803,7 +876,7 @@ async def _settle_negative_control(facts, record, *, stop):
 
     async def bounded():
         async with asyncio.timeout(15):
-            await _negative_control(facts, stop=stop)
+            return await _negative_control(facts, stop=stop)
 
     worker = asyncio.create_task(bounded())
     _NEGATIVE_TASKS.add(worker)
@@ -819,7 +892,49 @@ async def _settle_negative_control(facts, record, *, stop):
                 record["durable_inhibit_unconfirmed"] = True
 
     worker.add_done_callback(completed)
-    await asyncio.shield(worker)
+    settled = await asyncio.shield(worker)
+    if record is not None and not stop:
+        record["settled_disarm_successor"] = settled
+
+
+def _replay_owned_live_disarm_successor_v1(handle, *, key):
+    """Only a genuine settled same-task response can prove the one-step disarm."""
+    from app.domain import native_live_ledger_schema_v1 as schema
+    from app.okx_live import owned_close_v1 as close
+
+    _need(key is close._PHYSICAL_SUCCESSOR_KEY_V1)
+    record = _record(handle)
+    _need(not record["session"].in_transaction())
+    _need(
+        record.get("negative_control_pending") is False
+        and record.get("durable_inhibit_unconfirmed") is not True
+    )
+    value = record.get("settled_disarm_successor")
+    _need(type(value) is dict)
+    statements = tuple(
+        statement
+        for statement in schema.UPGRADE_SQL
+        if statement.startswith("CREATE FUNCTION public.native_live_disarm_v1(")
+    )
+    _need(len(statements) == 1)
+    _need(value["source_statement_sha256"] == sha(statements[0].encode("utf8")))
+    intent = record["facts"].intent_data
+    _need(value["after_revision"] == intent.expected_control_revision + 1)
+    _need(
+        value["before"]
+        == (
+            intent.account_uid,
+            intent.main_uid,
+            intent.process_sha256,
+            intent.credential_session_sha256,
+            intent.policy_sha256,
+            intent.expected_control_revision,
+            True,
+            intent.arm_id,
+            False,
+        )
+    )
+    return value.copy()
 
 
 def _validate_known_response_data(record):

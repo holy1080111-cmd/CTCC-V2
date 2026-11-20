@@ -188,6 +188,23 @@ class LivePublicEvaluationV1:
         return sha(self.receipt_json)
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class LiveControlledQuoteReplayV1:
+    """Exit-only DATA. No MarketSnapshot, entry replay or qualification claim."""
+
+    quote: live_quote.LiveExecutableQuoteV1
+    reference: WSReferenceObservation
+    raw_inventory_sha256: str
+    original_packet_sha256: str
+    original_publication_sha256: str
+    evaluated_at: datetime
+    schema: str = field(
+        default="ctcc.native_live.controlled_exit_raw_quote_replay.v1", init=False
+    )
+    execution_authority: bool = field(default=False, init=False)
+    qualification_performed: bool = field(default=False, init=False)
+
+
 def _coordinator(key):
     module = sys.modules.get(_COORDINATOR)
     _need(module is not None and getattr(module, "__name__", None) == _COORDINATOR)
@@ -402,9 +419,22 @@ def _project(packet, *, report_id, at):
             market, packet.instrument_id
         )
     )
-    ticker, mark, funding = packet.quote.provenance
+    quote, reference = _project_quote_reference(
+        packet.quote,
+        packet.ws,
+        instrument_id=packet.instrument_id,
+        report_id=report_id,
+        at=at,
+    )
+    return market, quote, reference
+
+
+def _project_quote_reference(
+    quote_component, ws_component, *, instrument_id, report_id, at
+):
+    ticker, mark, funding = quote_component.provenance
     ticker_row = quote_wire._row(
-        quote_wire._parse(ticker.response_body)[0], packet.instrument_id
+        quote_wire._parse(ticker.response_body)[0], instrument_id
     )
     bid, ask, bid_size, ask_size = quote_wire._values("ticker", ticker_row)
 
@@ -419,10 +449,10 @@ def _project(packet, *, report_id, at):
 
     quote = live_quote.LiveExecutableQuoteV1(
         report_id=report_id,
-        instrument_id=packet.instrument_id,
+        instrument_id=instrument_id,
         environment="live",
         capture_started_at=ticker.request_started_at,
-        capture_completed_at=packet.quote.completed_at,
+        capture_completed_at=quote_component.completed_at,
         ticker=live_quote.shared.RestTickerObservationV2(
             bid=bid,
             ask=ask,
@@ -435,7 +465,7 @@ def _project(packet, *, report_id, at):
             price=quote_wire._values(
                 "mark",
                 quote_wire._row(
-                    quote_wire._parse(mark.response_body)[0], packet.instrument_id
+                    quote_wire._parse(mark.response_body)[0], instrument_id
                 ),
             )[0],
             exchange_data_return_at=mark.source_time,
@@ -444,7 +474,7 @@ def _project(packet, *, report_id, at):
         funding=parse_funding_observation_v2(
             funding.response_body,
             source_kind="rest",
-            instrument_id=packet.instrument_id,
+            instrument_id=instrument_id,
             acquisition_started_at=funding.request_started_at,
             received_at=funding.received_at,
             completed_at=funding.completed_at,
@@ -456,20 +486,20 @@ def _project(packet, *, report_id, at):
     _need(
         inspection["profile_satisfied"] is True, "native_live_public_quote_incomplete"
     )
-    ws = packet.ws.ticker
+    ws = ws_component.ticker
     _need(
         0 <= (at - ws.received_at).total_seconds() <= 5
         and 0 <= (at - ws.source_time).total_seconds() <= 5
     )
     reference = WSReferenceObservation(
         report_id=report_id,
-        instrument_id=packet.instrument_id,
+        instrument_id=instrument_id,
         bid=ws.bid,
         ask=ws.ask,
         source_time=ws.source_time,
         received_at=ws.received_at,
     )
-    return market, quote, reference
+    return quote, reference
 
 
 async def capture_owned_live_public_v1(request, *, key):
@@ -698,6 +728,167 @@ def _replay_owned_live_public_v1(owner, *, key):
     except Exception:  # noqa: BLE001 -- burn the owner without leaking raw IO details
         _OWNERS.pop(owner, None)
         raise LivePublicSourceError("native_live_public_replay_failed") from None
+    except BaseException:
+        _OWNERS.pop(owner, None)
+        raise
+
+
+def _replay_owned_live_controlled_quote_v1(owner, *, key):
+    """Re-read all original bytes, then freshly parse exit quote/WS components.
+
+    The complete source was audited before its original opaque owner existed.
+    Every call reopens its entire immutable inventory and requires that exact
+    same digest, packet, plan, receipt and native root identities. OHLC bytes
+    remain bound to that original audit; this purpose emits no candle replay,
+    MarketSnapshot or entry qualification. No quote/model/clock is cached.
+    """
+    _coordinator(key)
+    state = _OWNERS.get(owner) if type(owner) is OwnedLivePublicSourceV1 else None
+    _need(state is not None)
+    try:
+        params = state["params"]
+        _need(
+            params.stage == "controlled_exit"
+            and params.public_policy_sha256 == CLOSE_POLICY_SHA256
+        )
+        _current(state)
+        with transport._reopen_runtime_journal(params.root) as parent:
+            _need(
+                set(parent.names()) == {"raw", _FILE}
+                and parent.read(_FILE, 16384) == state["receipt"]
+            )
+            _need(
+                transport._native_recheck_root_identity(params.root)
+                == state["root_identity"]
+            )
+            with transport._reopen_runtime_journal(state["raw_root"]) as directory:
+                _need(
+                    transport._native_recheck_root_identity(state["raw_root"])
+                    == state["raw_identity"]
+                )
+                files, inventory, _size = _inventory(directory)
+                _need(inventory == state["inventory_sha256"])
+                bank = {item.name: item.raw for item in files}
+                plan_raw, summary_raw = bank["plan.json"], bank["summary.json"]
+                _need(
+                    sha(plan_raw) == state["plan_sha256"]
+                    and sha(summary_raw) == state["journal_sha256"]
+                )
+                plan, summary = (
+                    decode(plan_raw, journal.MAX_RAW),
+                    decode(summary_raw, journal.MAX_RAW),
+                )
+                _need(
+                    plan["schema_version"] == journal.GLOBAL_INITIAL_PLAN
+                    and plan["instrument_id"] == params.instrument_id
+                    and summary["disposition"] == "captured"
+                )
+                count = summary["event_count"]
+                _need(type(count) is int and 0 < count <= journal.MAX_EVENTS)
+                event = decode(bank[f"event-{count - 1:04d}.json"], journal.MAX_RAW)
+                packet_raw = bank[f"event-{count - 1:04d}.raw"]
+                _need(
+                    event["kind"] == "packet"
+                    and event["raw_sha256"]
+                    == summary["packet_sha256"]
+                    == state["packet_sha256"]
+                    == sha(packet_raw)
+                )
+                document = decode(packet_raw, journal.MAX_RAW)
+                _need(
+                    canonical(document) == packet_raw
+                    and set(document)
+                    == set(production.GlobalPublicComponentPacketV1.model_fields)
+                )
+                _need(
+                    document["schema_version"] == journal.GLOBAL_PACKET
+                    and document["environment"] == journal.GLOBAL_ENVIRONMENT
+                    and document["rest_origin"] == journal.GLOBAL_REST_ORIGIN
+                    and document["ws_origin"] == journal.GLOBAL_WS_ORIGIN
+                    and document["global_route_sha256"] == journal.GLOBAL_ROUTE_SHA256
+                    and document["instrument_id"] == params.instrument_id
+                    and document["report_id"] == plan["report_id"]
+                    and document["policy_sha256"] == plan["policy_sha256"]
+                    and document["barrier_completed_at"] is None
+                )
+                _need(
+                    all(
+                        document[name] is False
+                        for name in (
+                            "source_authenticity_verified",
+                            "execution_authority",
+                            "qualification_performed",
+                        )
+                    )
+                )
+                quote_component = production.GlobalQuoteEvidenceV1.model_validate_json(
+                    canonical(document["quote"])
+                )
+                ws_component = websocket.CollectedWSReference.model_validate_json(
+                    canonical(document["ws"]), strict=True
+                )
+                _need(
+                    tuple(item.instrument_id for item in quote_component.provenance)
+                    == (params.instrument_id,) * 3
+                )
+                _need(
+                    ws_component.instrument_id == params.instrument_id
+                    and ws_component.report_id == plan["report_id"]
+                    and ws_component.endpoint == journal.GLOBAL_WS_ORIGIN
+                )
+                stamp = _current(state)
+                at = utc_from_ns(stamp["utc_ns"])
+                quote, reference = _project_quote_reference(
+                    quote_component,
+                    ws_component,
+                    instrument_id=params.instrument_id,
+                    report_id=params.report_id,
+                    at=at,
+                )
+                _need(_inventory(directory)[1] == inventory)
+            _need(
+                transport._native_recheck_root_identity(state["raw_root"])
+                == state["raw_identity"]
+            )
+        _need(
+            transport._native_recheck_root_identity(params.root)
+            == state["root_identity"]
+        )
+        final = _current(state)
+        final_at = utc_from_ns(final["utc_ns"])
+        # Recheck age after inventory readback; no earlier sampled clock can
+        # authorize a native write that resumed later.
+        _need(
+            decode(
+                live_quote.inspect_live_executable_quote_v1(
+                    quote, current_time=final_at
+                ).receipt_json
+            )["profile_satisfied"]
+            is True
+        )
+        _need(
+            0 <= (final_at - reference.received_at).total_seconds() <= 5
+            and 0 <= (final_at - reference.source_time).total_seconds() <= 5
+        )
+        return LiveControlledQuoteReplayV1(
+            quote,
+            reference,
+            inventory,
+            state["packet_sha256"],
+            params.publication_receipt_sha256,
+            final_at,
+        )
+    except asyncio.CancelledError:
+        _OWNERS.pop(owner, None)
+        raise
+    except LivePublicSourceError:
+        _OWNERS.pop(owner, None)
+        raise
+    except Exception:  # noqa: BLE001 -- a damaged source burns this owner and never retries.
+        _OWNERS.pop(owner, None)
+        raise LivePublicSourceError(
+            "native_live_controlled_quote_replay_failed"
+        ) from None
     except BaseException:
         _OWNERS.pop(owner, None)
         raise

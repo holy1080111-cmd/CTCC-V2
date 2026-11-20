@@ -229,17 +229,27 @@ def _validate_response_headers_v1(headers):
 
 
 def _gate(value):
-    from app.exchange.okx import native_live_write_v1 as authority
-
-    _need(
-        type(value) is authority._PhysicalLiveWriteGateV1,
-        "native_live_transport_owned_gate_required",
-    )
+    authority = _authority(value)
     # Registry membership, source closure, task, held transaction, revocation,
     # credential-session and deadlines are checked by the actual authority.
     authority._require_physical_gate_v1(value, key=_TRANSPORT_KEY)
     _require_vendor_bindings_v1()
     return value
+
+
+def _authority(value):
+    """Closed source-defined gate families; never a caller callback or DTO."""
+    from app.exchange.okx import native_live_write_v1 as entry
+
+    if type(value) is entry._PhysicalLiveWriteGateV1:
+        return entry
+    from app.exchange.okx import native_live_close_write_v1 as close
+
+    _need(
+        type(value) is close._PhysicalLiveCloseGateV1,
+        "native_live_transport_owned_gate_required",
+    )
+    return close
 
 
 def _require_vendor_bindings_v1():
@@ -262,7 +272,7 @@ class _CapturedAbort:
     )
 
     def __init__(self, gate):
-        from app.exchange.okx import native_live_write_v1 as authority
+        authority = _authority(gate)
 
         call, hold = authority._capture_abort_pins_v1(gate)
         _need(
@@ -369,7 +379,7 @@ class _TLSBytes(anyio.abc.ByteStream):
         # have actually arrived they are DATA: retain and return them to the
         # HTTP parser, even if the source expires at this response boundary.
         # Another network read must independently pass the live gate again.
-        from app.exchange.okx import native_live_write_v1 as authority
+        authority = _authority(self._gate)
 
         authority._retain_native_tls_data_v1(self._gate, value, key=_TRANSPORT_KEY)
         return value
@@ -491,7 +501,7 @@ class _Backend(httpcore.AsyncNetworkBackend):
             host, port, timeout, local_address, socket_options
         )
         self._native = native
-        from app.exchange.okx import native_live_write_v1 as authority
+        authority = _authority(self._gate)
 
         # Retain actual exposed TCP/C-socket owners before TLS or a late gate.
         authority._retain_native_socket_owners_v1(
@@ -521,7 +531,7 @@ class _ResponseStream(httpx.AsyncByteStream):
         self._body, self._closed = 0, False
 
     async def __aiter__(self):
-        from app.exchange.okx import native_live_write_v1 as authority
+        authority = _authority(self._gate)
 
         success = False
         try:
@@ -542,7 +552,7 @@ class _ResponseStream(httpx.AsyncByteStream):
             self._gate.finish(success)
 
     async def aclose(self):
-        from app.exchange.okx import native_live_write_v1 as authority
+        authority = _authority(self._gate)
 
         if not self._closed:
             self._closed = True
@@ -594,7 +604,7 @@ class _Transport(httpx.AsyncBaseTransport):
         response = None
         try:
             response = await self._pool.handle_async_request(core)
-            from app.exchange.okx import native_live_write_v1 as authority
+            authority = _authority(self._gate)
 
             authority._retain_native_response_headers_v1(
                 self._gate, response.status, response.headers, key=_TRANSPORT_KEY
@@ -624,7 +634,7 @@ class _Transport(httpx.AsyncBaseTransport):
 
 
 def _create_transport_v1(gate, *, key):
-    from app.exchange.okx import native_live_write_v1 as authority
+    authority = _authority(gate)
 
     _need(key is authority._INTENT_KEY, "native_live_transport_source_key_required")
     return _Transport(_gate(gate), key=_TRANSPORT_KEY)

@@ -181,6 +181,9 @@ def _require_complete_entry_flow_v1():
     for function in functions:
         _source_code(function, source, str(path))
     _require_lifecycle_source_modules_v1()
+    from app.okx_live.owned_close_v1 import _require_complete_close_flow_v1
+
+    _require_complete_close_flow_v1()
 
 
 def _require_lifecycle_source_modules_v1():
@@ -338,6 +341,10 @@ def _consume_owned_live_proof_v1(owner, *, key):
     from app.okx_live import lifecycle_key_v1 as keys
 
     _need(key is repository._PROOF_CONSUME_KEY_V1)
+    from app.okx_live import owned_close_v1 as close
+
+    if type(owner) is close.OwnedLiveControlledCloseV1:
+        return close._consume_owned_live_close_terminal_proof_v1(owner, key=key)
     state = _record(owner)
     key_owner = state["key_owner"]
     material = keys._material_for_owned_lifecycle_v1(key_owner, owner)
@@ -607,6 +614,7 @@ def _proof_document(state, *, capture, facts, economics, failure_code=None):
         if facts and facts.filled_contracts is not None
         else None,
         "protection_verified": protected,
+        "protection_algo_id": facts.protection_algo_id if protected else None,
         "protection_client_id": intent.protection_client_id,
         "fixed_fill_economics": economics,
         "failure_code": failure_code,
@@ -659,10 +667,8 @@ async def reconcile_owned_live_postsubmit_v1(qualified_owner, physical_handle):
         physical_handle, key=physical._QUALIFICATION_SOURCE_KEY_V1
     )
     rid, intent_json, intent_sha = exact_live_intent_document_v1(facts.intent_data)
-    _need(
-        rid == facts.reservation_id == response["reservation_id"]
-        and intent_json == facts.intent_readback
-    )
+    _need(rid == facts.reservation_id == response["reservation_id"])
+    receipt = _qualified_intent_receipt_v1(facts, rid=rid, intent_sha256=intent_sha)
     _need(
         response["request_sha256"] == facts.request_sha256
         and response["credential_session_sha256"] == facts.credential_session_sha256
@@ -673,6 +679,16 @@ async def reconcile_owned_live_postsubmit_v1(qualified_owner, physical_handle):
     )
     cfg, key_owner, repository = _runtime_repository(handoff.runtime_owner)
     await repository.preflight(key_owner)
+    from app.database.repositories.native_live_ledger_v1 import (
+        NativeLiveLedgerDataRepositoryV1,
+    )
+
+    actual_receipt = await NativeLiveLedgerDataRepositoryV1(
+        facts.session_factory, facts.role_pins
+    ).read_intent_data_v1(rid, expected_sha256=intent_sha)
+    _need(
+        actual_receipt == receipt and canonical(actual_receipt) == facts.intent_readback
+    )
     journal = await repository.read_journal_v1(key_owner, rid)
     _need(
         journal.intent_json == intent_json and journal.reservation_state != "reconciled"
@@ -690,6 +706,7 @@ async def reconcile_owned_live_postsubmit_v1(qualified_owner, physical_handle):
         intent=facts.intent_data,
         journal=journal,
         handoff=handoff,
+        qualified_owner=qualified_owner,
         evidence_root=handoff.evidence_root,
         report_id=handoff.report_id,
         capture_id=secrets.token_hex(16),
@@ -742,6 +759,54 @@ async def reconcile_owned_live_postsubmit_v1(qualified_owner, physical_handle):
         await repository.inhibit_for_recovery_v1(key_owner)
     accepted = await repository.append_owned_proof_v1(owner)
     control = await repository.read_control_v1(key_owner)
+    if (
+        state["outcome"] == "PROTECTED_HOLD"
+        and handoff.controlled_exit_authorized is True
+    ):
+        return await _controlled_exit_owned_live_v1(owner)
     return _new_receipt(
         accepted, control, current_protection=state["outcome"] == "PROTECTED_HOLD"
     )
+
+
+async def _controlled_exit_owned_live_v1(owner):
+    from app.okx_live.owned_close_v1 import run_owned_live_controlled_close_v1
+
+    return await run_owned_live_controlled_close_v1(owner)
+
+
+def _qualified_intent_receipt_v1(facts, *, rid, intent_sha256):
+    """The inert committed readback receipt is distinct from full intent JSON."""
+    import re
+
+    raw = facts.intent_readback
+    _need(type(raw) is bytes and 0 < len(raw) <= 4096)
+    document = decode(raw, maximum=4096)
+    _need(type(document) is dict and canonical(document) == raw)
+    _need(
+        set(document)
+        == {
+            "schema",
+            "reservation_id",
+            "intent_sha256",
+            "state",
+            "journal_sha256",
+            "qualification_verified",
+            "execution_authority",
+            "admission",
+        }
+    )
+    _need(document["schema"] == "ctcc.native_live.intent_readback_data.v1")
+    _need(document["reservation_id"] == rid == facts.reservation_id)
+    _need(
+        document["intent_sha256"] == intent_sha256 and document["state"] == "reserved"
+    )
+    _need(
+        type(document["journal_sha256"]) is str
+        and re.fullmatch(r"[a-f0-9]{64}", document["journal_sha256"]) is not None
+    )
+    _need(
+        document["qualification_verified"] is document["execution_authority"] is False
+        and document["admission"] == "DENY"
+    )
+    return document

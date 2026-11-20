@@ -5,10 +5,11 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.domain.native_live_intent_v1 import exact_live_intent_document_v1
 from app.domain.source_primitives import canonical, sha, utc_from_ns
 from app.okx_live import owned_lifecycle_v1 as lifecycle
 from app.okx_live import owned_qualification_v1 as subject
-from tests.native_live_postsubmit_fixtures_v1 import stamp
+from tests.native_live_postsubmit_fixtures_v1 import intent, stamp
 
 
 def _data():
@@ -19,6 +20,7 @@ def _data():
         credential_session_sha256="a" * 64,
         reservation_id="b" * 64,
         intent_readback=b"declared-synthetic-intent-data",
+        intent_data=intent(),
     )
     state = {
         "challenge_id": "c" * 64,
@@ -57,6 +59,11 @@ def test_close_consent_data_has_fixed120s_and_never_inherits_entry_arm_deadline(
         observed.maximum_close_submissions == 1
         and observed.execution_authority is False
     )
+    assert (
+        observed.original_intent_sha256
+        == exact_live_intent_document_v1(record["facts"].intent_data)[2]
+    )
+    assert observed.original_intent_sha256 != sha(record["facts"].intent_readback)
     state["deadline"] -= timedelta(days=1)
     assert subject._close_consent_facts_v1(record, state) == observed
 

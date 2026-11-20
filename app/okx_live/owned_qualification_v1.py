@@ -504,7 +504,7 @@ async def _capture_owned_live_close_public_v1(owner, physical_handle, *, key):
         )
         state["public_owners"].append(captured)
         _replay_spent_owned_live_close_permission_v1(owner, physical_handle, key=key)
-        return captured, public._replay_owned_live_public_v1(
+        return captured, public._replay_owned_live_controlled_quote_v1(
             captured, key=_PUBLIC_SOURCE_KEY_V1
         )
     finally:
@@ -867,7 +867,7 @@ def _close_consent_facts_v1(record, state):
         facts.main_uid,
         facts.credential_session_sha256,
         facts.reservation_id,
-        sha(facts.intent_readback),
+        exact_live_intent_document_v1(facts.intent_data)[2],
         state["process_sha256"],
     )
 

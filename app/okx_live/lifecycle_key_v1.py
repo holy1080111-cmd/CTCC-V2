@@ -292,6 +292,16 @@ def _verify_retained_controlled_close_intent_signature_v1(key_owner, raw, signat
     return True
 
 
+def _material_for_owned_controlled_close_v1(key_owner, close_owner):
+    """Only original measured close/claim/terminal bytes can reach the key."""
+    from app.okx_live import owned_close_v1 as close
+
+    record = _record(key_owner)
+    close._verify_source_for_signing_v1(close_owner, key_owner=key_owner)
+    _need(close._record(close_owner)["runtime_owner"] is record["runtime_owner"])
+    return bytes.fromhex(record["document"]["key_hex"])
+
+
 def _verify_retained_controlled_close_claim_signature_v1(key_owner, raw, signature):
     """Verify one stored action claim under its separate, fixed domain."""
     from app.domain.native_live_controlled_close_schema_v1 import CLAIM_DOMAIN
