@@ -3673,6 +3673,7 @@ def _new_reconciliation_source_v6(
         _deny("controlled_account_reconciliation_original_source_required")
 
     post_lineage = None
+    recovery_database_profile = None
     if source_state is None:
         if (
             close_post_read_cap is not None
@@ -3681,8 +3682,10 @@ def _new_reconciliation_source_v6(
             or _RECOVERY_SELECTION_USES_V6[authority] is not None
         ):
             _deny("controlled_account_genuine_moved_recovery_selection_required")
-        actual = selector._replay_configured_demo_identity_selection_v2(
-            authority, key=owner55._SOURCE_KEY
+        actual, recovery_database_profile = (
+            selector._replay_configured_demo_recovery_identity_v2(
+                authority, key=_SOURCE_KEY_V6
+            )
         )
         if (
             actual is not selector_record
@@ -3803,6 +3806,7 @@ def _new_reconciliation_source_v6(
         "client_keys": frozenset(client.__dict__),
         "control_owner": control_owner,
         "source_state": source_state,
+        "recovery_database_profile": recovery_database_profile,
         "transport": transport,
         "selector_record": selector_record,
         "selector_pin": _reconciliation_selector_pin_v6(selector_record),
@@ -3942,8 +3946,8 @@ def _acquire_native_recovery_read_source_v1(selection, *, key):
         or len(_RECONCILIATION_READ_V6) >= _MAX_SOURCES_V6
     ):
         _deny("controlled_account_recovery_selection_capacity")
-    selected = selector._replay_configured_demo_identity_selection_v2(
-        selection, key=owner55._SOURCE_KEY
+    selected, _profile = selector._replay_configured_demo_recovery_identity_v2(
+        selection, key=_SOURCE_KEY_V6
     )
     if type(selected) is not selector.ConfiguredDemoIdentityRecordV2:
         _deny("controlled_account_genuine_fresh_recovery_selection_required")
@@ -3993,6 +3997,34 @@ def _replay_native_recovery_read_source_v1(source_generation, *, key):
     return _reconciliation_view_v6(record, postsubmit)
 
 
+def _recovery_database_profile_v6(record):
+    """Retained recovery DATA pins; no positive replay of an expired selector."""
+    if (
+        type(record) is not dict
+        or _RECONCILIATION_READ_V6.get(record["generation"]) is not record
+        or record["source_state"] is not None
+        or record["transport"] is not None
+        or record["control_owner"] is not None
+        or "recovery_database_profile" not in record
+    ):
+        _deny("controlled_account_recovery_original_database_required")
+    profile = record["recovery_database_profile"]
+    if profile is None:
+        return None
+    if type(profile) is not tuple or len(profile) != 2:
+        _deny("controlled_account_recovery_original_database_required")
+    selected, roles = profile
+    if (
+        type(selected) is not selector56.ConfiguredNativeDemoFactoriesV2
+        or type(roles) is not witness56.RestrictedNativeRoles0056WitnessV1
+        or roles.observation.database_head != "0056"
+        or selected.writer_factory is not record["writer_factory"]
+        or selected.frame_reader_factory is not record["raw_factory"]
+    ):
+        _deny("controlled_account_recovery_original_database_required")
+    return profile
+
+
 def _replay_reconciliation_database_v6(view, *, key):
     """Original retained DATA database; never grants freshness, Arm or submit."""
     from app.database.repositories import native_postsubmit_v1 as repository
@@ -4021,10 +4053,7 @@ def _replay_reconciliation_database_v6(view, *, key):
         ):
             _deny("controlled_account_reconciliation_actual_factory_changed")
     if record["source_state"] is None:
-        # Recovery currently originates only in the strict head55 selector.
-        if record["transport"] is not None or record["control_owner"] is not None:
-            _deny("controlled_account_reconciliation_database_source_required")
-        return None
+        return _recovery_database_profile_v6(record)
     transport = _TRANSPORT_V6.get(record["transport"])
     if (
         type(transport) is not dict
@@ -4334,17 +4363,31 @@ def _make_reconciliation_inhibitor_v6():
                     != record["factories"][0][1]
                 ):
                     _deny("controlled_account_reconciliation_stop_factory_changed")
-                repository = repository_type(
-                    record["writer_factory"],
-                    clock=lambda: utc_from_ns(clock()["utc_ns"]),
+                scope = control.ControlScope(
+                    record["scope"].environment, record["scope"].account_id
                 )
-                result = await latch(
-                    repository,
-                    control.ControlScope(
-                        record["scope"].environment, record["scope"].account_id
-                    ),
-                    command_id=native.secrets.token_hex(32),
-                )
+                profile = _recovery_database_profile_v6(record)
+                if profile is None:
+                    repository = repository_type(
+                        record["writer_factory"],
+                        clock=lambda: utc_from_ns(clock()["utc_ns"]),
+                    )
+                    result = await latch(
+                        repository, scope, command_id=native.secrets.token_hex(32)
+                    )
+                else:
+                    selected, roles = profile
+                    repository = repository56.DemoControlRepository0056V1(
+                        selected,
+                        roles=roles,
+                        scope=scope,
+                        clock=lambda: utc_from_ns(clock()["utc_ns"]),
+                    )
+                    result = await repository.latch_stop(
+                        scope, command_id=native.secrets.token_hex(32)
+                    )
+                    if _recovery_database_profile_v6(record) != profile:
+                        _deny("controlled_account_recovery_original_database_required")
             if (
                 result.state.scope.environment != record["scope"].environment
                 or result.state.scope.account_id != record["scope"].account_id
