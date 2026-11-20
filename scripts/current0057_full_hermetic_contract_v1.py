@@ -173,6 +173,44 @@ def component_artifacts(mode, index):
     return names
 
 
+def cleanup_inventory(mode, index, prefix):
+    persistent = {
+        ("network", prefix + "network"),
+        ("container", prefix + "postgres"),
+        ("container", prefix + "redis"),
+    }
+    if component_is_anchor(mode, index):
+        persistent.add(("container", prefix + "api"))
+    host_or_exec = {
+        "build",
+        "image-identity",
+        "network-create",
+        "network-inspect",
+        "postgres-start",
+        "redis-start",
+        "postgres-ready",
+        "redis-ready",
+        "migration-parent-readback",
+        "migration-empty-downgrade-readback",
+        "migration-reservation-unique",
+        "api-start",
+        "api-before-restart",
+        "api-instance-before",
+        "postgres-restart",
+        "postgres-ready-after-restart",
+        "redis-restart",
+        "redis-ready-after-restart",
+        "api-restart",
+        "api-after-restart",
+        "api-instance-after",
+    }
+    return persistent | {
+        ("container", prefix + stage)
+        for stage in component_stage_names(mode, index)
+        if stage not in host_or_exec
+    }
+
+
 def require_host_code(files):
     for name in HOST_HELPERS:
         path = Path(__file__).with_name(name)
@@ -356,6 +394,12 @@ def verify_component(root, archive, *, commit, tree, manifest_sha256):
     _need(identity["migration"] == migration)
     previous._cleanup(
         _read(root, "cleanup.json"), prefix, anchor=component_is_anchor(mode, index)
+    )
+    cleanup_rows = read_evidence_json(_read(root, "cleanup.json"))
+    expected_cleanup = cleanup_inventory(mode, index, prefix)
+    _need(
+        len(cleanup_rows) == len(expected_cleanup)
+        and {(row["kind"], row["name"]) for row in cleanup_rows} == expected_cleanup
     )
     trusted = (
         previous.verify_root_trust(root, mode, index)
