@@ -4,7 +4,7 @@ import copy
 from dataclasses import replace
 from datetime import timedelta
 from decimal import Decimal
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 import pytest
 
@@ -22,8 +22,8 @@ from tests.unit.test_native_reconciliation_facts_v1 import (
 )
 
 
-def terminal(target):
-    original, prior = fresh_preflight(target)
+def terminal(target, *, original=None):
+    original, prior = fresh_preflight(target, original=original)
     plan = preflight.assess_native_close_preflight_v1(target, original, prior)
     decode(plan.receipt_json)
     expected_close = decode(plan.exact_order_json)
@@ -203,7 +203,7 @@ def terminal(target):
                     (),
                     canonical({"code": "0", "data": copy.deepcopy(rows)}),
                     "b" * 64,
-                    "www.okx.com",
+                    urlsplit(target.origin).hostname,
                 ),
             )
         )

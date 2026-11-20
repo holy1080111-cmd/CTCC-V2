@@ -1,6 +1,7 @@
 """Predeclared synthetic fixture consistency; no PostgreSQL/venue/capability."""
 
 import asyncio
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
@@ -20,13 +21,14 @@ from tests.integration.native_public_protective_0058_fixture_v1 import (
     PublicJournal0058,
     _fresh_terminal,
     _sessions,
+    declared_public_original_oco,
+    issuer_fixture,
     request_for_issued,
 )
 from tests.integration.test_native_original_oco_public_0058_pg import (
     _template as _template,  # noqa: PLC0414 -- explicit synthetic fixture registration.
 )
 from tests.unit.test_native_ledger_contracts_v2 import native_binding
-from tests.unit.test_native_protective_exit_facts_v1 import protective_terminal
 
 
 @pytest.mark.parametrize(
@@ -156,11 +158,27 @@ def test_declared_new_fixture_binds_changed_issuer_scope_time_and_fixed_geometry
         outer.sha256,
         reserved.reservation_id,
         "700000",
-        "https://www.okx.com",
+        issuer_fixture.seed.wire_fixture.current_plan_v7().origin,
         credential,
         "b" * 64,
     )
-    original, terminal = protective_terminal(target)
+    original, terminal = declared_public_original_oco(target)
+    assert target.origin == "https://openapi.okx.com"
+    assert all(
+        page.tls_hostname == "openapi.okx.com" for _, page in (*original, *terminal)
+    )
+    assert original[-1][1].eof_at - original[0][1].started_at < timedelta(seconds=1)
+    assert facts.facts.assess_native_reconciliation_v1(
+        target, original
+    ).filled_and_protected
+    invalid = (
+        (original[0][0], replace(original[0][1], tls_hostname="www.okx.com")),
+        *original[1:],
+    )
+    with pytest.raises(
+        facts.facts.NativeReconciliationFactsError, match="fresh_chronology_invalid"
+    ):
+        facts.facts.assess_native_reconciliation_v1(target, invalid)
     original = _sessions(original, "public58-original")
     hold_at = original[-1][1].eof_at + timedelta(seconds=1)
     terminal = _sessions(

@@ -5,7 +5,7 @@ import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 import pytest
 
@@ -90,7 +90,12 @@ def target(synthetic):
     )
 
 
-def data(target, *, filled=False, exact_outgoing_query=False):
+def data(
+    target, *, filled=False, exact_outgoing_query=False, dispatch_interval_ms=1000
+):
+    # Synthetic source declaration only. Defaults retain historic fixture bytes;
+    # public SQL labs may predeclare faster serial GET dispatch before storage.
+    assert type(dispatch_interval_ms) is int and 3 <= dispatch_interval_ms <= 1000
     request = target.request
     inner = json.loads(json.loads(target.intent_json)["intent_json"])
     expected = inner["exact_order"]
@@ -271,7 +276,8 @@ def data(target, *, filled=False, exact_outgoing_query=False):
     )
     result = []
     for index, (role, path, params, values) in enumerate(sequence):
-        started = at + timedelta(seconds=index)
+        started = at + timedelta(milliseconds=index * dispatch_interval_ms)
+        mono = index * dispatch_interval_ms * 1_000_000
         ordered = tuple(sorted(params.items()))
         outgoing = ordered if exact_outgoing_query else tuple(params.items())
         result.append(
@@ -286,16 +292,16 @@ def data(target, *, filled=False, exact_outgoing_query=False):
                     "f" * 64,
                     "a" * 64,
                     started,
-                    index * 1000000000,
+                    mono,
                     started + timedelta(milliseconds=1),
-                    index * 1000000000 + 1000000,
+                    mono + 1000000,
                     started + timedelta(milliseconds=2),
-                    index * 1000000000 + 2000000,
+                    mono + 2000000,
                     200,
                     (),
                     canonical({"code": "0", "data": copy.deepcopy(values)}),
                     "b" * 64,
-                    "www.okx.com",
+                    urlsplit(target.origin).hostname,
                 ),
             )
         )

@@ -3,7 +3,7 @@
 import copy
 from dataclasses import replace
 from datetime import timedelta
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 import pytest
 
@@ -22,8 +22,8 @@ from tests.unit.test_native_reconciliation_facts_v1 import (
 )
 
 
-def protective_terminal(target):
-    original, _, _, old = terminal(target)
+def protective_terminal(target, *, original=None):
+    original, _, _, old = terminal(target, original=original)
     entry = next(
         facts.rows(page)[0] for role, page in old if role == "entry_order_before"
     )
@@ -121,7 +121,7 @@ def protective_terminal(target):
                     (),
                     canonical({"code": "0", "data": rows}),
                     "b" * 64,
-                    "www.okx.com",
+                    urlsplit(target.origin).hostname,
                 ),
             )
         )

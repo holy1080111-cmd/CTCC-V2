@@ -2,7 +2,7 @@
 
 import copy
 from datetime import timedelta
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 import pytest
 
@@ -19,8 +19,8 @@ from tests.unit.test_native_reconciliation_facts_v1 import (
 )
 
 
-def fresh_preflight(target):
-    original = data(target, filled=True)
+def fresh_preflight(target, *, original=None):
+    original = data(target, filled=True) if original is None else original
     at = original[-1][1].eof_at + timedelta(seconds=1)
     mono = original[-1][1].eof_monotonic_ns + 1_000_000_000
     # Predeclare new dispatch clocks and query window before constructing the
@@ -76,7 +76,7 @@ def fresh_preflight(target):
                     (),
                     canonical({"code": "0", "data": copy.deepcopy(rows)}),
                     "b" * 64,
-                    "www.okx.com",
+                    urlsplit(target.origin).hostname,
                 ),
             )
         )

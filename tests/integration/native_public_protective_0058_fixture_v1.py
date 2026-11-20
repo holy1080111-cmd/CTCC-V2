@@ -51,6 +51,7 @@ from tests.integration import (
 )
 from tests.unit.test_native_ledger_contracts_v2 import native_binding
 from tests.unit.test_native_protective_exit_facts_v1 import protective_terminal
+from tests.unit.test_native_reconciliation_facts_v1 import data as original_pages
 
 COMPONENT = "DECLARED_SYNTHETIC_PUBLIC0058_PROTECTIVE_SQL_ONLY"
 
@@ -398,6 +399,18 @@ def _sessions(pages, label):
     )
 
 
+def declared_public_original_oco(target):
+    """NEW fictional pages use the exact declared source origin and cadence.
+
+    None of these pages have been captured or retained yet. The default shared
+    fixture remains unchanged; this lab explicitly declares serial10ms GETs.
+    """
+    original = original_pages(
+        target, filled=True, exact_outgoing_query=True, dispatch_interval_ms=10
+    )
+    return protective_terminal(target, original=original)
+
+
 def _fresh_terminal(pages, *, after, alter_exit):
     start = max(pages[0][1].started_at, after + timedelta(milliseconds=10))
     offset = start - pages[0][1].started_at
@@ -617,7 +630,7 @@ class PublicJournal0058:
         )
 
     async def seed_hold(self, recorded):
-        original, terminal = protective_terminal(self.target)
+        original, terminal = declared_public_original_oco(self.target)
         original = _sessions(original, "public58-original")
         await wait_until(original[-1][1].eof_at)
         assessment = facts.facts.assess_native_reconciliation_v1(self.target, original)

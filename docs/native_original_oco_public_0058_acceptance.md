@@ -12,6 +12,11 @@ outcome rows. It does not disable, replace or bypass a production SQL trigger,
 mint a native source capability, run an operator Arm or call an exchange.
 The before/after user-trigger catalogue must be identical.
 
+New synthetic request pages derive their TLS hostname from the exact declared
+account-plan origin. This lab declares serial 10 ms dispatch before constructing
+or retaining those pages; the shared helpers retain their historical one-second
+default. No retained source clock, raw response, origin or tolerance is repaired.
+
 The four positive cases cover long/short and net/long-short position modes:
 
 1. Persist the original full entry and its exact active mark-price TP/SL.
