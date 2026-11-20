@@ -84,6 +84,12 @@ def source_identity(
     identity: dict, source_files: dict, source_files_raw: bytes
 ) -> dict:
     """Derive the changing source pins from the runner's admitted archive map."""
+    if type(identity) is dict and identity.get("source_contract_head") == "0057":
+        from scripts.historical0056_on_current0057_observation_v1 import (
+            historical_source_identity,
+        )
+
+        return historical_source_identity(identity, source_files, source_files_raw)
     _need(
         type(identity) is dict
         and type(source_files) is dict

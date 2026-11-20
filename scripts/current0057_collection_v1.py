@@ -13,7 +13,14 @@ SCHEMA = "ctcc.current0057.collection.v1"
 SOURCE_HEAD = "0057"
 POSTGRES_COMPONENT_COUNT = 3
 SHARD_COUNT = 8
-SUCCESSOR_PATHS = frozenset({"tests/integration/test_g12_restricted_writer_0057_pg.py"})
+SUCCESSOR_PATHS = frozenset(
+    {
+        "tests/integration/test_g12_restricted_writer_0057_pg.py",
+        "tests/integration/test_owned_history_profiles0057_pg.py",
+        "tests/integration/test_terminal_readout_profiles0057_pg.py",
+        "tests/integration/test_native_owner_upgrade_0057_pg.py",
+    }
+)
 _OBSERVED = set()
 
 

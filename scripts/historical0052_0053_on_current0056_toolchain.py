@@ -52,7 +52,10 @@ def _source(root, target):
     if getter is None:
         _deny()
     scope = getter(root)
-    if scope.actual_source_head != "0056" or scope.database_target != target:
+    if (
+        scope.actual_source_head not in {"0056", "0057"}
+        or scope.database_target != target
+    ):
         _deny()
     return scope
 
@@ -120,7 +123,8 @@ async def read_historical0052_migration_on_current0056(connection, root=SOURCE_R
     await _finish_readback(connection, root, start, first, final)
     return {
         **_historical_envelope(
-            start[2], "ctcc.source0056_historical0052.migration_readback.v1"
+            start[2],
+            f"ctcc.source{start[0].actual_source_head}_historical0052.migration_readback.v1",
         ),
         "historical0052_readback": readback,
     }
@@ -133,7 +137,8 @@ async def capture_historical0053_owner_on_current0056(connection, root=SOURCE_RO
     await _finish_readback(connection, root, start, first, final)
     document = {
         **_historical_envelope(
-            start[2], "ctcc.source0056_historical0053.owner_observation.v1"
+            start[2],
+            f"ctcc.source{start[0].actual_source_head}_historical0053.owner_observation.v1",
         ),
         "source_files": start[1],
         **first,
@@ -155,7 +160,8 @@ async def read_historical0053_migration_on_current0056(connection, root=SOURCE_R
     await _finish_readback(connection, root, start, first, final)
     return {
         **_historical_envelope(
-            start[2], "ctcc.source0056_historical0053.migration_readback.v1"
+            start[2],
+            f"ctcc.source{start[0].actual_source_head}_historical0053.migration_readback.v1",
         ),
         "historical0053_readback": readback,
     }

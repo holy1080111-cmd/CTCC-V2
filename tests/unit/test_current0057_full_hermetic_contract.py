@@ -22,7 +22,8 @@ def _nodes():
         min(collection.postgres_paths(1)) + "::test_declared_synthetic_pg1",
     ]
     nodes.extend(
-        module.replace(".", "/") + ".py::" + name for module, name in contract.g12.CASES
+        module.replace(".", "/") + ".py::" + name
+        for module, name in contract.SUCCESSOR_CASES
     )
     for index in range(8):
         ordinal = 0
@@ -209,7 +210,7 @@ def test_required_cases_keep_old_safety_cases_and_all_new_actual57_g12_cases():
     assert set(contract.previous.REQUIRED_CURRENT56_CASES) < set(
         contract.REQUIRED_CASES
     )
-    assert contract.required_cases("postgres", 2) == contract.g12.CASES
+    assert contract.required_cases("postgres", 2) == contract.SUCCESSOR_CASES
     assert not set(contract.required_cases("postgres", 0)) & set(contract.g12.CASES)
     assert not set(contract.required_cases("postgres", 1)) & set(contract.g12.CASES)
     assert len(set(contract.REQUIRED_CASES)) == len(contract.REQUIRED_CASES)

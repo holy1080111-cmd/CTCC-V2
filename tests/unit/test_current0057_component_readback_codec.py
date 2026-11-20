@@ -144,14 +144,20 @@ def declared_synthetic_component(tmp_path, monkeypatch):
     )
     document = ET.Element("testsuites")
     suite = ET.SubElement(
-        document, "testsuite", tests="4", failures="0", errors="0", skipped="0"
+        document,
+        "testsuite",
+        tests=str(len(contract.SUCCESSOR_CASES)),
+        failures="0",
+        errors="0",
+        skipped="0",
     )
-    for module, name in contract.g12.CASES:
+    for module, name in contract.SUCCESSOR_CASES:
         ET.SubElement(suite, "testcase", classname=module, name=name)
     junit, selected = contract.component_report_paths("postgres", 2)
     values[junit] = ET.tostring(document)
     nodes = [
-        module.replace(".", "/") + ".py::" + name for module, name in contract.g12.CASES
+        module.replace(".", "/") + ".py::" + name
+        for module, name in contract.SUCCESSOR_CASES
     ]
     values[selected] = contract.canonical(
         contract.collection._record("postgres", 2, nodes, nodes, nodes, 0)
@@ -161,7 +167,7 @@ def declared_synthetic_component(tmp_path, monkeypatch):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(raw)
     identity["tests"] = contract.shared.verify_pytest_report(
-        root / junit, required_cases=contract.g12.CASES
+        root / junit, required_cases=contract.SUCCESSOR_CASES
     )
     source_identity = contract.g12.source_identity(identity, files, mapping)
     for path, case in zip(contract.g12.REPORTS, contract.g12.CASES, strict=True):

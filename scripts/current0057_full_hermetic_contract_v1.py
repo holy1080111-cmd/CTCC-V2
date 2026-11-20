@@ -21,7 +21,26 @@ RUNNER_CONTRACT, RUNNER_PATH, SCOPE = (
     g12.FULL_RUNNER_PATH,
     g12.FULL_SCOPE,
 )
-REQUIRED_CASES = (*previous.REQUIRED_CURRENT56_CASES, *g12.CASES)
+SUCCESSOR_CASES = (
+    *g12.CASES,
+    (
+        "tests.integration.test_owned_history_profiles0057_pg",
+        "test_actual0057_held_checkpoint_and_source_partition_keep_actual_head_and_locks",
+    ),
+    (
+        "tests.integration.test_terminal_readout_profiles0057_pg",
+        "test_actual0057_terminal_and_ledger_readouts_keep_exact_profile_and_refuse_drift",
+    ),
+    *(
+        ("tests.integration.test_native_owner_upgrade_0057_pg", name)
+        for name in (
+            "test_actual0056_owner_upgrade_commits_once_preserves_all_rows_and_reads_full44",
+            "test_actual0056_owner_upgrade_rollback_restores_head_acl_and_every_retained_row",
+            "test_actual0056_owner_upgrade_refuses_uncertain_local_state_before_ddl",
+        )
+    ),
+)
+REQUIRED_CASES = (*previous.REQUIRED_CURRENT56_CASES, *SUCCESSOR_CASES)
 HISTORICAL_REPORTS = (
     "test-results/devval-campaign-native-catalogs.json",
     "test-results/current0056-fitted-catalog-single-redacted.json",

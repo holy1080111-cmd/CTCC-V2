@@ -272,7 +272,7 @@ def _migrate_owned_empty_to_0055(connection):
     config.set_main_option("path_separator", "os")
     config.set_main_option("script_location", str(_SOURCE_ROOT / "migrations"))
     script = ScriptDirectory.from_config(config)
-    assert tuple(script.get_heads()) == ("0056",)
+    assert tuple(script.get_heads()) == (scope.actual_source_head,)
     assert script.get_revision("0056").down_revision == "0055"
     migration = MigrationContext.configure(
         connection,
@@ -793,9 +793,10 @@ def _migrate_runtime_custody_head(connection):
     config = Config(str(_SOURCE_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(_SOURCE_ROOT / "migrations"))
     script = ScriptDirectory.from_config(config)
-    scope = source_scopes.actual_current_source_scope(_SOURCE_ROOT)
-    assert scope.actual_source_head == scope.database_target == "0056"
-    assert script.get_current_head() == "0056"
+    scope = source_scopes.database0056_source_scope(_SOURCE_ROOT)
+    assert scope.actual_source_head in {"0056", "0057"}
+    assert scope.database_target == "0056"
+    assert script.get_current_head() == scope.actual_source_head
     assert script.get_revision("0056").down_revision == "0055"
     context = MigrationContext.configure(
         connection,
@@ -809,7 +810,8 @@ def _migrate_runtime_custody_head(connection):
     with Operations.context(context), context.begin_transaction():
         context.run_migrations()
     readback = source_scopes.verify_database_scope(connection, _SOURCE_ROOT, scope)
-    assert readback["source_head"] == readback["database_head"] == "0056"
+    assert readback["source_head"] == scope.actual_source_head
+    assert readback["database_head"] == "0056"
 
 
 @pytest.fixture
