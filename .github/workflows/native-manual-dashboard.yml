@@ -2,7 +2,7 @@ name: Native manual dashboard
 
 on:
   push:
-    branches: ['develop/**']
+    branches: [work/db0056-n322-operator-dashboard-diagnostic]
   pull_request:
     branches: [main, 'develop/**']
   workflow_dispatch:
@@ -12,6 +12,7 @@ permissions:
 
 jobs:
   browser-contract:
+    if: github.ref == 'refs/heads/work/db0056-n322-operator-dashboard-diagnostic'
     name: Manual dashboard DOM and security contract
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -19,6 +20,7 @@ jobs:
       - name: Checkout exact source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 2
           persist-credentials: false
 
       - name: Validate the original dashboard script without starting a service
@@ -26,6 +28,11 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          commit=fb42a9fe92606ad32acd56dc48eaa21663d37642
+          test "$(git rev-parse HEAD^)" = "$commit"
+          test "$(git rev-parse "$commit^{tree}")" = 4b3206e7294a1d63573a6dd9456b23ef51fec2d1
+          test "$(git diff --name-only "$commit" HEAD)" = $'.github/workflows/db0056-fitted-catalog-diagnostic.yml\n.github/workflows/native-manual-dashboard.yml\nMANIFEST.sha256'
+          git checkout --detach "$commit"
           python3.12 -m venv "$RUNNER_TEMP/ctcc-ui-venv"
           py="$RUNNER_TEMP/ctcc-ui-venv/bin/python"
           "$py" -m pip --isolated install --require-hashes --only-binary=:all: \
@@ -36,6 +43,7 @@ jobs:
           mkdir "$out"
           git -c core.autocrlf=false -c core.eol=lf archive --format=tar \
             --output="$out/exact-source.tar" HEAD
+          test "$(sha256sum "$out/exact-source.tar" | cut -d ' ' -f 1)" = 93928303fbdda3ecf3a74d3d6d10dc349bdb36cec0a942be1439fb1cf33a06ff
           "$py" -B -m scripts.render_native_manual_demo_dashboard \
             --symbol BTC-USDT-SWAP --symbol ETH-USDT-SWAP \
             --max-leverage 20 --max-contracts 1 --execution-enabled \
