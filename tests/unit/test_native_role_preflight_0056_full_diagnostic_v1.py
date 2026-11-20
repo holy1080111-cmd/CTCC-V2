@@ -398,6 +398,9 @@ def scenario(monkeypatch):
     monkeypatch.setattr(subject.current55, "_exact_existing_acl", acl)
     monkeypatch.setattr(subject.custody, "RuntimeBundleCustodyRepository", _Custody)
     monkeypatch.setattr(subject.fitted, "pinned_migration", lambda _: None)
+    # Synthetic sessions do not carry an on-disk source inventory. Production
+    # now checks the exact supported source56/source57 migration profile here.
+    monkeypatch.setattr(subject.profiles, "require_migration", lambda *_: None)
     monkeypatch.setattr(subject.fitted, "inspect_catalog_document", fitted_catalog)
     monkeypatch.setattr(subject.frame_policy, "verify_catalog", frame_catalog)
     monkeypatch.setattr(

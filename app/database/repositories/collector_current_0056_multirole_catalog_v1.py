@@ -5,6 +5,7 @@ from app.database.repositories import (
 )
 from app.domain import collector_current_0055_catalog_v1 as policy
 from app.domain import collector_current_0056_inherited_catalog_v1 as actual56
+from app.domain import native_database_profile_v1 as profiles
 
 
 def verify_0056_pair(
@@ -16,12 +17,16 @@ def verify_0056_pair(
     approved_raw_role_oid,
     approved_writer_role_oid,
     parent_owner_oid,
+    profile=profiles.DB0056,
 ):
+    profiles.checked(profile)
     for value in (raw, writer):
         if (
             type(value) is not dict
-            or set(value) != policy.CATALOG_KEYS
-            or value["schema"] != actual56.SCHEMA
+            or set(value)
+            != policy.CATALOG_KEYS
+            | ({"g12_0057"} if profile is profiles.DB0057 else set())
+            or value["schema"] != profiles.schema(profile, actual56.SCHEMA)
         ):
             current55._deny()
     current55._role(raw["role"], raw_name, expected_oid=approved_raw_role_oid)
@@ -33,7 +38,11 @@ def verify_0056_pair(
         or parent_owner_oid in (raw["role"]["oid"], writer["role"]["oid"])
     ):
         current55._deny()
-    qualified_writer = actual56.observe_writer_0056(writer)
+    qualified_writer = actual56.observe_writer_0056(
+        writer, **profiles.arguments(profile)
+    )
+    if profile is profiles.DB0057 and raw["g12_0057"] != writer["g12_0057"]:
+        current55._deny()
     for component, parents, schema_name in (
         (
             "issued",
@@ -68,6 +77,7 @@ def verify_0056_pair(
             read_only="off",
             parents=parents,
             schema_name=schema_name,
+            **profiles.arguments(profile),
         )
         for key in (
             "table_oid",
@@ -115,18 +125,22 @@ def verify_0056_pair(
         actor=raw["role"]["oid"],
         owner_mode=False,
         reader_role_oid=approved_raw_role_oid,
+        **profiles.arguments(profile),
     )
     writer_history = actual56.observe_controlled_history_0056(
         writer["controlled_history55"],
         owner=parent_owner_oid,
         actor=writer["role"]["oid"],
         owner_mode=False,
+        **profiles.arguments(profile),
     )
     if raw_history != writer_history:
         current55._deny()
     return {
-        "schema": "ctcc.collector_current0056.observed_multirole_catalog.v1",
-        "database_head": "0056",
+        "schema": profiles.schema(
+            profile, "ctcc.collector_current0056.observed_multirole_catalog.v1"
+        ),
+        "database_head": profiles.head(profile),
         "actual_separate_roles_observed": True,
         "native_baseline_admission": False,
         "native_definitions_sha256": qualified_writer["native_definitions_sha256"],

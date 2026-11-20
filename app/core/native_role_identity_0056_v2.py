@@ -16,6 +16,7 @@ from sqlalchemy import text
 from app.core import native_role_preflight_0056_full_diagnostic_v1 as roles56
 from app.core import native_role_witness_0056_v1 as witness56
 from app.demo_automation import native_server_selectors_v2 as selectors
+from app.domain import native_database_profile_v1 as profiles
 from app.domain.source_primitives import canonical, sha
 
 _DATABASE_NAME_SQL = text("SELECT pg_catalog.current_database()::text")
@@ -36,9 +37,7 @@ class NativeRoleIdentity0056V2:
     role_route_sha256: str
     inherited_native_definitions_sha256: str
     granted_inherited_acl_shape_sha256: str
-    schema: Literal["ctcc.native_only.restricted_role_identity0056.v2"] = field(
-        default="ctcc.native_only.restricted_role_identity0056.v2", init=False
-    )
+    schema: str = field(default="ctcc.native_only.restricted_role_identity0056.v2")
     deployment_reference_authenticated: Literal[False] = field(
         default=False, init=False
     )
@@ -58,7 +57,10 @@ def _static_identity_sha256(
     names: tuple[str, str, str],
     oids: tuple[int, int, int],
     route: tuple[str, str, int, str],
+    *,
+    profile=profiles.DB0056,
 ) -> str:
+    profiles.checked(profile)
     """Exclude postmaster start; include all actual role OIDs and DB route."""
     _need(
         type(database_oid) is int
@@ -87,7 +89,9 @@ def _static_identity_sha256(
     return sha(
         canonical(
             {
-                "schema": "ctcc.native_only.db0056_stable_role_route.v2",
+                "schema": profiles.schema(
+                    profile, "ctcc.native_only.db0056_stable_role_route.v2"
+                ),
                 "database_oid": database_oid,
                 "owner_oid": owner_oid,
                 "roles": [[name, oid] for name, oid in zip(names, oids, strict=True)],
@@ -106,10 +110,14 @@ def compare_static_role_identity_0056_v2(
     expected_role_oids: tuple[int, int, int],
     expected_route: tuple[str, str, int, str],
     expected_sha256: str,
+    profile=profiles.DB0056,
 ) -> dict[str, object]:
+    profiles.checked(profile)
     """Pure match only. Caller-supplied expected values never become trust."""
     _need(
         type(observed) is NativeRoleIdentity0056V2
+        and observed.schema
+        == profiles.schema(profile, "ctcc.native_only.restricted_role_identity0056.v2")
         and type(expected_sha256) is str
         and roles56._is_digest(expected_sha256)
         and observed.database_oid == expected_database_oid
@@ -124,6 +132,7 @@ def compare_static_role_identity_0056_v2(
             expected_role_names,
             expected_role_oids,
             expected_route,
+            **profiles.arguments(profile),
         )
         and observed.deployment_reference_authenticated is False
         and observed.startup_admission is False
@@ -131,7 +140,9 @@ def compare_static_role_identity_0056_v2(
         and observed.admission == "DENY"
     )
     return {
-        "schema": "ctcc.native_only.restricted_role_identity_match0056.inert.v2",
+        "schema": profiles.schema(
+            profile, "ctcc.native_only.restricted_role_identity_match0056.inert.v2"
+        ),
         "stable_identity_sha256": observed.stable_identity_sha256,
         "deployment_reference_authenticated": False,
         "startup_admission": False,
@@ -141,29 +152,42 @@ def compare_static_role_identity_0056_v2(
 
 
 async def _read_identity(
-    factory, name: str, expected_database: str, *, with_owner: bool
+    factory,
+    name: str,
+    expected_database: str,
+    *,
+    with_owner: bool,
+    profile=profiles.DB0056,
 ):
     async with factory() as session, session.begin():
         # This V2 identity pass issues only SET/SELECT, including for the frame
         # reader. The historical V1 frame policy separately checks its required
         # READ WRITE transaction context and actual catalog before/after here.
         await roles56.current55._session_settings(session, frame=False)
-        identity = await roles56._identity_at_0056(session, name)
+        identity = await roles56._identity_at_0056(
+            session, name, **profiles.arguments(profile)
+        )
         _need(await session.scalar(_DATABASE_NAME_SQL) == expected_database)
         owner_oid = (
             await session.scalar(roles56.current55._OWNER_OID_SQL)
             if with_owner
             else None
         )
-        _need(await roles56._identity_at_0056(session, name) == identity)
+        _need(
+            await roles56._identity_at_0056(
+                session, name, **profiles.arguments(profile)
+            )
+            == identity
+        )
     return identity, owner_oid
 
 
 async def observe_restricted_role_identity_0056_v2(
-    selected, *, source: Path
+    selected, *, source: Path, profile=profiles.DB0056
 ) -> NativeRoleIdentity0056V2:
     """Bracket fresh actual role OIDs with full V1 graph/custody readbacks."""
     try:
+        profiles.checked(profile)
         _need(type(selected) is selectors.ConfiguredNativeDemoFactoriesV2)
         _need(isinstance(source, Path))
         factories = (
@@ -179,19 +203,35 @@ async def observe_restricted_role_identity_0056_v2(
         _need(len(set(names)) == 3 and len(set(url_routes)) == 1)
         async with asyncio.timeout(180):
             before = await witness56.observe_restricted_native_roles_0056_witness_v1(
-                selected, source=source
+                selected, source=source, **profiles.arguments(profile)
             )
             writer, owner_oid = await _read_identity(
-                factories[0], names[0], url_routes[0][3], with_owner=True
+                factories[0],
+                names[0],
+                url_routes[0][3],
+                with_owner=True,
+                **profiles.arguments(profile),
             )
             custody, _ = await _read_identity(
-                factories[1], names[1], url_routes[0][3], with_owner=False
+                factories[1],
+                names[1],
+                url_routes[0][3],
+                with_owner=False,
+                **profiles.arguments(profile),
             )
             frame, _ = await _read_identity(
-                factories[2], names[2], url_routes[0][3], with_owner=False
+                factories[2],
+                names[2],
+                url_routes[0][3],
+                with_owner=False,
+                **profiles.arguments(profile),
             )
             writer_after, _ = await _read_identity(
-                factories[0], names[0], url_routes[0][3], with_owner=False
+                factories[0],
+                names[0],
+                url_routes[0][3],
+                with_owner=False,
+                **profiles.arguments(profile),
             )
             roles56.current55._same_server(writer, custody, frame, writer_after)
             _need(
@@ -199,18 +239,25 @@ async def observe_restricted_role_identity_0056_v2(
                 and owner_oid > 0
                 and owner_oid not in (writer[3], custody[3], frame[3])
                 and all(row[4] == writer[4] for row in (custody, frame))
-                and witness56.runtime_witness_0056(writer, names, url_routes)
+                and witness56.runtime_witness_0056(
+                    writer, names, url_routes, **profiles.arguments(profile)
+                )
                 == (before.server_incarnation_sha256, before.role_route_sha256)
                 and tuple(roles56.native_factories._factory_route(f) for f in factories)
                 == routes
             )
             after = await witness56.observe_restricted_native_roles_0056_witness_v1(
-                selected, source=source
+                selected, source=source, **profiles.arguments(profile)
             )
             _need(before == after)
         role_oids = (writer[3], custody[3], frame[3])
         stable = _static_identity_sha256(
-            writer[4], owner_oid, names, role_oids, url_routes[0]
+            writer[4],
+            owner_oid,
+            names,
+            role_oids,
+            url_routes[0],
+            **profiles.arguments(profile),
         )
         return NativeRoleIdentity0056V2(
             writer[4],
@@ -222,6 +269,9 @@ async def observe_restricted_role_identity_0056_v2(
             before.role_route_sha256,
             before.observation.inherited_native_definitions_sha256,
             before.observation.granted_inherited_acl_shape_sha256,
+            schema=profiles.schema(
+                profile, "ctcc.native_only.restricted_role_identity0056.v2"
+            ),
         )
     except asyncio.CancelledError:
         raise

@@ -6,6 +6,7 @@ No running production database or installed credential is selected here.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -20,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import NullPool
 
 from app.domain import g12_custody_catalog_0057_v1 as catalog
+from app.domain import native_database_profile_v1 as profiles
 from app.trade_qualification.g12_invocation_custody import (
     G12InvocationCustodyRepository,
 )
@@ -126,7 +128,7 @@ async def _isolated_0057_g12_lab():
                         f'DROP DATABASE "{database}" WITH (FORCE)'
                     )
                 for name in created_roles:
-                    await connection.exec_driver_sql(f'DROP ROLE "{name}"')
+                    await connection.exec_driver_sql(f'DROP ROLE IF EXISTS "{name}"')
         finally:
             await admin.dispose()
 
@@ -285,3 +287,92 @@ async def test_actual0057_profile_denies_each_revocation_extra_grant_and_disable
             )
         assert (await _observe(writer, names))[0] == accepted
     assert await _counts(owner) == (0, 0)
+
+
+async def test_actual0057_inherited_roles_writer_control_and_frame_keep_actual_head(
+    _isolated_0057_g12_lab,
+):
+    """Full restricted lower-layer proof with stopped synthetic Control only."""
+    from app.core import native_frame_reader_0056_v1 as frame
+    from app.core import native_locked_demo_control_0056_v1 as locked
+    from app.core import native_role_identity_0056_v2 as identity
+    from app.core import native_role_witness_0056_v1 as witness
+    from app.demo_automation.native_server_selectors_v2 import (
+        ConfiguredNativeDemoFactoriesV2,
+    )
+    from app.domain.source_primitives import decode
+    from app.trade_qualification import demo_control
+    from tests.controlled_writer_coverage_fixtures import _store_control_fixture
+
+    owner, engines, _ = _isolated_0057_g12_lab
+    factories = tuple(
+        async_sessionmaker(engine, autoflush=False, expire_on_commit=False)
+        for engine in engines
+    )
+    selected = ConfiguredNativeDemoFactoriesV2(*factories, engines[1], engines[2])
+    roles = await witness.observe_restricted_native_roles_0056_witness_v1(
+        selected, source=ROOT, profile=profiles.DB0057
+    )
+    assert roles.observation.database_head == "0057"
+    assert "0057" in roles.schema
+    assert roles.startup_admission is roles.execution_authority is False
+    stable = await identity.observe_restricted_role_identity_0056_v2(
+        selected, source=ROOT, profile=profiles.DB0057
+    )
+    assert "0057" in stable.schema and stable.execution_authority is False
+    scope = demo_control.ControlScope("demo", "1" * 32)
+    acquired = demo_control.acquire(
+        None,
+        scope=scope,
+        owner_sha256="a" * 64,
+        pins=demo_control.ControlPins("1" * 64, "2" * 64, "3" * 64),
+        now=datetime.now(UTC),
+    )
+    async with owner.begin() as connection:
+        await _store_control_fixture(
+            connection,
+            acquired,
+            command_id="5" * 64,
+            action="acquire",
+            previous_sha256=None,
+        )
+    async with (
+        factories[0]() as session,
+        session.begin(),
+        locked.held_native_writer_control_0056_v1(
+            selected,
+            session,
+            scope,
+            roles=roles,
+            purpose=locked.NativeWriterControlPurpose0056.PREPARE_OBSERVATION,
+            profile=profiles.DB0057,
+        ) as held,
+    ):
+        held.check_held()
+        assert held.observation.database_head == "0057"
+        assert held.observation.writer_catalog.database_head == "0057"
+        assert held.execution_authority is False
+        assert held.observation.control.state.arm_request_id is None
+        assert held.observation.control.state.arm_expires_at is None
+    async with factories[2]() as session, session.begin():
+        for sql in (
+            "SET TRANSACTION ISOLATION LEVEL READ COMMITTED",
+            "SET LOCAL search_path TO pg_catalog, public, pg_temp",
+            "SET LOCAL TIME ZONE 'UTC'",
+        ):
+            await session.execute(text(sql))
+        transaction = session.sync_session.get_transaction()
+
+        class Fence:
+            def check(self):
+                assert session.sync_session.get_transaction() is transaction
+                assert transaction.is_active
+
+        raw = await frame.verify_held_frame_catalog_0056_v1(
+            session, Fence(), *factories, profile=profiles.DB0057
+        )
+        observed = decode(raw, 8 * 1024 * 1024)
+        assert observed["database_head"] == "0057"
+        assert "current0057" in observed and "current0056" not in observed
+        assert observed["execution_authority"] is False
+        assert observed["current0057"]["profile"]["native_baseline_admission"] is False

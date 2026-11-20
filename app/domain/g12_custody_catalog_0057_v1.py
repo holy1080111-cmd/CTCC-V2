@@ -26,6 +26,9 @@ _FUNCTION_SQL = function_helpers.CATALOG_SQL.replace(
 _TABLE_SQL = table_helpers.TABLE_CATALOG_SQL.replace(
     "'qualification_report_spool','qualification_report_projection_receipts'",
     "'g12_invocation_claims','g12_invocation_publications'",
+).replace(
+    "'column_acl',",
+    "'dropped_columns',EXISTS(SELECT 1 FROM pg_attribute a WHERE a.attrelid=c.oid AND a.attnum>0 AND a.attisdropped),'column_acl',",
 )
 _RI_SQL = """
 SELECT coalesce(jsonb_agg(jsonb_build_object(
@@ -445,7 +448,10 @@ def observe_catalog_0057(value, *, owner, writer):
         seen = set()
         oids = set()
         for row in rows:
-            _need(type(row) is dict and set(row) == table_helpers.TABLE_KEYS)
+            _need(
+                type(row) is dict
+                and set(row) == table_helpers.TABLE_KEYS | {"dropped_columns"}
+            )
             name = row["name"]
             _need(name in TABLES and name not in seen)
             _need(
@@ -465,6 +471,7 @@ def observe_catalog_0057(value, *, owner, writer):
                         "rules",
                         "policies",
                         "column_acl",
+                        "dropped_columns",
                     )
                 )
                 and row["acl_valid"] is True
@@ -498,10 +505,35 @@ def observe_catalog_0057(value, *, owner, writer):
             seen.add(name)
             oids.add(row["oid"])
         _ri(value["ri"])
+        # The semantic schema has been checked above. Its source reference is
+        # independent of fresh installation OIDs and role names. Keep the raw
+        # physical catalog hash separately for the actual-session witness.
+        definitions = {
+            "functions": {
+                row["name"]: row["definition"]
+                for row in value["functions"]["functions"]
+            },
+            "tables": {
+                row["name"]: {
+                    "columns": [column[:6] for column in row["columns"]],
+                    "constraints": row["constraints"],
+                    "indexes": [
+                        {key: part for key, part in index.items() if key != "owner"}
+                        for index in row["indexes"]
+                    ],
+                    "triggers": [
+                        {key: part for key, part in trigger.items() if key != "owner"}
+                        for trigger in row["triggers"]
+                    ],
+                }
+                for row in rows
+            },
+        }
         return {
             "schema": "ctcc.g12_custody0057.observation.v1",
             "database_head": "0057",
             "catalog_sha256": hashlib.sha256(canonical(value)).hexdigest(),
+            "definitions_sha256": hashlib.sha256(canonical(definitions)).hexdigest(),
             "publication_body_sha256": PUBLICATION_BODY_SHA256,
             "execution_authority": False,
             "startup_admission": False,

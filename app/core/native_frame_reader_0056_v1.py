@@ -24,6 +24,7 @@ from app.demo_automation import native_server_selectors_v2 as selectors
 from app.domain import account_history_original_frame_v1 as frame_policy
 from app.domain import account_history_partition_catalog_v1 as partition_policy
 from app.domain import collector_current_0056_inherited_catalog_v1 as inherited
+from app.domain import native_database_profile_v1 as profiles
 from app.domain.source_primitives import canonical
 
 
@@ -68,9 +69,13 @@ async def _execute_row(session: AsyncSession, fence, statement):
     return value
 
 
-async def _identity(session: AsyncSession, fence, role_name: str):
+async def _identity(
+    session: AsyncSession, fence, role_name: str, *, profile=profiles.DB0056
+):
     fence.check()
-    value = await roles56._identity_at_0056(session, role_name)
+    value = await roles56._identity_at_0056(
+        session, role_name, **profiles.arguments(profile)
+    )
     fence.check()
     return value
 
@@ -105,6 +110,8 @@ async def verify_held_frame_catalog_0056_v1(
     writer_factory,
     custody_factory,
     frame_factory,
+    *,
+    profile=profiles.DB0056,
 ) -> bytes:
     """Verify DB0056 historical frame lineage without replacing frame transaction.
 
@@ -113,6 +120,7 @@ async def verify_held_frame_catalog_0056_v1(
     the exact existing 42 grants and fitted EXECUTE exclusion. The returned
     canonical bytes contain only catalog observations and explicit denial.
     """
+    profiles.checked(profile)
     writer = None
     try:
         _need(
@@ -143,7 +151,9 @@ async def verify_held_frame_catalog_0056_v1(
         bound = BoundFence()
         context = await _execute_row(frame_session, bound, _FRAME_CONTEXT)
         _need(context == ("read committed", "off"))
-        frame_identity = await _identity(frame_session, bound, names[2])
+        frame_identity = await _identity(
+            frame_session, bound, names[2], **profiles.arguments(profile)
+        )
         partition = await _execute_one(
             frame_session, bound, text(partition_policy.CATALOG_SQL)
         )
@@ -159,7 +169,7 @@ async def verify_held_frame_catalog_0056_v1(
         )
         bound.check()
         frame_graph = await _execute_one(
-            frame_session, bound, text(inherited.ACTOR_CATALOG_SQL)
+            frame_session, bound, text(inherited.actor_catalog_sql(profile))
         )
         writer = writer_factory()
         _need(
@@ -177,7 +187,9 @@ async def verify_held_frame_catalog_0056_v1(
             bound.check()
             await writer.execute(text(statement))
             bound.check()
-        writer_identity = await _identity(writer, bound, names[0])
+        writer_identity = await _identity(
+            writer, bound, names[0], **profiles.arguments(profile)
+        )
         _need(
             writer_identity[3] != frame_identity[3]
             and writer_identity[4:] == frame_identity[4:]
@@ -185,14 +197,17 @@ async def verify_held_frame_catalog_0056_v1(
         owner_oid = await _execute_one(writer, bound, roles55._OWNER_OID_SQL)
         _need(type(owner_oid) is int and owner_oid > 0)
         bound.check()
-        await roles55._exact_existing_acl(
-            await writer.connection(), names, writer_identity[3]
+        await profiles.require_exact_acl(
+            await writer.connection(),
+            names,
+            writer_identity[3],
+            **profiles.arguments(profile),
         )
         bound.check()
         await roles56._require_no_effective_demo_fitted_execute(writer, names)
         bound.check()
         writer_graph = await _execute_one(
-            writer, bound, text(inherited.ACTOR_CATALOG_SQL)
+            writer, bound, text(inherited.actor_catalog_sql(profile))
         )
         _need(partition["tables"][0]["owner_oid"] == owner_oid)
         bound.check()
@@ -204,12 +219,15 @@ async def verify_held_frame_catalog_0056_v1(
             approved_raw_role_oid=frame_identity[3],
             approved_writer_role_oid=writer_identity[3],
             parent_owner_oid=owner_oid,
+            **profiles.arguments(profile),
         )
         _need(
             type(pair) is dict
             and pair["schema"]
-            == "ctcc.collector_current0056.observed_multirole_catalog.v1"
-            and pair["database_head"] == "0056"
+            == profiles.schema(
+                profile, "ctcc.collector_current0056.observed_multirole_catalog.v1"
+            )
+            and pair["database_head"] == profiles.head(profile)
             and pair["actual_separate_roles_observed"] is True
             and pair["native_baseline_admission"] is False
             and pair["account_complete"] is False
@@ -217,19 +235,29 @@ async def verify_held_frame_catalog_0056_v1(
             and roles56._is_digest(pair["native_definitions_sha256"])
         )
         acl_sha = roles56._granted_inherited_acl_shape_sha256(
-            names, pair["native_definitions_sha256"]
+            names, pair["native_definitions_sha256"], **profiles.arguments(profile)
         )
         _need(roles56._is_digest(acl_sha))
-        _need(await _identity(writer, bound, names[0]) == writer_identity)
-        _need(await _identity(frame_session, bound, names[2]) == frame_identity)
+        _need(
+            await _identity(writer, bound, names[0], **profiles.arguments(profile))
+            == writer_identity
+        )
+        _need(
+            await _identity(
+                frame_session, bound, names[2], **profiles.arguments(profile)
+            )
+            == frame_identity
+        )
         bound.check()
         result = canonical(
             {
-                "schema": "ctcc.native_only.held_frame_catalog_0056.v1",
-                "database_head": "0056",
+                "schema": profiles.schema(
+                    profile, "ctcc.native_only.held_frame_catalog_0056.v1"
+                ),
+                "database_head": profiles.head(profile),
                 "partition": partition,
                 "frame": original,
-                "current0056": {
+                "current" + profiles.head(profile): {
                     "profile": pair,
                     "raw": frame_graph,
                     "writer": writer_graph,

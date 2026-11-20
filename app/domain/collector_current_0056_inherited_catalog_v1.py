@@ -9,6 +9,8 @@ import hashlib
 
 from app.domain import collector_current_0055_catalog_v1 as inherited
 from app.domain import controlled_history_current55_schema_v2 as history55
+from app.domain import g12_custody_catalog_0057_v1 as g12
+from app.domain import native_database_profile_v1 as profiles
 from app.domain.source_primitives import canonical
 
 SCHEMA = "ctcc.collector_current0056.actual_inherited_catalog.v1"
@@ -25,10 +27,11 @@ OWNER_CATALOG_SQL = inherited.old54._once(
 )
 
 
-def _context(value, *, role, read_only, parents, schema_name):
+def _context(value, *, role, read_only, parents, schema_name, profile=profiles.DB0056):
+    profiles.checked(profile)
     if (
         value["schema_version"] != schema_name
-        or value["database_head"] != "0056"
+        or value["database_head"] != profiles.head(profile)
         or value["actor"] != role["oid"]
         or type(value["table_oid"]) is not int
         or not 0 < value["table_oid"] < 2**32
@@ -108,12 +111,15 @@ def _context(value, *, role, read_only, parents, schema_name):
     return identities
 
 
-def _operator_at_0056(value, *, owner, role, owner_mode, configuration):
+def _operator_at_0056(
+    value, *, owner, role, owner_mode, configuration, profile=profiles.DB0056
+):
+    profiles.checked(profile)
     if (
         type(value) is not dict
         or set(value)
         != {"head", "relations", "tables", "triggers", "functions", "ri_triggers"}
-        or value["head"] != ["0056"]
+        or value["head"] != [profiles.head(profile)]
     ):
         inherited._deny()
     identities = inherited._relations(value["relations"], owner=owner)
@@ -156,7 +162,7 @@ def _operator_at_0056(value, *, owner, role, owner_mode, configuration):
 
 
 def observe_controlled_history_0056(
-    value, *, owner, actor, owner_mode, reader_role_oid=None
+    value, *, owner, actor, owner_mode, reader_role_oid=None, profile=profiles.DB0056
 ):
     """Actual metadata only; no caller role rewriting or native admission.
 
@@ -164,6 +170,7 @@ def observe_controlled_history_0056(
     A reader is compared with its actual captured-factory OID and BOTH frame
     ACLs. Owner installation admits no runtime grants. No grant is installed.
     """
+    profiles.checked(profile)
     owner, actor = history55._oid(owner), history55._oid(actor)
     if (
         type(owner_mode) is not bool
@@ -181,7 +188,7 @@ def observe_controlled_history_0056(
             "roles",
         }
         or value["schema"] != history55.SCHEMA
-        or value["head"] != "0056"
+        or value["head"] != profiles.head(profile)
         or type(value["actor"]) is not int
         or value["actor"] != actor
         or type(value["database"]) is not str
@@ -313,11 +320,16 @@ def observe_controlled_history_0056(
     }
 
 
-def _observe_inherited_graph(value, *, owner_mode, read_only):
+def _observe_inherited_graph(value, *, owner_mode, read_only, profile=profiles.DB0056):
+    profiles.checked(profile)
+    if profile is profiles.DB0057 and owner_mode:
+        inherited._deny()
     if (
         type(value) is not dict
-        or set(value) != inherited.CATALOG_KEYS
-        or value["schema"] != SCHEMA
+        or set(value)
+        != inherited.CATALOG_KEYS
+        | ({"g12_0057"} if profile is profiles.DB0057 else set())
+        or value["schema"] != profiles.schema(profile, SCHEMA)
     ):
         inherited._deny()
     role = value["role"]
@@ -377,12 +389,21 @@ def _observe_inherited_graph(value, *, owner_mode, read_only):
         role=role,
         owner_mode=owner_mode,
         configuration=configuration,
+        **profiles.arguments(profile),
     )
     controlled_defs = observe_controlled_history_0056(
         value["controlled_history55"],
         owner=owner,
         actor=role["oid"],
         owner_mode=owner_mode,
+        **profiles.arguments(profile),
+    )
+    g12_defs = (
+        g12.observe_catalog_0057(
+            value["g12_0057"], owner=owner, writer=controlled_defs["writer_role_oid"]
+        )
+        if profile is profiles.DB0057
+        else None
     )
     submission_def = inherited._submission55(value["native_submission55"], owner=owner)
     closure_defs = inherited._closure55(
@@ -451,6 +472,7 @@ def _observe_inherited_graph(value, *, owner_mode, read_only):
         read_only=read_only,
         parents=inherited.PARENTS,
         schema_name="ctcc.collector_current0054.actual_issued_catalog.v1",
+        **profiles.arguments(profile),
     )
     previous_parents = _context(
         previous,
@@ -458,6 +480,7 @@ def _observe_inherited_graph(value, *, owner_mode, read_only):
         read_only=read_only,
         parents=inherited.old53.PARENTS,
         schema_name="ctcc.collector_current0053.actual_owner_catalog.v1",
+        **profiles.arguments(profile),
     )
     if (
         current_parents[inherited.lineage.TABLE] != previous["table_oid"]
@@ -579,12 +602,17 @@ def _observe_inherited_graph(value, *, owner_mode, read_only):
                 "native_report55": report_defs,
                 "native_close_intent55": close_intent_defs,
                 "native_configuration55": configuration["definitions"],
+                **(
+                    {"g12_0057": g12_defs["definitions_sha256"]}
+                    if g12_defs is not None
+                    else {}
+                ),
             }
         )
     ).hexdigest()
     return {
-        "schema": OBSERVATION_SCHEMA,
-        "database_head": "0056",
+        "schema": profiles.schema(profile, OBSERVATION_SCHEMA),
+        "database_head": profiles.head(profile),
         "legacy_0054_issuer_ddl_sha256": inherited.issued.DDL_SHA256,
         "legacy_0053_lineage_ddl_sha256": inherited.lineage.DDL_SHA256,
         "operator_ddl_sha256": inherited.FROZEN_OPERATOR_DDL_SHA256,
@@ -609,24 +637,28 @@ def _observe_inherited_graph(value, *, owner_mode, read_only):
     }
 
 
-def _observe_readonly(value, *, owner_mode):
+def _observe_readonly(value, *, owner_mode, profile=profiles.DB0056):
     try:
-        return _observe_inherited_graph(value, owner_mode=owner_mode, read_only="on")
+        return _observe_inherited_graph(
+            value, owner_mode=owner_mode, read_only="on", **profiles.arguments(profile)
+        )
     except inherited.Current0055CatalogError:
         raise
     except (KeyError, TypeError, ValueError, AttributeError):
         inherited._deny()
 
 
-def observe_writer_0056(value):
+def observe_writer_0056(value, *, profile=profiles.DB0056):
     """Validate the actual DB0056 writer record in a read-only transaction."""
-    return _observe_readonly(value, owner_mode=False)
+    return _observe_readonly(value, owner_mode=False, **profiles.arguments(profile))
 
 
-def observe_readwrite_writer_0056(value):
+def observe_readwrite_writer_0056(value, *, profile=profiles.DB0056):
     """Validate the inherited DB0056 graph for a restricted writer in READ WRITE."""
     try:
-        return _observe_inherited_graph(value, owner_mode=False, read_only="off")
+        return _observe_inherited_graph(
+            value, owner_mode=False, read_only="off", **profiles.arguments(profile)
+        )
     except inherited.Current0055CatalogError:
         raise
     except (KeyError, TypeError, ValueError, AttributeError):
@@ -646,3 +678,16 @@ def observe_owner_readwrite_installation_0056(value):
         raise
     except (KeyError, TypeError, ValueError, AttributeError):
         inherited._deny()
+
+
+def actor_catalog_sql(profile=profiles.DB0056):
+    """Capture the real head and G12 successor metadata in one SQL snapshot."""
+    query = profiles.catalog_query(profile, ACTOR_CATALOG_SQL, SCHEMA)
+    if profile is profiles.DB0057:
+        return (
+            "SELECT captured.value || jsonb_build_object('g12_0057',("
+            + g12.CATALOG_SQL
+            + ")) "
+            "FROM (" + query + ") AS captured(value)"
+        )
+    return query

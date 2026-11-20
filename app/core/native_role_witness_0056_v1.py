@@ -11,6 +11,7 @@ from typing import Literal
 from sqlalchemy import text
 
 from app.core import native_role_preflight_0056_full_diagnostic_v1 as old
+from app.domain import native_database_profile_v1 as profiles
 from app.domain.source_primitives import canonical, sha
 
 
@@ -21,14 +22,15 @@ class RestrictedNativeRoles0056WitnessV1:
     observation: old.RestrictedNativeRoles0056ObservationV1
     server_incarnation_sha256: str
     role_route_sha256: str
-    schema: Literal["ctcc.native_only.restricted0056_runtime_witness.v1"] = field(
-        default="ctcc.native_only.restricted0056_runtime_witness.v1", init=False
-    )
+    schema: str = field(default="ctcc.native_only.restricted0056_runtime_witness.v1")
     startup_admission: Literal[False] = field(default=False, init=False)
     execution_authority: Literal[False] = field(default=False, init=False)
 
 
-def runtime_witness_0056(writer_identity, names, url_routes) -> tuple[str, str]:
+def runtime_witness_0056(
+    writer_identity, names, url_routes, *, profile=profiles.DB0056
+) -> tuple[str, str]:
+    profiles.checked(profile)
     """Hash original actor/server and three sanitized configured routes."""
     old._need(
         type(writer_identity) is tuple
@@ -63,7 +65,9 @@ def runtime_witness_0056(writer_identity, names, url_routes) -> tuple[str, str]:
     server_sha = sha(
         canonical(
             {
-                "schema": "ctcc.native_only.pg0056_incarnation.v1",
+                "schema": profiles.schema(
+                    profile, "ctcc.native_only.pg0056_incarnation.v1"
+                ),
                 "database_oid": writer_identity[4],
                 "postmaster_started_at": writer_identity[5]
                 .astimezone(UTC)
@@ -77,7 +81,9 @@ def runtime_witness_0056(writer_identity, names, url_routes) -> tuple[str, str]:
     route_sha = sha(
         canonical(
             {
-                "schema": "ctcc.native_only.pg0056_restricted_route.v1",
+                "schema": profiles.schema(
+                    profile, "ctcc.native_only.pg0056_restricted_route.v1"
+                ),
                 "route": list(url_routes[0]),
                 "role_names": list(names),
                 "writer_role_oid": writer_identity[3],
@@ -88,10 +94,11 @@ def runtime_witness_0056(writer_identity, names, url_routes) -> tuple[str, str]:
 
 
 async def observe_restricted_native_roles_0056_witness_v1(
-    selected, *, source: Path
+    selected, *, source: Path, profile=profiles.DB0056
 ) -> RestrictedNativeRoles0056WitnessV1:
     """Read the original three roles and their identity in held transactions."""
     try:
+        profiles.checked(profile)
         old._need(type(selected) is old.selectors.ConfiguredNativeDemoFactoriesV2)
         old._need(isinstance(source, Path))
         writer = selected.writer_factory
@@ -110,7 +117,7 @@ async def observe_restricted_native_roles_0056_witness_v1(
             and carrier.kw["bind"] is selected.custody_engine
             and frame.kw["bind"] is selected.frame_reader_engine
         )
-        old.fitted.pinned_migration(source)
+        profiles.require_migration(profile, source)
         raw_custody = old.custody.RuntimeBundleCustodyRepository(carrier)
         async with asyncio.timeout(55):
             (
@@ -120,7 +127,9 @@ async def observe_restricted_native_roles_0056_witness_v1(
                 pair,
                 pair_sha,
                 acl_phase_sha,
-            ) = await old._restricted_frame_writer(writer, frame, names)
+            ) = await old._restricted_frame_writer(
+                writer, frame, names, **profiles.arguments(profile)
+            )
             async with carrier() as session, session.begin():
                 await session.execute(
                     text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
@@ -129,11 +138,17 @@ async def observe_restricted_native_roles_0056_witness_v1(
                 for statement in old.current55._SETTINGS:
                     await session.execute(text(statement))
                 await session.execute(text("SET LOCAL synchronous_commit = 'on'"))
-                custody_identity = await old._identity_at_0056(session, names[1])
+                custody_identity = await old._identity_at_0056(
+                    session, names[1], **profiles.arguments(profile)
+                )
                 custody_sha = await raw_custody._catalog(session)
                 old._need(old._is_digest(custody_sha))
             writer_after = await old._recheck_granted_writer(
-                writer, names, pair["native_definitions_sha256"], acl_phase_sha
+                writer,
+                names,
+                pair["native_definitions_sha256"],
+                acl_phase_sha,
+                **profiles.arguments(profile),
             )
             old.current55._same_server(
                 writer_identity, custody_identity, frame_identity, writer_after
@@ -144,11 +159,26 @@ async def observe_restricted_native_roles_0056_witness_v1(
                 and tuple(old.native_factories._factory_route(f) for f in factories)
                 == routes
             )
-            witness = runtime_witness_0056(writer_identity, names, url_routes)
+            witness = runtime_witness_0056(
+                writer_identity, names, url_routes, **profiles.arguments(profile)
+            )
         observation = old.RestrictedNativeRoles0056ObservationV1(
-            pair["native_definitions_sha256"], pair_sha, custody_sha, acl_phase_sha
+            pair["native_definitions_sha256"],
+            pair_sha,
+            custody_sha,
+            acl_phase_sha,
+            schema=profiles.schema(
+                profile, "ctcc.native_only.restricted0056_role_observation.v1"
+            ),
+            database_head=profiles.head(profile),
         )
-        return RestrictedNativeRoles0056WitnessV1(observation, *witness)
+        return RestrictedNativeRoles0056WitnessV1(
+            observation,
+            *witness,
+            schema=profiles.schema(
+                profile, "ctcc.native_only.restricted0056_runtime_witness.v1"
+            ),
+        )
     except asyncio.CancelledError:
         raise
     except Exception:  # noqa: BLE001 -- redact private routes and catalog facts

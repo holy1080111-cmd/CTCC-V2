@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core import native_role_preflight_0056_full_diagnostic_v1 as diagnostic
 from app.database.repositories.public_runtime_bundle_custody import _native_engine
 from app.domain import collector_current_0056_inherited_catalog_v1 as inherited
+from app.domain import native_database_profile_v1 as profiles
 from app.domain.source_primitives import canonical, sha
 
 _SESSION_SQL = text("""
@@ -41,13 +42,10 @@ class NativeWriter0056ObservationError(ValueError):
 class NativeWriter0056ObservationV1:
     native_definitions_sha256: str
     actor_catalog_sha256: str
-    schema: Literal["ctcc.current0056.restricted_readwrite_writer_observation.v1"] = (
-        field(
-            default="ctcc.current0056.restricted_readwrite_writer_observation.v1",
-            init=False,
-        )
+    schema: str = field(
+        default="ctcc.current0056.restricted_readwrite_writer_observation.v1",
     )
-    database_head: Literal["0056"] = field(default="0056", init=False)
+    database_head: Literal["0056", "0057"] = field(default="0056")
     native_baseline_admission: Literal[False] = field(default=False, init=False)
     startup_admission: Literal[False] = field(default=False, init=False)
     account_complete: Literal[False] = field(default=False, init=False)
@@ -61,7 +59,8 @@ def _deny():
     ) from None
 
 
-def _require_same_transaction(session, engine, transaction):
+def _require_same_transaction(session, engine, transaction, *, profile=profiles.DB0056):
+    profiles.checked(profile)
     sync = session.sync_session
     if (
         not _native_engine(engine)
@@ -69,7 +68,14 @@ def _require_same_transaction(session, engine, transaction):
         or sync.bind is not engine.sync_engine
         or session.get_bind() is not engine.sync_engine
         or session.get_bind(clause=_SESSION_SQL) is not engine.sync_engine
-        or session.get_bind(clause=_ACTOR_CATALOG_SQL) is not engine.sync_engine
+        or session.get_bind(
+            clause=(
+                _ACTOR_CATALOG_SQL
+                if profile is profiles.DB0056
+                else text(inherited.actor_catalog_sql(profile))
+            )
+        )
+        is not engine.sync_engine
         or session.get_bind(clause=diagnostic._FITTED_DEMO_ACCESS)
         is not engine.sync_engine
         or transaction is None
@@ -83,11 +89,12 @@ def _require_same_transaction(session, engine, transaction):
         _deny()
 
 
-async def _session_identity(session, engine):
+async def _session_identity(session, engine, *, profile=profiles.DB0056):
+    profiles.checked(profile)
     row = tuple((await session.execute(_SESSION_SQL)).one())
     if (
         len(row) != 12
-        or row[0] != ["0056"]
+        or row[0] != [profiles.head(profile)]
         or type(engine.url.username) is not str
         or not engine.url.username
         or row[1:5]
@@ -107,23 +114,40 @@ async def _session_identity(session, engine):
     return row
 
 
-async def observe_restricted_readwrite_writer_0056_v1(session):
+async def observe_restricted_readwrite_writer_0056_v1(
+    session, *, profile=profiles.DB0056
+):
     """Read the actual writer; this observation never grants native admission."""
     try:
+        profiles.checked(profile)
         if type(session) is not AsyncSession:
             _deny()
         engine = session.bind
         transaction = session.sync_session.get_transaction()
-        _require_same_transaction(session, engine, transaction)
-        first = await _session_identity(session, engine)
-        _require_same_transaction(session, engine, transaction)
-        value = (await session.execute(_ACTOR_CATALOG_SQL)).scalar_one()
-        _require_same_transaction(session, engine, transaction)
-        observed = inherited.observe_readwrite_writer_0056(value)
+        _require_same_transaction(
+            session, engine, transaction, **profiles.arguments(profile)
+        )
+        first = await _session_identity(session, engine, **profiles.arguments(profile))
+        _require_same_transaction(
+            session, engine, transaction, **profiles.arguments(profile)
+        )
+        value = (
+            await session.execute(
+                _ACTOR_CATALOG_SQL
+                if profile is profiles.DB0056
+                else text(inherited.actor_catalog_sql(profile))
+            )
+        ).scalar_one()
+        _require_same_transaction(
+            session, engine, transaction, **profiles.arguments(profile)
+        )
+        observed = inherited.observe_readwrite_writer_0056(
+            value, **profiles.arguments(profile)
+        )
         definitions = observed["native_definitions_sha256"]
         if (
-            observed["schema"] != inherited.OBSERVATION_SCHEMA
-            or observed["database_head"] != "0056"
+            observed["schema"] != profiles.schema(profile, inherited.OBSERVATION_SCHEMA)
+            or observed["database_head"] != profiles.head(profile)
             or observed["role_oid"] != first[5]
             or value["role"]["name"] != first[1]
             or value["issued"]["server"]["database"] != first[4]
@@ -135,11 +159,25 @@ async def observe_restricted_readwrite_writer_0056_v1(session):
         ):
             _deny()
         await diagnostic._require_no_effective_demo_fitted_execute(session, (first[1],))
-        _require_same_transaction(session, engine, transaction)
-        if await _session_identity(session, engine) != first:
+        _require_same_transaction(
+            session, engine, transaction, **profiles.arguments(profile)
+        )
+        if (
+            await _session_identity(session, engine, **profiles.arguments(profile))
+            != first
+        ):
             _deny()
-        _require_same_transaction(session, engine, transaction)
-        return NativeWriter0056ObservationV1(definitions, sha(canonical(value)))
+        _require_same_transaction(
+            session, engine, transaction, **profiles.arguments(profile)
+        )
+        return NativeWriter0056ObservationV1(
+            definitions,
+            sha(canonical(value)),
+            schema=profiles.schema(
+                profile, "ctcc.current0056.restricted_readwrite_writer_observation.v1"
+            ),
+            database_head=profiles.head(profile),
+        )
     except asyncio.CancelledError:
         raise
     except NativeWriter0056ObservationError:

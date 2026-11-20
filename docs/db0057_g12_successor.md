@@ -69,10 +69,15 @@ work must precede any installation or execution claim:
 
 - Extend exact source-scope inventory with the new 58-file migration identity,
   retaining explicit historical 0056 target scopes and every old migration byte.
-- Introduce a closed source-defined profile dispatch for 0056/42 and 0057/44;
-  pass it through inherited graph/head validators, multirole comparison, role
-  observations/witnesses, writer/frame/Control observers and issued metadata.
-  Observed 0057 records must never be rewritten as 0056.
+- The closed source-defined 0056/42 and 0057/44 dispatch now covers inherited
+  graph/head validators, multirole comparison, restricted role observations,
+  witnesses/stable identity and held writer/frame/Control observations. The
+  successor query captures an additional real G12 catalog; its role-neutral
+  validated definition hash joins the inherited graph reference. Raw catalogs
+  retain physical OIDs separately. Default 0056 query bytes, hash labels and
+  grant plan remain unchanged. Issued metadata and higher runtime consumers
+  must still explicitly carry this profile; observed 0057 records are never
+  rewritten as 0056.
 - Dispatch all six G12 custody-session checks from the genuine issued profile
   and actual writer OID. Preserve task/factory/session/XID/deadline pins and the
   post-publication barrier.
@@ -87,3 +92,10 @@ The shared dispatch seam is the physical-head and ACL validator, rather than a
 new parallel execution engine. Existing historical validators keep their
 default 0056 contract. New callers must carry the closed successor profile
 derived from their real issued metadata throughout the same controlled chain.
+
+The new source pin dispatcher accepts exact source56 for DB0056 and exact
+source57 for DB0056 or DB0057. On source57 it checks the complete 58-file
+migration inventory and the unchanged 57-file source56 prefix. DB0057 always
+requires source57. It does not change the separate physical database-head
+check. Source57 owner/pregrant provisioning remains unsupported until its own
+attended plan and catalog are supplied.

@@ -37,8 +37,8 @@ from app.demo_automation.native_server_selectors_v2 import (
     ConfiguredNativeDemoFactoriesV2,
     _database_route,
 )
+from app.domain import native_database_profile_v1 as profiles
 from app.trade_qualification.demo_control import ControlScope, checked
-from scripts.current0056_fitted_delta_catalog_v1 import pinned_migration
 
 _SOURCE = Path(__file__).resolve().parents[2]
 _CLOCK = text("SELECT pg_catalog.clock_timestamp()")
@@ -65,7 +65,7 @@ class NativeLockedDemoControl0056V1:
     writer_catalog: writer56.NativeWriter0056ObservationV1
     server_incarnation_sha256: str
     role_route_sha256: str
-    database_head: Literal["0056"] = field(default="0056", init=False)
+    database_head: Literal["0056", "0057"] = field(default="0056")
     issuance_authority: Literal[False] = field(default=False, init=False)
     execution_authority: Literal[False] = field(default=False, init=False)
 
@@ -143,6 +143,8 @@ async def _verified_locked_demo_control_0056(
     selected: ConfiguredNativeDemoFactoriesV2,
     session: AsyncSession,
     scope: ControlScope,
+    *,
+    profile=profiles.DB0056,
 ):
     """Internal verified UID lock shared by the read and stopped genesis."""
     checked(scope, ControlScope)
@@ -155,20 +157,33 @@ async def _verified_locked_demo_control_0056(
     # The V2 readers map SQL rows through this session's identity map.
     # Require a cold ORM view so a prior unbound read cannot supply a row.
     _require(not session.identity_map)
-    pinned_migration(_SOURCE)
+    profiles.require_migration(profile, _SOURCE)
 
     async with asyncio.timeout(15):
         for setting in _LOCAL_SETTINGS:
             await session.execute(text(setting))
             _require_session(session, engine, transaction)
 
-        first = await writer56._session_identity(session, engine)
+        first = await writer56._session_identity(
+            session, engine, **profiles.arguments(profile)
+        )
         actor = await roles56.current55._identity(session, names[0])
         _require(actor[3:6] == (first[5], first[6], first[8]))
         _require_session(session, engine, transaction)
-        catalog = await writer56.observe_restricted_readwrite_writer_0056_v1(session)
+        catalog = await writer56.observe_restricted_readwrite_writer_0056_v1(
+            session, **profiles.arguments(profile)
+        )
         _require_session(session, engine, transaction)
-        await _exact_existing_acl(await session.connection(), names, actor[3])
+        if profile is profiles.DB0056:
+            await _exact_existing_acl(await session.connection(), names, actor[3])
+        else:
+            await profiles.require_exact_acl(
+                await session.connection(),
+                names,
+                actor[3],
+                profile=profile,
+                read_only=False,
+            )
         _require_session(session, engine, transaction)
         # The writer catalog checks its own login; cover both other
         # configured roles against the same installed fitted functions.
@@ -180,7 +195,9 @@ async def _verified_locked_demo_control_0056(
         row = await DemoControlRepository._locked(session, scope)
         _require_session(session, engine, transaction)
         # All configured routes have already been checked to be identical.
-        witness = runtime_witness_0056(actor, names, (url_route,) * 3)
+        witness = runtime_witness_0056(
+            actor, names, (url_route,) * 3, **profiles.arguments(profile)
+        )
 
         def require_held_transaction():
             _require_session(session, engine, transaction)
@@ -189,30 +206,50 @@ async def _verified_locked_demo_control_0056(
         _require_session(session, engine, transaction)
 
         _require(await roles56.current55._identity(session, names[0]) == actor)
-        _require(await writer56._session_identity(session, engine) == first)
+        _require(
+            await writer56._session_identity(
+                session, engine, **profiles.arguments(profile)
+            )
+            == first
+        )
         _require_session(session, engine, transaction)
         _require(
             _factory_pins(selected) == pins and _direct_tls_route(engine) == url_route
         )
 
 
-async def _compare_held_role_pins(selected, session, roles, catalog, witness, held):
+async def _compare_held_role_pins(
+    selected, session, roles, catalog, witness, held, *, profile=profiles.DB0056
+):
+    profiles.checked(profile)
     _, engine, names, _ = _factory_pins(selected)
     _require(
         type(catalog) is writer56.NativeWriter0056ObservationV1
-        and catalog.database_head == "0056"
+        and catalog.database_head == profiles.head(profile)
+        and catalog.schema
+        == profiles.schema(
+            profile, "ctcc.current0056.restricted_readwrite_writer_observation.v1"
+        )
         and catalog.admission == "DENY"
         and catalog.startup_admission is catalog.execution_authority is False
         and roles.startup_admission is roles.execution_authority is False
         and witness == (roles.server_incarnation_sha256, roles.role_route_sha256)
     )
     acl = roles56._granted_inherited_acl_shape_sha256(
-        names, catalog.native_definitions_sha256
+        names, catalog.native_definitions_sha256, **profiles.arguments(profile)
     )
     if type(roles) is RestrictedNativeRoles0056WitnessV1:
         _require(
             type(roles.observation) is roles56.RestrictedNativeRoles0056ObservationV1
-            and roles.observation.database_head == "0056"
+            and roles.observation.database_head == profiles.head(profile)
+            and roles.schema
+            == profiles.schema(
+                profile, "ctcc.native_only.restricted0056_runtime_witness.v1"
+            )
+            and roles.observation.schema
+            == profiles.schema(
+                profile, "ctcc.native_only.restricted0056_role_observation.v1"
+            )
             and roles.observation.admission == "DENY"
             and roles.observation.inherited_native_definitions_sha256
             == catalog.native_definitions_sha256
@@ -227,7 +264,13 @@ async def _compare_held_role_pins(selected, session, roles, catalog, witness, he
     actor = await roles56.current55._identity(session, names[0])
     held()
     _require(
-        runtime_witness_0056(actor, names, (_direct_tls_route(engine),) * 3) == witness
+        runtime_witness_0056(
+            actor,
+            names,
+            (_direct_tls_route(engine),) * 3,
+            **profiles.arguments(profile),
+        )
+        == witness
     )
     connection = await session.connection()
     held()
@@ -244,6 +287,7 @@ async def _compare_held_role_pins(selected, session, roles, catalog, witness, he
         expected_role_oids=tuple(role_oids[name] for name in names),
         expected_route=_direct_tls_route(engine),
         expected_sha256=roles.stable_identity_sha256,
+        **profiles.arguments(profile),
     )
 
 
@@ -255,6 +299,7 @@ async def held_native_writer_control_0056_v1(
     *,
     roles: RestrictedNativeRoles0056WitnessV1 | identity56.NativeRoleIdentity0056V2,
     purpose: NativeWriterControlPurpose0056,
+    profile=profiles.DB0056,
 ):
     """Verify current Control within the original writer transaction and task.
 
@@ -276,7 +321,7 @@ async def held_native_writer_control_0056_v1(
         task = asyncio.current_task()
         _require(task is not None)
         async with _verified_locked_demo_control_0056(
-            selected, session, scope
+            selected, session, scope, **profiles.arguments(profile)
         ) as proof:
             row, catalog, witness, started_at, require_transaction = proof
             active = True
@@ -287,7 +332,13 @@ async def held_native_writer_control_0056_v1(
 
             try:
                 await _compare_held_role_pins(
-                    selected, session, roles, catalog, witness, check_held
+                    selected,
+                    session,
+                    roles,
+                    catalog,
+                    witness,
+                    check_held,
+                    **profiles.arguments(profile),
                 )
                 state, event = await DemoControlRepositoryV2._snapshot(session, row)
                 check_held()
@@ -296,7 +347,10 @@ async def held_native_writer_control_0056_v1(
                 check_held()
                 _require(observed_at >= started_at)
                 observation = NativeLockedDemoControl0056V1(
-                    ControlObservation(state, event, observed_at), catalog, *witness
+                    ControlObservation(state, event, observed_at),
+                    catalog,
+                    *witness,
+                    database_head=profiles.head(profile),
                 )
                 yield HeldNativeWriterControl0056V1(
                     observation,
@@ -310,13 +364,19 @@ async def held_native_writer_control_0056_v1(
                 if type(roles) is identity56.NativeRoleIdentity0056V2:
                     new_catalog = (
                         await writer56.observe_restricted_readwrite_writer_0056_v1(
-                            session
+                            session, **profiles.arguments(profile)
                         )
                     )
                     check_held()
                     _require(new_catalog == catalog)
                     await _compare_held_role_pins(
-                        selected, session, roles, new_catalog, witness, check_held
+                        selected,
+                        session,
+                        roles,
+                        new_catalog,
+                        witness,
+                        check_held,
+                        **profiles.arguments(profile),
                     )
             finally:
                 active = False
@@ -330,6 +390,8 @@ async def read_locked_demo_control_0056_v1(
     selected: ConfiguredNativeDemoFactoriesV2,
     session: AsyncSession,
     scope: ControlScope,
+    *,
+    profile=profiles.DB0056,
 ) -> NativeLockedDemoControl0056V1:
     """Check the selected writer, then use the historical UID-before-row lock.
 
@@ -339,7 +401,7 @@ async def read_locked_demo_control_0056_v1(
     """
     try:
         async with _verified_locked_demo_control_0056(
-            selected, session, scope
+            selected, session, scope, **profiles.arguments(profile)
         ) as proof:
             row, catalog, witness, started_at, require_held_transaction = proof
             state, event = await DemoControlRepositoryV2._snapshot(session, row)
@@ -347,7 +409,9 @@ async def read_locked_demo_control_0056_v1(
             _require(state.scope == scope)
             control = ControlObservation(state, event, await session.scalar(_CLOCK))
             _require(control.observed_at >= started_at)
-        return NativeLockedDemoControl0056V1(control, catalog, *witness)
+        return NativeLockedDemoControl0056V1(
+            control, catalog, *witness, database_head=profiles.head(profile)
+        )
     except (asyncio.CancelledError, NativeLockedDemoControl0056Error):
         raise
     except Exception:  # noqa: BLE001 -- Never expose stored control or SQL details.

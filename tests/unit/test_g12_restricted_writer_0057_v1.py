@@ -324,6 +324,7 @@ def _fixture():
                         "rules",
                         "policies",
                         "column_acl",
+                        "dropped_columns",
                     )
                 },
                 "acl_valid": True,
@@ -401,6 +402,7 @@ def test_catalog_is_exact0057_and_observation_never_authorizes():
         "missing_table",
         "table_acl",
         "column_acl",
+        "dropped_column",
         "nullable",
         "changed_default",
         "missing_constraint",
@@ -435,6 +437,8 @@ def test_catalog_refuses_schema_acl_guard_and_identity_drift(kind):
         table["acl"].append([201, 101, "UPDATE", False])
     elif kind == "column_acl":
         table["column_acl"] = True
+    elif kind == "dropped_column":
+        table["dropped_columns"] = True
     elif kind == "nullable":
         table["columns"][0][2] = False
     elif kind == "changed_default":
