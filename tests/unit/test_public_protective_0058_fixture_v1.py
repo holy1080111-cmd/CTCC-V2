@@ -44,7 +44,9 @@ from tests.unit.test_native_ledger_contracts_v2 import native_binding
 def test_declared_new_fixture_binds_changed_issuer_scope_time_and_fixed_geometry(
     _template,
 ):
-    now = datetime.now(UTC)
+    # This is a NEW fictional ingress. Deliberately force a sub-ms carry so
+    # page-chain cutoff checks cannot accidentally pass only for whole-ms time.
+    now = datetime.now(UTC).replace(microsecond=999900)
     scope = ledger.LedgerScope(account_id="700001", settlement_currency="USDT")
     proof = canonical(
         {"component": "SYNTHETIC_ISSUER_DATA_ONLY", "execution_authority": False}
@@ -180,11 +182,27 @@ def test_declared_new_fixture_binds_changed_issuer_scope_time_and_fixed_geometry
     ):
         facts.facts.assess_native_reconciliation_v1(target, invalid)
     original = _sessions(original, "public58-original")
-    hold_at = original[-1][1].eof_at + timedelta(seconds=1)
+    hold_at = max(original[-1][1].eof_at, terminal[-1][1].eof_at) + timedelta(
+        seconds=1, microseconds=200
+    )
     terminal = _sessions(
         _fresh_terminal(terminal, after=hold_at, alter_exit=True), "public58-terminal"
     )
     assert terminal[0][1].started_at > hold_at
+    cutoff = str(facts.chronology._milliseconds(terminal[0][1].started_at))
+    assert all(
+        dict(page.parameters)["end"] == cutoff
+        for _, page in terminal
+        if "end" in dict(page.parameters)
+    )
+    for role, page in terminal:
+        for row in facts.facts.rows(page):
+            for name in ("cTime", "uTime", "fillTime", "ts"):
+                if row.get(name):
+                    at = datetime(1970, 1, 1, tzinfo=UTC) + timedelta(
+                        milliseconds=int(row[name])
+                    )
+                    assert at <= page.eof_at, (role, name, at, page.eof_at)
     actual = facts.assess_original_protective_exit_v1(target, original, terminal)
     replay = _sessions(
         _fresh_terminal(

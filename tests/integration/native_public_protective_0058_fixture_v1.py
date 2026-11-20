@@ -414,13 +414,26 @@ def declared_public_original_oco(target):
 def _fresh_terminal(pages, *, after, alter_exit):
     start = max(pages[0][1].started_at, after + timedelta(milliseconds=10))
     offset = start - pages[0][1].started_at
-    ms = int(offset.total_seconds() * 1000)
+    # The cursor cutoff is the floor of the NEW absolute request timestamp.
+    # Flooring the relative delta loses a millisecond when fractional parts
+    # carry. These are newly declared fixture pages, never retained evidence.
+    cutoff = facts.chronology._milliseconds(start)
+    # Source event milliseconds use a rounded-down relative offset, keeping
+    # every newly declared source time at/before its shifted receive time.
+    ms = offset // timedelta(milliseconds=1)
     output = []
     for role, page in pages:
         rows = copy.deepcopy(facts.facts.rows(page))
         if alter_exit:
             for row in rows:
-                if row.get("ordId") == "10002":
+                # The algo also contains its child ordId. Its immutable cTime
+                # belongs to the original protection; shift only its terminal
+                # update/trigger clocks below, once.
+                if row.get("ordId") == "10002" and role not in (
+                    "protection_before",
+                    "protection_after",
+                    "protected_selector_algo",
+                ):
                     for name in ("cTime", "uTime", "fillTime", "ts"):
                         if row.get(name):
                             row[name] = str(int(row[name]) + ms)
@@ -440,7 +453,7 @@ def _fresh_terminal(pages, *, after, alter_exit):
                     row["ts"] = str(int(row["ts"]) + ms)
         query = dict(page.parameters)
         if "end" in query:
-            query["end"] = str(int(query["end"]) + ms)
+            query["end"] = str(cutoff)
         ordered = read.checked_query(page.path, query)
         output.append(
             (
