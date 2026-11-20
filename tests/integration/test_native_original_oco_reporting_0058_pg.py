@@ -5,6 +5,11 @@ owner. Public migration, exact restricted TLS roles and all SQL guards remain
 on. Local collection is not PostgreSQL or venue acceptance.
 """
 
+import asyncio
+import hashlib
+import json
+import os
+import sys
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -13,6 +18,7 @@ import pytest
 from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError
 
+from app.core import native_manual_demo_lifespan_0056_v1 as manual
 from app.core.native_role_witness_0056_v1 import (
     observe_restricted_native_roles_0056_witness_v1,
 )
@@ -39,6 +45,7 @@ from tests.integration.test_native_original_oco_public_0058_pg import (
 from tests.integration.test_native_original_oco_public_0058_pg import (
     _template as _template,  # noqa: PLC0414
 )
+from tests.unit.test_trade_evidence_notion_adapter import destination
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 ROOT = Path(__file__).resolve().parents[2]
@@ -181,7 +188,7 @@ async def _prepared(monkeypatch, lab, template):
 
 
 async def test_actual0058_original_oco_report_spool_replays_without_own_close_intent(
-    monkeypatch, _actual58_demo_lab, _template
+    monkeypatch, _actual58_demo_lab, _template, tmp_path
 ):
     owner, selected, before, roles, journal, terminal, closed = await _prepared(
         monkeypatch, _actual58_demo_lab, _template
@@ -238,7 +245,99 @@ async def test_actual0058_original_oco_report_spool_replays_without_own_close_in
             )
             == spool.spool_id
         )
+    # A fresh configured process builds its own three TLS engines. No product
+    # factory/guard/catalog is patched and no external Notion request is sent.
+    await _configured_reporting_child(selected, spool, tmp_path)
     assert await _guards(owner) == before
+
+
+async def _configured_reporting_child(selected, spool, tmp_path):
+    private = tmp_path / "current58_reporting"
+    private.mkdir(mode=0o700)
+    root = private / "outbox"
+    root.mkdir(mode=0o700)
+    destination_file = private / "declared_synthetic_destination.json"
+    destination_bytes = destination().model_dump_json(round_trip=True).encode()
+    destination_file.write_bytes(destination_bytes)
+    destination_file.chmod(0o600)
+    urls = tuple(
+        factory.kw["bind"].url
+        for factory in (
+            selected.writer_factory,
+            selected.custody_factory,
+            selected.frame_reader_factory,
+        )
+    )
+    assert all(url.password is None and not url.query for url in urls)
+    expected = hashlib.sha256((ROOT / "MANIFEST.sha256").read_bytes()).hexdigest()
+    env = {
+        **{name.upper(): "false" for name in manual._DISABLED},
+        "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+        "PYTHONPATH": str(ROOT),
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "ENVIRONMENT": "production",
+        "TRADING_MODE": "okx_demo",
+        "WEB_CONCURRENCY": "1",
+        "API_TOKEN": hashlib.sha256(b"declared-current58-reporting-only").hexdigest(),
+        "CTCC_NATIVE_DEMO_MANUAL_LIFESPAN_0056_V1": "true",
+        "OKX_DEMO_ENABLED": "true",
+        "OKX_DEMO_ALLOW_ORDER_WRITES": "false",
+        "OKX_DEMO_AUTO_EXECUTION": "false",
+        "DATABASE_URL": urls[0].render_as_string(hide_password=False),
+        "OKX_DEMO_NATIVE_CUSTODY_DATABASE_URL": urls[1].render_as_string(
+            hide_password=False
+        ),
+        "OKX_DEMO_NATIVE_FRAME_READER_DATABASE_URL": urls[2].render_as_string(
+            hide_password=False
+        ),
+        "CTCC_NATIVE_PG_TLS_CA_FILE": os.environ[
+            "CTCC_DEVVAL_CUSTODY_TEST_TLS_CA_FILE"
+        ],
+        "CTCC_NATIVE_PG_TLS_CA_SHA256": os.environ[
+            "CTCC_DEVVAL_CUSTODY_TEST_TLS_CA_SHA256"
+        ],
+        "SUBMISSION_OUTBOX_ENABLED": "true",
+        "SUBMISSION_OUTBOX_ROOT": str(root),
+        "SUBMISSION_OUTBOX_QUEUE_NAMESPACE": spool.queue_namespace,
+        "NOTION_OUTBOX_ENABLED": "true",
+        "NOTION_OUTBOX_ROOT": str(root),
+        "NOTION_OUTBOX_DESTINATION_FILE": str(destination_file),
+        "NOTION_OUTBOX_DESTINATION_SHA256": hashlib.sha256(
+            destination_bytes
+        ).hexdigest(),
+        "CTCC_CURRENT58_REPORTING_HERMETIC_CHILD": "1",
+        "CTCC_EXPECTED_REPORTING_MANIFEST_SHA256": expected,
+        "CTCC_CURRENT58_REPORTING_SPOOL_SHA256": spool.spool_id,
+        "CTCC_CURRENT58_REPORTING_REPORT_ID": spool.report_id,
+    }
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-B",
+        "-m",
+        "tests.integration.native_current58_reporting_child_v1",
+        cwd=str(private),
+        env=env,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        async with asyncio.timeout(240):
+            stdout, stderr = await process.communicate()
+    finally:
+        if process.returncode is None:
+            process.kill()
+            await process.wait()
+    assert len(stdout) <= 8192
+    result = json.loads(stdout.strip())
+    assert process.returncode == 0 and result["status"] == "PASS", result
+    assert stderr == b""
+    assert result["database_head"] == "0058"
+    assert result["source_manifest_sha256"] == expected
+    assert result["report_spool_sha256"] == spool.spool_id
+    assert result["projection_and_local_pair_readback"] is True
+    assert result["notion_source_distinct_committed_readbacks"] == 2
+    assert result["notion_writes"] == result["order_writes"] == 0
+    assert result["execution_authority"] is False
 
 
 async def test_actual0058_original_oco_reporting_guard_refuses_foreign_forensics(

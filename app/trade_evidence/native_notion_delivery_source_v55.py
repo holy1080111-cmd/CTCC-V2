@@ -16,6 +16,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.config import settings as configured
 from app.database.repositories import native_closed_reporting_v55 as reports
+from app.database.repositories import (
+    native_current58_notion_projection_v1 as current_projection,
+)
 from app.domain import native_clock
 from app.domain.source_primitives import decode, sha, utc_from_ns, validate_stamps
 from app.trade_evidence import (
@@ -24,6 +27,7 @@ from app.trade_evidence import (
     outbox,
     storage,
 )
+from app.trade_evidence import native_current58_reporting_v1 as current58
 from app.trade_evidence import notion_adapter as notion
 from app.trade_evidence.submission_reporting import pin, queue
 from app.trade_qualification import account_history_source_v1 as history
@@ -32,6 +36,7 @@ from app.trade_qualification import native_continuation_guard_v1 as guard
 
 _REPOSITORY_KEY_V55 = object()
 _INVOKE_KEY_V55 = object()
+_CURRENT58_KEY_V1 = object()
 _ISSUING = {}
 _CAPS = WeakKeyDictionary()
 _UNKNOWN = {}
@@ -179,6 +184,25 @@ def _replay_actual_reporting_factory_v55(binding, *, key):
     )
 
 
+def _replay_current58_reporting_lease_v1(binding, *, key):
+    if key is not _CURRENT58_KEY_V1 or type(binding) is not object:
+        _deny()
+    state = _ISSUING.get(binding)
+    if type(state) is not dict or state["phase"] != "READING":
+        _deny()
+    _check(state)
+    cap = state.get("current58_lease")
+    selected, identity = current58.current58_reporting_context_v1(
+        cap, key=current58._CONTEXT_KEY_V1
+    )
+    if (
+        selected.writer_factory is not state["factory"]
+        or identity.schema != "ctcc.native_only.restricted_role_identity0058.v2"
+    ):
+        _deny()
+    return cap
+
+
 async def acquire_native_notion_delivery_source_v55(
     *, root, report_id, expected_envelope_sha256
 ):
@@ -224,7 +248,7 @@ async def acquire_native_notion_delivery_source_v55(
     guard.save_native_guard_v1(state, _NATIVE_GUARD)
     context = outbox._root_context(checked_root)
     state["root_context"], state["directory"] = context, context.__enter__()
-    engine = None
+    engine = current_cap = None
     binding = object()
     kept = False
     try:
@@ -236,18 +260,28 @@ async def acquire_native_notion_delivery_source_v55(
         _check(state)
         # This worker owns this real engine on its own event loop. The issuer
         # cannot accept an injected sessionmaker, DB connection or mocked row.
-        engine = create_async_engine(
-            settings.database_url,
-            echo=False,
-            pool_pre_ping=True,
-            pool_size=1,
-            max_overflow=0,
-            pool_timeout=5,
-            connect_args={"timeout": 5, "command_timeout": 5},
-        )
-        factory = async_sessionmaker(
-            engine, class_=AsyncSession, expire_on_commit=False
-        )
+        is_current58 = settings.ctcc_native_demo_manual_lifespan_0056_v1 is True
+        if is_current58:
+            current_cap = await current58.acquire_current58_reporting_v1()
+            selected, _ = current58.current58_reporting_context_v1(
+                current_cap, key=current58._CONTEXT_KEY_V1
+            )
+            factory = selected.writer_factory
+            engine = factory.kw["bind"]
+            state["current58_lease"] = current_cap
+        else:
+            engine = create_async_engine(
+                settings.database_url,
+                echo=False,
+                pool_pre_ping=True,
+                pool_size=1,
+                max_overflow=0,
+                pool_timeout=5,
+                connect_args={"timeout": 5, "command_timeout": 5},
+            )
+            factory = async_sessionmaker(
+                engine, class_=AsyncSession, expire_on_commit=False
+            )
         state.update(
             engine=engine,
             factory=factory,
@@ -256,13 +290,14 @@ async def acquire_native_notion_delivery_source_v55(
         )
         _ISSUING[binding] = state
         async with asyncio.timeout(_SECONDS):
-            first = await reports.read_native_notion_projection_v55(
-                binding, key=_REPOSITORY_KEY_V55
+            reader = (
+                current_projection.read_current58_notion_projection_v1
+                if is_current58
+                else reports.read_native_notion_projection_v55
             )
+            first = await reader(binding, key=_REPOSITORY_KEY_V55)
             _check(state)
-            second = await reports.read_native_notion_projection_v55(
-                binding, key=_REPOSITORY_KEY_V55
-            )
+            second = await reader(binding, key=_REPOSITORY_KEY_V55)
             _check(state)
             if (
                 type(first) is not reports.NativeNotionProjectionReadbackV55
@@ -286,6 +321,8 @@ async def acquire_native_notion_delivery_source_v55(
                 != "ctcc.native_historical_notion_projection.v1"
                 or document["envelope_sha256"] != expected
                 or document["report_id"] != report_id
+                or is_current58
+                and document.get("database_head") != "0058"
             ):
                 _deny()
             state.update(
@@ -297,7 +334,12 @@ async def acquire_native_notion_delivery_source_v55(
             )
             _ISSUING.pop(binding)
             async with asyncio.timeout(5):
-                await engine.dispose()
+                if current_cap is not None:
+                    await current58.close_current58_reporting_v1(current_cap)
+                    current_cap = None
+                    state.pop("current58_lease")
+                else:
+                    await engine.dispose()
             engine = None
             _check(state)
         state.pop("engine")
@@ -319,6 +361,13 @@ async def acquire_native_notion_delivery_source_v55(
     finally:
         _ISSUING.pop(binding, None)
         try:
+            if current_cap is not None:
+                try:
+                    await current58.close_current58_reporting_v1(current_cap)
+                    engine = current_cap = None
+                except BaseException:
+                    _UNKNOWN[state["token"]] = state
+                    raise
             if engine is not None:
                 try:
                     async with asyncio.timeout(5):
@@ -514,6 +563,9 @@ _NATIVE_GUARD = guard.install_native_guards_v1(
     ),
     dependencies=(
         reports,
+        current58,
+        *current58._REPORTING_DEPENDENCIES_V1,
+        current_projection,
         reports.catalog,
         reports.report_schema,
         reports.forensic,

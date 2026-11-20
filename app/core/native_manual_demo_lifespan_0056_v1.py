@@ -16,7 +16,13 @@ _DISABLED = tuple(
     name
     for name in original._MUST_BE_FALSE
     if name
-    not in {"okx_demo_allow_order_writes", "okx_demo_auto_execution", "okx_ws_enabled"}
+    not in {
+        "okx_demo_allow_order_writes",
+        "okx_demo_auto_execution",
+        "okx_ws_enabled",
+        "submission_outbox_enabled",
+        "notion_outbox_enabled",
+    }
 ) + ("ctcc_native_only_lifespan_v1", "ctcc_local_analysis_only_v1")
 
 
@@ -46,7 +52,13 @@ def require_manual_demo_settings_0056_v1(settings):
                 "okx_demo_allow_order_writes",
                 "okx_demo_auto_execution",
                 "okx_ws_enabled",
+                "submission_outbox_enabled",
+                "notion_outbox_enabled",
             )
+        )
+        and (
+            settings.notion_outbox_enabled is False
+            or settings.submission_outbox_enabled is True
         )
     )
 

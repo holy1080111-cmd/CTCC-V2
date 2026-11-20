@@ -25,6 +25,8 @@ def settings(**changes):
                 "okx_demo_allow_order_writes": False,
                 "okx_demo_auto_execution": False,
                 "okx_ws_enabled": False,
+                "submission_outbox_enabled": False,
+                "notion_outbox_enabled": False,
                 "okx_demo_scan_symbol_list": ["BTC-USDT-SWAP"],
             }
             | changes

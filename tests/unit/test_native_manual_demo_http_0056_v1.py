@@ -30,6 +30,8 @@ def app(monkeypatch, *, ready=True):
         api_token_is_safe=True,
         environment="production",
         trading_mode="okx_demo",
+        submission_outbox_enabled=False,
+        notion_outbox_enabled=False,
     )
     monkeypatch.setattr(main, "settings", config)
     monkeypatch.setattr(security, "get_settings", lambda: config)

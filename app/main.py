@@ -61,15 +61,34 @@ async def lifespan(instance: FastAPI):
                 await engine.dispose()
             raise
         instance.state.native_manual_demo_recovery_confirmed = True
+        reporting_workers = []
         try:
+            for enabled, worker in (
+                (settings.submission_outbox_enabled, submission_outbox_runtime),
+                (settings.notion_outbox_enabled, notion_outbox_runtime),
+            ):
+                if enabled:
+                    if head != "0058":
+                        raise RuntimeError(
+                            "native_manual_reporting_requires_actual0058"
+                        )
+                    reporting_workers.append(worker)
+                    await worker.start()
             yield
         finally:
             instance.state.native_manual_demo_recovery_confirmed = False
             instance.state.native_manual_demo_database_head = None
             try:
-                await safe_demo_automation.stop()
+                # Workers own independent DATA/HTTP resources. A partial worker
+                # start must be stopped too; no reporting callback can Arm.
+                for worker in reversed(reporting_workers):
+                    with suppress(Exception, CancelledError):
+                        await worker.stop()
             finally:
-                await engine.dispose()
+                try:
+                    await safe_demo_automation.stop()
+                finally:
+                    await engine.dispose()
         return
     if settings.ctcc_native_only_lifespan_v1:
         instance.state.native_only_recovery_confirmed = False

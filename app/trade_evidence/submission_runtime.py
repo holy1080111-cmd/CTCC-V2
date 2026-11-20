@@ -26,6 +26,7 @@ class SubmissionOutboxRuntime:
         self._stop = threading.Event()
         self._after = ""
         self._audit_after = ""
+        self._current58_lease = None
         self.status, self.last_code = "disabled", "submission_outbox_disabled"
 
     async def start(self):
@@ -79,7 +80,16 @@ class SubmissionOutboxRuntime:
     async def tick(self):
         if not self.settings.submission_outbox_enabled:
             return
-        if not self.settings.submission_outbox_root or self._sessions is None:
+        if not self.settings.submission_outbox_root:
+            self._pending("submission_outbox_configuration_missing")
+            return
+        if (
+            getattr(self.settings, "ctcc_native_demo_manual_lifespan_0056_v1", False)
+            is True
+        ):
+            await self._tick_current58()
+            return
+        if self._sessions is None:
             self._pending("submission_outbox_configuration_missing")
             return
         try:
@@ -124,11 +134,77 @@ class SubmissionOutboxRuntime:
         except Exception:  # noqa: BLE001 -- No private SQL/driver diagnostics in logs.
             self._pending("submission_outbox_pass_pending")
 
+    async def _tick_current58(self):
+        """Same worker, explicit physical58 engines and existing native projector."""
+        from app.config.settings import get_settings
+        from app.trade_evidence import native_current58_reporting_v1 as native
+
+        try:
+            if self.settings is not get_settings() or self._sessions is not None:
+                raise ValueError("native_current58_reporting_unavailable")
+            root, namespace = native.reporting._configured_projection_queue(
+                self.settings
+            )
+            if self._current58_lease is None:
+                self._current58_lease = await native.acquire_current58_reporting_v1()
+            cap = self._current58_lease
+            audit = await native.current58_reporting_ids_v1(
+                cap,
+                namespace=namespace,
+                after=self._audit_after,
+                limit=self.settings.submission_outbox_batch_size,
+                projected=True,
+            )
+            if audit:
+                for spool_id in audit:
+                    await native.project_current58_report_v1(
+                        cap, spool_id=spool_id, root=root, namespace=namespace
+                    )
+                    self._audit_after = spool_id
+                self._pending("submission_outbox_projection_audit_in_progress")
+                return
+            self._audit_after = ""
+            pending = await native.current58_reporting_ids_v1(
+                cap,
+                namespace=namespace,
+                after=self._after,
+                limit=self.settings.submission_outbox_batch_size,
+                projected=False,
+            )
+            failed = False
+            for spool_id in pending:
+                self._after = spool_id
+                try:
+                    await native.project_current58_report_v1(
+                        cap, spool_id=spool_id, root=root, namespace=namespace
+                    )
+                except Exception:  # noqa: BLE001 -- retain exact spool/pair and continue the fair batch.
+                    failed = True
+            if not pending:
+                self._after = ""
+            if failed:
+                self._pending("submission_outbox_projection_pending")
+                await native.close_current58_reporting_v1(cap)
+                self._current58_lease = None
+            else:
+                self.status, self.last_code = "idle", "submission_outbox_pass_complete"
+        except Exception:  # noqa: BLE001 -- pending is DATA; no exchange/accepted-evidence change.
+            self._pending("submission_outbox_pass_pending")
+            if self._current58_lease is not None:
+                await native.close_current58_reporting_v1(self._current58_lease)
+                self._current58_lease = None
+
     async def _run(self):
         self._loop, self._task = asyncio.get_running_loop(), asyncio.current_task()
         engine = None
         try:
-            if self._sessions is None:
+            if (
+                self._sessions is None
+                and getattr(
+                    self.settings, "ctcc_native_demo_manual_lifespan_0056_v1", False
+                )
+                is not True
+            ):
                 engine = create_async_engine(
                     self.settings.database_url,
                     pool_size=1,
@@ -150,6 +226,11 @@ class SubmissionOutboxRuntime:
                     self._pending("submission_outbox_pass_timeout")
                 await asyncio.sleep(self.settings.submission_outbox_poll_seconds)
         finally:
+            if self._current58_lease is not None:
+                from app.trade_evidence import native_current58_reporting_v1 as native
+
+                await native.close_current58_reporting_v1(self._current58_lease)
+                self._current58_lease = None
             if engine is not None:
                 self._sessions = None
                 await engine.dispose()
