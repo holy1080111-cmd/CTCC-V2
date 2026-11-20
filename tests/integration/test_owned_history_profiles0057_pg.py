@@ -30,7 +30,6 @@ from app.demo_automation.native_server_selectors_v2 import (
 from app.domain import native_database_profile_v1 as profiles
 from app.trade_qualification import demo_control as control
 from app.trade_qualification import native_controlled_account_source_v6 as native
-from app.trade_qualification.reservations import LedgerScope
 from tests.controlled_writer_coverage_fixtures import _store_control_fixture
 from tests.integration import test_g12_restricted_writer_0057_pg as lower
 from tests.integration.test_account_history_partition_repository import _member
@@ -56,22 +55,21 @@ async def _selected(engines):
 
 
 async def test_actual0057_held_checkpoint_and_source_partition_keep_actual_head_and_locks(
+    monkeypatch,
     _owned57_lab,
 ):
     owner, engines, names = _owned57_lab
     selected, roles = await _selected(engines)
     owner_factory = async_sessionmaker(owner, autoflush=False, expire_on_commit=False)
-    scope = LedgerScope(
-        environment="demo", account_id="730061", settlement_currency="USDT"
-    )
+    # A capture-scope row alone is not a retained B3 history head. Persist a
+    # declared synthetic original B1/B3 chain before asking the source reader
+    # to replay it; never turn an empty source into complete history.
+    with monkeypatch.context() as setup:
+        _, scope, _, _, batch = await stored(setup, (owner, selected.writer_factory))
     control_scope = control.ControlScope(scope.environment, scope.account_id)
     stopped = await DemoControlRepository(
         owner_factory, clock=lambda: datetime.now(UTC)
     ).latch_stop(control_scope, command_id="a" * 64)
-    ledger = QualificationLedgerRepository(
-        owner_factory, clock=lambda: datetime.now(UTC)
-    )
-    await ledger.initialize_capture_scope(scope)
     async with (
         selected.writer_factory() as session,
         session.begin(),
@@ -110,6 +108,8 @@ async def test_actual0057_held_checkpoint_and_source_partition_keep_actual_head_
         actual.transaction_id != xid
         and actual.account_complete is actual.execution_authority is False
     )
+    assert actual.head_sequence == 1 and actual.head_sha256 == batch.event_sha256
+    assert actual.b3_documents == (batch.document_json,)
     signature = source.original.policy.FUNCTION_SIGNATURES[
         "account_history_partition_v1_append"
     ]
@@ -209,7 +209,11 @@ async def test_actual0057_controlled_partition_append_reopens_under_original_arm
     }
     appended = await repository.append_member_and_checkpoint(scope, **arguments)
     reopened = await repository.read(scope)
-    assert len(reopened.members) == len(reopened.checkpoints) == 1
+    assert len(reopened.members) == 1
+    # A partition checkpoint requires the complete original32-member prefix.
+    # One actual member is retained without fabricating a complete checkpoint.
+    assert partition.previous.records.PARTITION_SPAN == 32
+    assert reopened.checkpoints == appended.checkpoints == ()
     assert reopened.members == appended.members
     assert reopened.members[0].record_json == record
     assert (
