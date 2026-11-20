@@ -45,7 +45,7 @@ async def test_actual0056_stopped_postsubmit_transactions_preserve_control_and_c
     owner = DemoControlRepository(owner_factory, clock=lambda: datetime.now(UTC))
     await owner.acquire(
         control_scope,
-        owner_token=b"ctcc_test_stopped_postsubmit56_001",
+        owner_token=b"p" * 32,
         pins=ControlPins("a" * 64, "b" * 64, "c" * 64),
         command_id="d" * 64,
     )
