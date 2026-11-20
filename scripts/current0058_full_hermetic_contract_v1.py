@@ -129,6 +129,7 @@ LIVE_LIFECYCLE_CASES = tuple(
         ),
         "test_actual58_lifecycle_uncertain_proof_is_durable_and_keeps_stop_and_hold",
         "test_actual58_lifecycle_terminal_zero_fill_releases_only_authenticated_original_hold",
+        "test_actual58_live_recovery_journal_preserves_db_intent_recorded_time",
     )
 )
 STOPPED_SETUP_CASES = tuple(
