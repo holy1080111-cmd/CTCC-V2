@@ -69,6 +69,11 @@ leave a pending operation requiring the existing durable recovery procedure.
 The supervisor explicitly shows its own window and checks visibility after
 the inherited first-show state; a hidden CLI parent cannot silently hide the
 operator controls. This changes no system-wide visibility or security setting.
+That visibility check concerns the window's own visible flag. It does not prove
+the interactive Windows desktop is unlocked or that an input helper can
+activate the window. Native GUI acceptance requires an unlocked desktop. A
+failed activation alone does not establish a hidden-startup root cause; the
+read-only session-state observation must be reported separately.
 
 The desktop helper supplies no qualification, Arm, reconciliation, order or
 release authority. It cannot migrate DB0017, adopt an older private profile,

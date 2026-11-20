@@ -136,8 +136,9 @@ schema/catalog differs from the old release, its genuine startup must refuse.
 Preserve existing protection and risk holds while reconciling. Do not erase
 unresolved state to make a rollback start.
 
-No service, Docker, WSL, database or installed deployment has been started or
-changed by authoring/testing these scripts. Final deployment remains gated by
+Staging and installation operate only in the explicitly chosen release
+directory; they do not start an OS service, Docker, WSL or a database, or change
+an existing deployment. Explicit Launch starts the chosen local tool. Final deployment remains gated by
 the final exact-source CI and parent-controlled real reconciliation. Gate3 and
 actual trading examples are deferred at the user's direction and are not
 reported as passed by this installer.
