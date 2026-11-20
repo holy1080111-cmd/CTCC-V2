@@ -28,7 +28,7 @@ The components have distinct responsibilities:
 | --- | --- |
 | PostgreSQL0 | Existing stateful anchors, actual main0058 migrations/restart and its owned legacy DB cases |
 | PostgreSQL1 | Existing owned DB cases and physical0056 fitted/inherited/ACL catalog receipts bound to actual source0058 |
-| PostgreSQL2 | All retained0057 cases and four physical0057 G12 receipts, the actual0058 three-role/44-grant full graph/protective catalog receipt, all seventeen Live DATA ledger and two physical negative cleanup cases, the original-OCO predicate case and thirteen TEMP submission binding component cases |
+| PostgreSQL2 | All retained0057 cases and four physical0057 G12 receipts, the actual0058 three-role/44-grant full graph/protective catalog receipt, a distinct actual0058 six-session custody receipt, all seventeen Live DATA ledger and two physical negative cleanup cases, the original-OCO predicate case and thirteen TEMP submission binding component cases |
 | Linux shards0–7 | Every remaining whole test module, deterministically selected |
 
 Historical observations explicitly retain `source_head=0058` and the actual
@@ -45,6 +45,14 @@ exactly one executed copy of every reviewed required case, approved platform
 skips only and successful cleanup. Counts come from these actual JUnit files.
 Actual0058 metadata retains the new closure/predicate/index pins, while the
 separate physical0057 and0056 evidence keeps its own identity.
+
+The six-session0058 custody component retains each SQL stage's native clocks,
+backend/transaction identifiers, real head58 and writer identifier, together
+with the immutable claim/publication and original native transcript hashes.
+The same exercise keeps the existing physical0057 regression separate. Its
+private in-memory owner handoff is explicitly synthetic; it asserts no public
+candidate qualification, G12 image publication or exchange execution. The
+component and union require its own source-bound, no-clobber readback receipt.
 
 Source-only parser/collection/union tests are synthetic. They establish no
 Docker, PostgreSQL, provider, native storage, Gate3 or trading acceptance. Only

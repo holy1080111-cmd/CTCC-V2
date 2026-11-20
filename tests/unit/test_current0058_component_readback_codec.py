@@ -176,6 +176,13 @@ def declared_synthetic_component(tmp_path, monkeypatch):
         root / junit, required_cases=contract.SUCCESSOR_CASES
     )
     source_identity = contract.g12.source_identity(identity, files, mapping)
+    from tests.unit.test_current0058_g12_custody_measurement import (
+        declared_synthetic_receipt,
+    )
+
+    (root / contract.g12.CUSTODY_REPORT).write_bytes(
+        contract.canonical(declared_synthetic_receipt(source_identity))
+    )
     for path, case in zip(contract.g12.REPORTS, contract.g12.CASES, strict=True):
         value = {
             "schema": "ctcc.current0058.profile_measurement.v1",

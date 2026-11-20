@@ -168,3 +168,22 @@ async def test_actual0058_restricted_demo_profile_retains_full_graph_and_protect
     from scripts.current0058_profile_measurement_v1 import record_profile_if_requested
 
     await record_profile_if_requested(owner, selected, case=request.node.name)
+
+
+async def test_actual0058_native_g12_custody_six_sessions_keep_real_head(
+    _actual58_demo_lab, monkeypatch, request
+):
+    """Actual SQL58 custody; declared synthetic owner DATA, no public G12 claim."""
+    from scripts.current0058_profile_measurement_v1 import record_custody_if_requested
+    from tests.native_g12_custody_component_v1 import (
+        exercise_native_custody_component_v1,
+    )
+
+    owner, selected, _ = _actual58_demo_lab
+    result = await exercise_native_custody_component_v1(
+        owner, selected, profile=profiles.DB0058, monkeypatch=monkeypatch
+    )
+    assert result["database_head"] == "0058"
+    assert len(result["stages"]) == 6
+    assert {row["database_head"] for row in result["stages"]} == {"0058"}
+    await record_custody_if_requested(result, case=request.node.name)

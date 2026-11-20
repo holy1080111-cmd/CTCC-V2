@@ -20,6 +20,11 @@ CASES = (
     ),
 )
 REPORTS = ("test-results/current0058-profile-0.json",)
+CUSTODY_CASE = (
+    "tests.integration.test_native_demo_profile_0058_pg",
+    "test_actual0058_native_g12_custody_six_sessions_keep_real_head",
+)
+CUSTODY_REPORT = "test-results/current0058-g12-custody.json"
 digest, canonical = previous.digest, previous.canonical
 _HEX, _GIT = re.compile(r"[a-f0-9]{64}\Z"), re.compile(r"[a-f0-9]{40}\Z")
 

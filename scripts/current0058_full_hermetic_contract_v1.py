@@ -13,7 +13,7 @@ from scripts import run_db0058_migration_probe_v1 as live_cases
 HEAD, PARENT = g12.HEAD, g12.PARENT
 RUNNER_CONTRACT, RUNNER_PATH, SCOPE = g12.RUNNER_CONTRACT, g12.RUNNER_PATH, g12.SCOPE
 PROFILE_RESULT_KEY = "actual0058_profiles"
-EXTRA_RESULT_KEYS = ("historical0057",)
+EXTRA_RESULT_KEYS = ("historical0057", "actual0058_g12_custody")
 PROFILE_METADATA_KEYS = (
     *base.PROFILE_METADATA_KEYS,
     "native_closure_body_sha256",
@@ -62,6 +62,7 @@ SUCCESSOR_CASES = (
     *base.SUCCESSOR_CASES,
     *live_cases.REQUIRED_CASES,
     *g12.CASES,
+    g12.CUSTODY_CASE,
     *PHYSICAL_LIVE_CASES,
     *BINDING_CASES,
     (
@@ -73,6 +74,7 @@ REQUIRED_CASES = (
     *base.REQUIRED_CASES,
     *live_cases.REQUIRED_CASES,
     *g12.CASES,
+    g12.CUSTODY_CASE,
     *PHYSICAL_LIVE_CASES,
     *BINDING_CASES,
     SUCCESSOR_CASES[-1],
@@ -150,6 +152,7 @@ def component_artifacts(mode, index):
         names.update(HISTORICAL_REPORTS)
     if requires_g12(mode, index):
         names.update((*historical57.REPORTS, *g12.REPORTS))
+        names.add(g12.CUSTODY_REPORT)
     if mode == "postgres":
         names.add("test-results/postgres-progress.log")
     return names
@@ -173,6 +176,7 @@ def current_observations(root, source):
 
 
 def extra_observations(root, identity, files):
+    from scripts.current0058_profile_measurement_v1 import verify_custody_measurement
     from scripts.historical0057_on_current0058_observation_v1 import (
         verify_historical0057_components,
     )
@@ -185,14 +189,21 @@ def extra_observations(root, identity, files):
     return {
         "historical0057": verify_historical0057_components(root, identity, files)
         if requires_g12(identity["suite"], index)
-        else None
+        else None,
+        "actual0058_g12_custody": verify_custody_measurement(
+            _read(root, g12.CUSTODY_REPORT, 32_768),
+            source=g12.source_identity(identity, files, canonical(files)),
+        )
+        if requires_g12(identity["suite"], index)
+        else None,
     }
 
 
 def union_extras(verified, mode, index):
     historical = verified["historical0057"]
+    custody = verified["actual0058_g12_custody"]
     if not requires_g12(mode, index):
-        _need(historical is None)
+        _need(historical is None and custody is None)
         return {}
     _need(
         type(historical) is dict
@@ -205,7 +216,15 @@ def union_extras(verified, mode, index):
         and historical["source"].get("source_head") == HEAD
         and historical["source"].get("database_head") == "0057"
     )
-    return {"historical0057": historical}
+    _need(
+        type(custody) is dict
+        and custody.get("database_head") == HEAD
+        and type(custody.get("source")) is dict
+        and custody["source"].get("source_head") == HEAD
+        and custody.get("execution_authority") is False
+        and custody.get("trading_acceptance") is False
+    )
+    return {"historical0057": historical, "actual0058_g12_custody": custody}
 
 
 def measurement_environment(mode, index):

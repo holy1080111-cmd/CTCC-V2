@@ -131,6 +131,14 @@ def components(tmp_path, monkeypatch):
             }
             if contract.requires_g12(mode, index)
             else None,
+            "actual0058_g12_custody": {
+                "database_head": "0058",
+                "source": {"source_head": "0058"},
+                "execution_authority": False,
+                "trading_acceptance": False,
+            }
+            if contract.requires_g12(mode, index)
+            else None,
             "actual0058_profiles": [dict(fake_observation)]
             if contract.requires_g12(mode, index)
             else [],
