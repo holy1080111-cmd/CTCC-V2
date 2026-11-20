@@ -861,10 +861,23 @@ class PublicJournal0058:
 
     async def journal_data_readback(self, expected_state):
         """Actual query/projection smoke only; no signed selector is replaced."""
+        from app.core.native_role_witness_0056_v1 import (
+            observe_restricted_native_roles_0056_witness_v1,
+        )
         from app.demo_automation import native_journal_readout_v1 as readout
+        from app.domain import native_database_profile_v1 as profiles
 
-        async with self.selected.writer_factory() as session, session.begin():
-            await _settings(session)
+        roles = await observe_restricted_native_roles_0056_witness_v1(
+            self.selected, source=readout.database._SOURCE, profile=profiles.DB0058
+        )
+        factory, engine, names, route = readout._local_writer_pins_v1(self.selected)
+        async with (
+            factory() as session,
+            session.begin(),
+            readout.database._verified_terminal_writer(
+                session, engine, roles, names, route, profile=profiles.DB0058
+            ),
+        ):
             head = await session.scalar(
                 text("SELECT version_num FROM public.alembic_version")
             )

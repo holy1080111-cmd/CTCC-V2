@@ -165,7 +165,35 @@ async def test_actual0058_restricted_demo_profile_retains_full_graph_and_protect
         await held.recheck_catalog()
     # Dedicated producer re-observes the actual source-bound PG17/TLS graph;
     # optional emission does not alter this test's assertion or admission.
+    # Execute the actual journal route helper and restricted writer verifier,
+    # not only its SELECT or a mocked context. This lab has a stopped synthetic
+    # scope and no reservations; local empty DATA is not exchange flatness.
+    from app.demo_automation import native_journal_readout_v1 as journal
     from scripts.current0058_profile_measurement_v1 import record_profile_if_requested
+
+    factory, engine, names, route = journal._local_writer_pins_v1(selected)
+    async with (
+        factory() as session,
+        session.begin(),
+        journal.database._verified_terminal_writer(
+            session, engine, roles, names, route, profile=profiles.DB0058
+        ),
+    ):
+        raw = dict(
+            (
+                await session.execute(
+                    journal._QUERY, {"uid": scope.account_id, "limit": 20}
+                )
+            )
+            .mappings()
+            .one()
+        )
+        view = journal._readout(raw, uid=scope.account_id, head="0058", limit=20)
+        assert view.total_native == view.unresolved_native == view.unresolved_other == 0
+        assert (
+            view.entries == ()
+            and view.account_complete is view.execution_authority is False
+        )
 
     await record_profile_if_requested(owner, selected, case=request.node.name)
 

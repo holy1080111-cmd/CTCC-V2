@@ -132,3 +132,33 @@ def test_query_is_one_scoped_statement_with_no_order_or_database_mutation():
 
 def test_new_readout_compiled_source_guard_has_no_submission_capability():
     journal._NATIVE_GUARD()
+
+
+def test_writer_route_uses_direct_tls_pin_and_never_the_factory_identity_tuple(
+    monkeypatch,
+):
+    # Mock DATA routing only. Actual restricted TLS/catalog verification runs
+    # separately in the public58 PostgreSQL cases, without patched observers.
+    selected, factory, engine = object(), object(), object()
+    names = ("synthetic_writer", "synthetic_custody", "synthetic_reader")
+    factory_routes = (("factory-w",), ("factory-c",), ("factory-r",))
+    direct_route = ("postgresql+asyncpg", "declared-db", 5432, "declared-db")
+    calls = []
+
+    def factories(value):
+        assert value is selected
+        calls.append("factory-identity")
+        return factory, engine, names, factory_routes
+
+    def direct(value):
+        assert value is engine
+        calls.append("direct-tls-route")
+        return direct_route
+
+    with monkeypatch.context() as patch:
+        patch.setattr(journal.database, "_factory_pins", factories)
+        patch.setattr(journal.database.locked, "_direct_tls_route", direct)
+        actual = journal._local_writer_pins_v1(selected)
+    assert actual == (factory, engine, names, direct_route)
+    assert actual[3] is direct_route and actual[3] is not factory_routes
+    assert calls == ["factory-identity", "direct-tls-route"]

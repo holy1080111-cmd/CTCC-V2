@@ -79,6 +79,13 @@ def _readout(raw, *, uid, head, limit):
     return NativeJournalReadoutV1.model_validate_json(canonical(value), strict=True)
 
 
+def _local_writer_pins_v1(factories):
+    """Factory identity pins and direct database route have distinct contracts."""
+    factory, engine, names, _factory_routes = database._factory_pins(factories)
+    route = database.locked._direct_tls_route(engine)
+    return factory, engine, names, route
+
+
 async def read_native_journal_for_service_v1(service, *, limit, operator_token):
     """One operator-requested signed GET, then bounded scoped local SELECT only.
 
@@ -122,7 +129,7 @@ async def read_native_journal_for_service_v1(service, *, limit, operator_token):
                 selected = selectors._record(selection)
                 factories = selection.factories
                 uid = selection.scope_config.expected_uid
-                factory, engine, names, routes = database._factory_pins(factories)
+                factory, engine, names, route = _local_writer_pins_v1(factories)
                 _need(factory is service.repository.session_factory)
                 async with (
                     factory() as session,
@@ -132,7 +139,7 @@ async def read_native_journal_for_service_v1(service, *, limit, operator_token):
                         engine,
                         selection.source_roles_0056,
                         names,
-                        routes,
+                        route,
                         **profiles.arguments(profile),
                     ),
                 ):
