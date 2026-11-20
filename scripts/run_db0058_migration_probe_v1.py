@@ -98,6 +98,18 @@ def need(value):
         raise ValueError("db0058_migration_probe_identity_refused") from None
 
 
+def verify_required_data_report(path):
+    report = shared.verify_pytest_report(
+        path, required_cases=REQUIRED_CASES, allow_unrelated_skips=False
+    )
+    need(
+        report["tests"] == len(REQUIRED_CASES)
+        and report["passed"] == report["tests"]
+        and report["skipped"] == 0
+    )
+    return report
+
+
 def admit_archive(args):
     need(
         not args.archive.is_symlink()
@@ -381,16 +393,7 @@ def run_probe(args, raw, files, root):
                 extra_environment=tls.pytest_environment,
                 timeout=900,
             )
-            report = shared.verify_pytest_report(
-                results / "live-ledger-data.xml",
-                required_cases=REQUIRED_CASES,
-                allow_unrelated_skips=False,
-            )
-            need(
-                report["tests"] == 17
-                and report["passed"] == report["tests"]
-                and report["skipped"] == 0
-            )
+            report = verify_required_data_report(results / "live-ledger-data.xml")
             state["tests"] = report
             state["probe"] = "PASS"
     except Exception as error:

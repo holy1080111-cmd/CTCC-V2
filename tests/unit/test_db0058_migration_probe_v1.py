@@ -92,13 +92,11 @@ def test_parameterized_caps_each_require_their_own_passed_junit_case(tmp_path, o
     path = tmp_path / "DECLARED_SYNTHETIC_CAP_RESULTS.xml"
     path.write_bytes(ET.tostring(root, encoding="utf-8", xml_declaration=True))
     if omitted is None:
-        checked = probe.shared.verify_pytest_report(
-            path, required_cases=probe.REQUIRED_CASES
-        )
+        checked = probe.verify_required_data_report(path)
         assert checked["tests"] == checked["passed"] == 28
     else:
         # All retained cases pass; a missing single NULL/NaN/cap case still fails.
         with pytest.raises(
             ValueError, match="^pytest_required_execution_not_verified$"
         ):
-            probe.shared.verify_pytest_report(path, required_cases=probe.REQUIRED_CASES)
+            probe.verify_required_data_report(path)
