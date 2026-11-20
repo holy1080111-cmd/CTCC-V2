@@ -301,7 +301,11 @@ async def _locked(
         and replay.purpose == "clear_stop"
         and not point.known_flat
     ):
-        legacy_clear.stopped_checkpoint(point.document_json)
+        singleton = await _legacy_singleton(session)
+        if singleton.control_revision == 1:
+            legacy_clear.stopped_checkpoint(point.document_json)
+        else:
+            legacy_clear.restart_stopped_checkpoint(point.document_json)
         _flat(replay, point, stopped_singleton=True)
     else:
         _flat(replay, point)
@@ -586,6 +590,10 @@ class _ColdLegacyClear:
     before: bytes = field(repr=False)
     after: bytes = field(repr=False)
 
+    @property
+    def action(self):
+        return legacy_clear.ACTION
+
     def proof(self, replay):
         return legacy_clear.receipt(
             event=self.origin_event,
@@ -595,6 +603,30 @@ class _ColdLegacyClear:
             clear_at=self.cleared_at,
             before=self.before,
             after=self.after,
+        )
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class _RestartLegacyClear:
+    cleared_at: datetime
+    before: bytes = field(repr=False)
+    after: bytes = field(repr=False)
+    singleton_before: bytes = field(repr=False)
+    singleton_after: bytes = field(repr=False)
+
+    @property
+    def action(self):
+        return legacy_clear.RESTART_ACTION
+
+    def proof(self, replay):
+        return legacy_clear.restart_receipt(
+            before=self.before,
+            after=self.after,
+            singleton_before=self.singleton_before,
+            singleton_after=self.singleton_after,
+            clear_at=self.cleared_at,
+            acquired_event=replay.previous_control_event_sha256,
+            lineage=replay.lineage.lineage_sha256,
         )
 
 
@@ -672,19 +704,101 @@ async def _clear_cold_legacy(session, source, ledger, held, scope_row, previous)
     return point, proof
 
 
+async def _clear_restarted_legacy(session, source, ledger, held, scope_row, previous):
+    replay = source()
+    if (
+        held is None
+        or replay.purpose != "clear_stop"
+        or previous.known_flat
+        or type(replay._owned_mirror_checkpoint_0056) is not bytes
+        or previous.document_json != replay._owned_mirror_checkpoint_0056
+    ):
+        _deny("control56_restart_legacy_clear_original_source_required")
+    legacy_clear.restart_stopped_checkpoint(previous.document_json)
+    before = await _legacy_singleton(session)
+    held.check()
+    replay = source()
+    now = control.utc(await session.scalar(_DB_TIME))
+    held.check()
+    replay = source()
+    before_raw = legacy_clear.restart_snapshot(before, now=now)
+    original = legacy_clear.restart_cas_values(before)
+    lineage = await DemoControlRepositoryV2.verify_historical_binding(
+        session, replay.previous_control, replay.previous_control_event_sha256
+    )
+    held.check()
+    replay = source()
+    legacy_clear.verify_restart_origin(lineage, before_raw)
+    if not replay.previous_control.updated_at <= now < replay.expires_at:
+        _deny("control56_restart_legacy_clear_clock_changed")
+    # Both the singleton row and its complete original image are fenced. A
+    # recovery/CAS race cannot clear a different revision or erase history.
+    predicates = tuple(
+        getattr(DemoAutomationState, name).is_(None)
+        if value is None
+        else getattr(DemoAutomationState, name) == value
+        for name, value in original.items()
+    )
+    values = legacy_clear.restart_cleared_values(before_raw, at=now)
+    changed = await session.scalar(
+        update(DemoAutomationState)
+        .where(*predicates)
+        .values(**values)
+        .returning(DemoAutomationState.control_revision)
+        .execution_options(synchronize_session=False)
+    )
+    held.check()
+    replay = source()
+    if changed != original["control_revision"] + 1:
+        _deny("control56_restart_legacy_clear_CAS_changed")
+    after_raw = legacy_clear.exact_restart_cleared(
+        await _legacy_singleton(session), before=before_raw, clear_at=now
+    )
+    held.check()
+    replay = source()
+    point = await ledger._read_portfolio_checkpoint_locked(
+        session, replay.scope, scope_row, _held0056=held
+    )
+    held.check()
+    replay = source()
+    _flat(replay, point)
+    proof = _RestartLegacyClear(
+        now, previous.document_json, point.document_json, before_raw, after_raw
+    )
+    proof.proof(replay)
+    return point, proof
+
+
+async def _clear_stopped_legacy(session, source, ledger, held, scope_row, previous):
+    singleton = await _legacy_singleton(session)
+    if held is not None:
+        held.check()
+    source()
+    clear = (
+        _clear_cold_legacy
+        if singleton.control_revision == 1
+        else _clear_restarted_legacy
+    )
+    return await clear(session, source, ledger, held, scope_row, previous)
+
+
 def _legacy_audit_documents(proof, replay):
-    return (
+    documents = (
         {"checkpoint_json": proof.before.decode("ascii")},
         {
             "checkpoint_json": proof.after.decode("ascii"),
             "receipt_json": proof.proof(replay).decode("ascii"),
         },
     )
+    if type(proof) is _RestartLegacyClear:
+        documents[0]["singleton_json"] = proof.singleton_before.decode("ascii")
+        documents[1]["singleton_json"] = proof.singleton_after.decode("ascii")
+    return documents
 
 
 async def _verify_legacy_audit(session, replay, ack, proof, point):
     predicate = (
-        AuditLog.action == legacy_clear.ACTION,
+        AuditLog.action == proof.action,
         AuditLog.resource_type == legacy_clear.RESOURCE,
         AuditLog.resource_id == ack.ack_sha256,
     )
@@ -722,13 +836,30 @@ async def _verify_legacy_audit(session, replay, ack, proof, point):
         != journal.digest(proof.proof(replay))
     ):
         _deny("control56_cold_legacy_clear_audit_changed")
-    legacy_clear.exact_cleared(
-        await _legacy_singleton(session),
-        created_at=proof.created_at,
-        clear_at=proof.cleared_at,
-        event=proof.origin_event,
-    )
-    await _verify_legacy_origin(session, replay, proof.origin_event, proof.created_at)
+    if type(proof) is _ColdLegacyClear:
+        legacy_clear.exact_cleared(
+            await _legacy_singleton(session),
+            created_at=proof.created_at,
+            clear_at=proof.cleared_at,
+            event=proof.origin_event,
+        )
+        await _verify_legacy_origin(
+            session, replay, proof.origin_event, proof.created_at
+        )
+    elif type(proof) is _RestartLegacyClear:
+        actual = legacy_clear.exact_restart_cleared(
+            await _legacy_singleton(session),
+            before=proof.singleton_before,
+            clear_at=proof.cleared_at,
+        )
+        if actual != proof.singleton_after:
+            _deny("control56_restart_legacy_clear_audit_changed")
+        lineage = await DemoControlRepositoryV2.verify_historical_binding(
+            session, replay.previous_control, replay.previous_control_event_sha256
+        )
+        legacy_clear.verify_restart_origin(lineage, proof.singleton_before)
+    else:
+        _deny("control56_legacy_clear_actual_proof_required")
 
 
 def _make_store_clear_v1():
@@ -927,7 +1058,7 @@ def _make_entry_v1():
                     source()
                     legacy_proof = None
                     if not point.known_flat:
-                        point, legacy_proof = await _clear_cold_legacy(
+                        point, legacy_proof = await _clear_stopped_legacy(
                             session, source, ledger, held, scope_row, point
                         )
                         source()
@@ -976,7 +1107,7 @@ def _make_entry_v1():
                             session.add(
                                 AuditLog(
                                     actor=legacy_clear.ACTOR,
-                                    action=legacy_clear.ACTION,
+                                    action=legacy_proof.action,
                                     resource_type=legacy_clear.RESOURCE,
                                     resource_id=pin,
                                     before=before,
