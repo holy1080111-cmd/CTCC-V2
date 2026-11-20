@@ -175,6 +175,43 @@ def test_reviewed_native_scalar_column_outputs_are_closed_and_supported(oid):
     assert subject._checked_layouts((_layouts()[0], tuple(row)), _expected(), 30)
 
 
+def test_source56_identity_columns_keep_builtin_oid_output_without_a_custom_type_fallback():
+    import ast
+    import re
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "migrations"
+        / "versions"
+        / "0056_gate3_fitted_candidate_custody.py"
+    )
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    tables = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_tables"
+    )
+    declarations = []
+    for node in ast.walk(tables):
+        if isinstance(node, ast.Constant) and type(node.value) is str:
+            declarations.extend(
+                re.findall(
+                    r"\b(publisher_oid|observer_oid|evaluator_oid) OID NOT NULL\b",
+                    node.value,
+                )
+            )
+    assert set(declarations) == {"publisher_oid", "observer_oid", "evaluator_oid"}
+    row = list(_layouts()[1])
+    row[-1] = [[name, 26, -1, True, 0, "", ""] for name in sorted(declarations)]
+    actual = subject._checked_layouts((_layouts()[0], tuple(row)), _expected(), 30)
+    assert actual
+    changed = list(row)
+    changed[-1] = [["publisher_oid", 999999, -1, True, 0, "", ""]]
+    with pytest.raises(subject.RetainedRowsV2Refused):
+        subject._checked_layouts((_layouts()[0], tuple(changed)), _expected(), 30)
+
+
 def test_every_json_and_aggregate_call_in_shared_sql_is_explicitly_pg_catalog_bound():
     import re
 

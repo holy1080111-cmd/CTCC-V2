@@ -23,6 +23,7 @@ _NATIVE_SCALAR_OIDS = frozenset(
         21,
         23,
         25,
+        26,  # pg_catalog.oid: reviewed55/56 publisher/observer/role identities.
         114,
         700,
         701,
