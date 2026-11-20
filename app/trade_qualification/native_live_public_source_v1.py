@@ -112,6 +112,51 @@ CLOSE_POLICY_BYTES = canonical(
     }
 )
 CLOSE_POLICY_SHA256 = sha(CLOSE_POLICY_BYTES)
+STAGED_POLICY_BYTES = canonical(
+    {
+        "schema_version": "ctcc.native_live.post_g12_staged_public_policy.v2",
+        "ancestor_policy_sha256": POLICY_SHA256,
+        "purpose": "post_g12",
+        "sequence": ["original_publication", "ohlc", "fresh_account", "mutable_public"],
+        "original_candidate_preserved": True,
+        "one_use_same_task_stage": True,
+        "original_expiry_preserved": True,
+        "bar_rollover": "deny",
+        "execution_authority": False,
+    }
+)
+STAGED_POLICY_SHA256 = sha(STAGED_POLICY_BYTES)
+_ACCOUNT_READY_KEY_V2 = object()
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class LiveStagedAccountReadyV2:
+    """DATA from the fixed coordinator after its new source has been replayed."""
+
+    invocation: object
+    source_owner: object
+    completed: ClockStamp
+    source_revision_sha256: str
+    execution_authority: bool = field(default=False, init=False)
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class LivePublicOHLCStageDataV2:
+    """Incomplete public DATA; deliberately has no quote or MarketSnapshot."""
+
+    invocation: object
+    report_id: str
+    instrument_id: str
+    candidate_sha256: str
+    publication_barrier: ClockStamp
+    publication_receipt_sha256: str
+    completed: ClockStamp
+    candles: candles.CollectedCandles
+    raw_files: tuple[LivePublicRawFileV1, ...]
+    plan_sha256: str
+    prefix_sha256: str
+    execution_authority: bool = field(default=False, init=False)
+    public_complete: bool = field(default=False, init=False)
 
 
 @dataclass(frozen=True, slots=True, repr=False)
