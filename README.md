@@ -35,12 +35,15 @@ Core planning index: [CTCC core master — 123 project discussion](docs/ctcc_cor
 This separates the integrated target design from implemented, validated, and
 deployed capability; it does not enable trading.
 
-This working branch currently refuses new Demo and Live entries at the HTTP
-transport boundary. The new qualified one-shot authority is not ready. Enabling
-configuration flags or completing the legacy Arm procedure cannot bypass that
-containment. Read and reconciliation paths remain available. Cancel and close
-code is preserved, but the current shared transport also refuses those
-exchange writes; it must not be described as an available recovery action.
+The legacy application refuses new Demo and Live entries at its shared HTTP
+transport boundary. The dedicated manual tools use their own source-owned
+qualification and one-shot execution boundaries; their final combined validation
+and installed activation remain pending. Configuration flags and the legacy Arm
+procedure cannot bypass the shared transport's containment. Its read and
+reconciliation paths remain available, while its cancel and close writes also
+remain refused. The dedicated Live tool's separately confirmed controlled close
+and fresh read-only restart recovery are documented in the
+[manual tool guide](docs/native_live_manual_tool_v1.md).
 Legacy Demo automation can still display a locally armed state after its old
 flat checks without observing all-currency qualification reservations or
 unresolved intents. That display is not a qualified execution permit.
