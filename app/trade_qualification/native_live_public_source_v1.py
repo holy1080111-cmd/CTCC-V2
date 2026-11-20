@@ -439,70 +439,63 @@ def _inventory(directory):
 
 
 def _audit(raw_root, *, root_identity, plan_sha256, journal_sha256, params, not_before):
-    replayed = production.read_global_public_capture_v1(
+    readback = production._read_global_public_capture_audit_v2(
         raw_root,
         expected_plan_sha256=plan_sha256,
         expected_journal_sha256=journal_sha256,
         expected_root_identity=root_identity,
     )
+    _need(type(readback) is production._GlobalPublicReplayReadbackV2)
+    replayed = readback.capture
     _need(
         type(replayed) is production.GlobalPublicCaptureV1
         and replayed.code == "initial_global_public_replayed"
     )
-    with transport._reopen_runtime_journal(raw_root) as directory:
-        plan_raw, summary_raw = (
-            directory.read("plan.json", journal.MAX_RAW),
-            directory.read("summary.json", journal.MAX_RAW),
+    plan_raw, summary_raw = readback.plan_json, readback.summary_json
+    _need(sha(plan_raw) == plan_sha256 and sha(summary_raw) == journal_sha256)
+    summary, events, packet = readback.summary, readback.events, replayed.packet
+    plan = decode(plan_raw, journal.MAX_RAW)
+    _need(
+        plan["schema_version"]
+        == (
+            journal.GLOBAL_STAGED_PLAN
+            if params.public_policy_sha256 == STAGED_POLICY_SHA256
+            else journal.GLOBAL_INITIAL_PLAN
         )
-        _need(sha(plan_raw) == plan_sha256 and sha(summary_raw) == journal_sha256)
-        summary, events, packet = transport.replay_public_runtime(
-            directory, expected_plan_sha256=plan_sha256
-        )
-        plan = decode(plan_raw, journal.MAX_RAW)
-        _need(
-            plan["schema_version"]
-            == (
-                journal.GLOBAL_STAGED_PLAN
-                if params.public_policy_sha256 == STAGED_POLICY_SHA256
-                else journal.GLOBAL_INITIAL_PLAN
-            )
-            and plan["environment"] == journal.GLOBAL_ENVIRONMENT
-            and plan["instrument_id"] == params.instrument_id
-            and plan["policy_sha256"] == _WIRE_POLICY_SHA256
-            and plan["global_route_sha256"] == journal.GLOBAL_ROUTE_SHA256
-        )
-        if params.public_policy_sha256 == STAGED_POLICY_SHA256:
-            _need(plan["original_publication"] == _original_staged_binding(params))
-        _after(plan["invocation_started"], not_before)
-        starts = []
-        for event in events:
-            if event["kind"] in {"request", "ws_connect"}:
-                stamp = _stamp(event["metadata"]["started"])
-                _after(stamp, not_before)
-                starts.append((event["kind"], stamp))
-        _need(
-            any(kind == "request" for kind, _ in starts)
-            and sum(kind == "ws_connect" for kind, _ in starts) == 1
-        )
-        _need(
-            type(packet) is production.GlobalPublicComponentPacketV1
-            and packet.packet_json == replayed.packet.packet_json
-        )
-        _need(
-            packet.environment == journal.GLOBAL_ENVIRONMENT
-            and packet.rest_origin == journal.GLOBAL_REST_ORIGIN
-            and packet.ws_origin == journal.GLOBAL_WS_ORIGIN
-            and packet.barrier_completed_at is None
-        )
-        _need(
-            tuple(frame.timeframe for frame in packet.candles.frames)
-            == candles.TIMEFRAMES
-        )
-        files, inventory_sha256, size = _inventory(directory)
-        _need(
-            directory.read("plan.json", journal.MAX_RAW) == plan_raw
-            and directory.read("summary.json", journal.MAX_RAW) == summary_raw
-        )
+        and plan["environment"] == journal.GLOBAL_ENVIRONMENT
+        and plan["instrument_id"] == params.instrument_id
+        and plan["policy_sha256"] == _WIRE_POLICY_SHA256
+        and plan["global_route_sha256"] == journal.GLOBAL_ROUTE_SHA256
+    )
+    if params.public_policy_sha256 == STAGED_POLICY_SHA256:
+        _need(plan["original_publication"] == _original_staged_binding(params))
+    _after(plan["invocation_started"], not_before)
+    starts = []
+    for event in events:
+        if event["kind"] in {"request", "ws_connect"}:
+            stamp = _stamp(event["metadata"]["started"])
+            _after(stamp, not_before)
+            starts.append((event["kind"], stamp))
+    _need(
+        any(kind == "request" for kind, _ in starts)
+        and sum(kind == "ws_connect" for kind, _ in starts) == 1
+    )
+    _need(type(packet) is production.GlobalPublicComponentPacketV1)
+    _need(
+        packet.environment == journal.GLOBAL_ENVIRONMENT
+        and packet.rest_origin == journal.GLOBAL_REST_ORIGIN
+        and packet.ws_origin == journal.GLOBAL_WS_ORIGIN
+        and packet.barrier_completed_at is None
+    )
+    _need(
+        tuple(frame.timeframe for frame in packet.candles.frames) == candles.TIMEFRAMES
+    )
+    # The same original lexical read already independently reopened/hashed ALL
+    # files after full semantics. This bounded immutable byte view changes no
+    # source/receipt/clock fields and is never retained as an ownership permit.
+    files, inventory_sha256, size = _inventory(
+        production._FrozenGlobalRawV2(readback.raw_files)
+    )
     _need(transport._native_recheck_root_identity(raw_root) == root_identity)
     return replayed, plan, summary, packet, files, inventory_sha256, size, tuple(starts)
 

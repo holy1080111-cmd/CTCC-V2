@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 from threading import get_ident
+from types import MappingProxyType
 from typing import Literal
 from uuid import uuid4
 from weakref import WeakKeyDictionary
@@ -353,6 +354,95 @@ class GlobalPublicCaptureV1:
     qualification_performed: Literal[False] = field(default=False, init=False)
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class _GlobalPublicReplayReadbackV2:
+    """One synchronous read's DATA, never retained capture/entry authority."""
+
+    capture: GlobalPublicCaptureV1
+    plan_json: bytes
+    summary_json: bytes
+    summary: dict
+    events: tuple
+    raw_files: tuple[tuple[str, bytes], ...]
+
+
+@dataclass(frozen=True, slots=True, init=False, repr=False)
+class _FrozenGlobalRawV2:
+    """A bounded byte view, with no filesystem/network fallback or capability."""
+
+    _files: MappingProxyType
+    _names: tuple[str, ...]
+
+    def __init__(self, files):
+        if (
+            type(files) is not tuple
+            or not 2 <= len(files) <= 2 * journal.MAX_EVENTS + 2
+        ):
+            raise GlobalPublicCaptureError("global_public_raw_snapshot_invalid")
+        values, total = {}, 0
+        for item in files:
+            if (
+                type(item) is not tuple
+                or len(item) != 2
+                or type(item[0]) is not str
+                or type(item[1]) is not bytes
+                or item[0] in values
+                or len(item[1]) > journal.MAX_RAW
+            ):
+                raise GlobalPublicCaptureError("global_public_raw_snapshot_invalid")
+            values[item[0]] = item[1]
+            total += len(item[1])
+            if total > journal.MAX_TOTAL:
+                raise GlobalPublicCaptureError("global_public_raw_snapshot_invalid")
+        object.__setattr__(self, "_files", MappingProxyType(values))
+        object.__setattr__(self, "_names", tuple(values))
+
+    def names(self):
+        return self._names
+
+    def read(self, name, maximum):
+        if (
+            type(name) is not str
+            or name not in self._files
+            or type(maximum) is not int
+            or maximum < 0
+            or len(self._files[name]) > maximum
+        ):
+            raise GlobalPublicCaptureError("global_public_raw_snapshot_invalid")
+        return self._files[name]
+
+
+def _read_global_raw_bank_v2(directory):
+    names = tuple(directory.names())
+    if (
+        not 2 <= len(names) <= 2 * journal.MAX_EVENTS + 2
+        or any(type(name) is not str for name in names)
+        or len(set(names)) != len(names)
+        or len({name.casefold() for name in names}) != len(names)
+        or not {"plan.json", "summary.json"}.issubset(names)
+    ):
+        raise GlobalPublicCaptureError("global_public_raw_snapshot_invalid")
+    files, total = [], 0
+    for name in sorted(names):
+        if (
+            name not in {"plan.json", "summary.json"}
+            and re.fullmatch(r"event-[0-9]{4}\.(json|raw)", name) is None
+        ):
+            raise GlobalPublicCaptureError("global_public_raw_snapshot_invalid")
+        raw = directory.read(name, journal.MAX_RAW)
+        if type(raw) is not bytes or len(raw) > journal.MAX_RAW:
+            raise GlobalPublicCaptureError("global_public_raw_snapshot_invalid")
+        total += len(raw)
+        if total > journal.MAX_TOTAL:
+            raise GlobalPublicCaptureError("global_public_raw_snapshot_invalid")
+        files.append((name, raw))
+    if tuple(sorted(directory.names())) != tuple(sorted(names)):
+        raise GlobalPublicCaptureError("global_public_journal_readback_changed")
+    return tuple(files), sha(
+        canonical([[name, len(raw), sha(raw)] for name, raw in files])
+    )
+
+
 def _post_readback_receipt(
     *,
     instrument_id: str,
@@ -461,6 +551,26 @@ def read_global_public_capture_v1(
     expected_root_identity: tuple[int, int] | None = None,
 ):
     """Reopen exact original bytes; audit data cannot issue another capture."""
+    return _read_global_public_capture_audit_v2(
+        root,
+        expected_plan_sha256=expected_plan_sha256,
+        expected_journal_sha256=expected_journal_sha256,
+        expected_root_identity=expected_root_identity,
+    ).capture
+
+
+def _read_global_public_capture_audit_v2(
+    root,
+    *,
+    expected_plan_sha256,
+    expected_journal_sha256,
+    expected_root_identity: tuple[int, int] | None = None,
+):
+    """One lexical read: immutable raw bank, one full replay, full disk recheck.
+
+    No reader/result is stored in a registry, accepted from a caller or reused
+    across an await. Both returned DATA views derive from this original read.
+    """
     if (
         type(root) is not type(Path())
         or not root.is_absolute()
@@ -491,35 +601,41 @@ def read_global_public_capture_v1(
                     )
             if runtime._native_recheck_root_identity(root) != identity:
                 raise GlobalPublicCaptureError("global_public_journal_readback_changed")
-            plan = directory.read("plan.json", journal.MAX_RAW)
-            summary = directory.read("summary.json", journal.MAX_RAW)
+            files, bank_sha256 = _read_global_raw_bank_v2(directory)
+            frozen = _FrozenGlobalRawV2(files)
+            plan = frozen.read("plan.json", journal.MAX_RAW)
+            summary = frozen.read("summary.json", journal.MAX_RAW)
             if (
                 sha(plan) != expected_plan_sha256
                 or sha(summary) != expected_journal_sha256
             ):
                 raise GlobalPublicCaptureError("global_public_journal_pin_changed")
-            result, _, packet = runtime.replay_public_runtime(
-                directory, expected_plan_sha256=expected_plan_sha256
+            result, events, packet = runtime.replay_public_runtime(
+                frozen, expected_plan_sha256=expected_plan_sha256
             )
+            current_files, current_bank_sha256 = _read_global_raw_bank_v2(directory)
             if (
                 result["disposition"] != "captured"
                 or type(packet) is not GlobalPublicComponentPacketV1
                 or canonical(result) != summary
                 or packet.bundle_sha256 != result["packet_sha256"]
-                or directory.read("plan.json", journal.MAX_RAW) != plan
-                or directory.read("summary.json", journal.MAX_RAW) != summary
+                or current_files != files
+                or current_bank_sha256 != bank_sha256
                 or runtime._native_recheck_root_identity(root) != identity
             ):
                 raise GlobalPublicCaptureError("global_public_journal_readback_changed")
         if runtime._native_recheck_root_identity(root) != identity:
             raise GlobalPublicCaptureError("global_public_journal_readback_changed")
-        return GlobalPublicCaptureV1(
+        captured = GlobalPublicCaptureV1(
             "initial_global_public_replayed",
             expected_plan_sha256,
             expected_journal_sha256,
             packet,
             journal_completion_sample=ClockStamp.model_validate(result["completed"]),
             invocation_expires_at=journal._time(decode(plan)["expires_at"]),
+        )
+        return _GlobalPublicReplayReadbackV2(
+            captured, plan, summary, result, events, files
         )
     except Exception:  # noqa: BLE001 -- no private root or raw content escapes.
         raise GlobalPublicCaptureError("global_public_readback_unavailable") from None
