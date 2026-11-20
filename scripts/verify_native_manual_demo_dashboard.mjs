@@ -27,7 +27,8 @@ function response(value, status = 200, contentType = "application/json") {
 }
 function board() {
   const elements = new Map(ids.map(id => {
-    const element = {value:"", textContent:"", disabled:false, hidden:false, events:{},
+    const element = {value:"", textContent:"", disabled:false, hidden:false, events:{}, children:[],
+      replaceChildren(...items) { this.children = items; this.value = ""; },
       addEventListener(name, callback) { this.events[name] = callback; }};
     Object.defineProperty(element, "innerHTML", {set() { throw Error("Unsafe HTML write"); }});
     return [id,element];
@@ -35,7 +36,8 @@ function board() {
   const calls = [];
   const queue = [];
   const context = vm.createContext({
-    document:{getElementById(id) { assert.ok(elements.has(id), id); return elements.get(id); }},
+    document:{getElementById(id) { assert.ok(elements.has(id), id); return elements.get(id); },
+      createElement(tag) { assert.equal(tag,"option"); return {value:"",textContent:""}; }},
     fetch:async (path, options) => {
       assert.ok(path.startsWith("/api/demo-automation/"));
       assert.equal(options.credentials, "omit");
@@ -222,6 +224,35 @@ try {
     assert.ok(!view.get("statusDetail").textContent.includes(token));
     assert.equal(view.get("token").value,"");
     assert.equal(view.get("armExecute").disabled,true);
+  });
+  await check("native_journal_finds_lost_id_and_keeps_other_unresolved_work_blocked", async () => {
+    const view = board(); await view.authenticate(); await view.refresh();
+    assert.equal(view.get("entryHold").disabled,false);
+    const id = "a".repeat(64);
+    view.queue.push(response({schema_version:"ctcc.native_journal_readout.v1",database_head:"0058",account_binding_sha256:"b".repeat(64),limit:100,total_native:1,unresolved_native:1,unresolved_other:1,truncated:false,entries:[{reservation_id:id,instrument_id:"BTC-USDT-SWAP",direction:"long",local_state:"uncertain",protection_status:"NOT_RECHECKED"}],account_complete:false,execution_authority:false,order_retry_authority:false}));
+    await view.fire("loadJournal");
+    assert.equal(view.calls.at(-1).method,"GET");
+    assert.equal(view.calls.at(-1).path,"/api/demo-automation/native/journal?limit=100");
+    assert.equal(view.get("journalSelection").children.length,2);
+    view.get("journalSelection").value = id;
+    await view.fire("journalSelection","change");
+    assert.equal(view.get("reservation").value,id);
+    assert.equal(view.get("reconcile").disabled,false);
+    assert.equal(view.get("entryHold").disabled,true);
+    await view.refresh();
+    assert.equal(view.get("entryHold").disabled,true);
+    assert.ok(view.calls.every(call => call.method === "GET"));
+  });
+  await check("failed_journal_is_unknown_not_an_empty_safe_account", async () => {
+    const view = board(); await view.authenticate(); await view.refresh();
+    view.queue.push(response({entries:[]}));
+    await view.fire("loadJournal");
+    assert.equal(view.get("entryHold").disabled,true);
+    assert.ok(view.get("journalMessage").textContent.includes("未知"));
+    await view.refresh();
+    assert.equal(view.get("armExecute").disabled,true);
+    assert.equal(view.get("emergencyStop").disabled,false);
+    assert.ok(view.calls.every(call => call.method === "GET"));
   });
   const report = {schema:"ctcc.native_manual_demo.dashboard_dom.v1",status:"PASS",node_version:process.version,synthetic_dom_only:true,html_sha256:hash(html),script_sha256:hash(script),style_sha256:hash(style),scenarios:results,fixture_requests:totalRequests,external_requests:0,order_writes:0};
   fs.writeFileSync(reportPath,JSON.stringify(report,null,2)+"\n",{flag:"wx"});

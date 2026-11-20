@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 
 from app.api.security import require_ctcc_token
 from app.demo_automation import DemoAutomationBusyError, DemoAutomationSafetyError
+from app.demo_automation.native_journal_models_v1 import NativeJournalReadoutV1
 from app.demo_automation.native_requests_v2 import (
     NativeDemoActionResultV2,
     NativeDemoArmExecuteRequestV2,
@@ -60,6 +61,30 @@ async def automation_history(
     _: None = Depends(require_ctcc_token),
 ) -> list[DemoAutomationRunResult]:
     return await safe_demo_automation.history(limit)
+
+
+@router.get("/native/journal", response_model=NativeJournalReadoutV1)
+async def native_journal(
+    limit: int = Query(default=20, ge=1, le=100),
+    operator_token: str | None = Header(default=None, alias="X-CTCC-Token"),
+    _: None = Depends(require_ctcc_token),
+) -> NativeJournalReadoutV1:
+    await require_ctcc_token(operator_token)
+    try:
+        return await safe_demo_automation.native_journal_v1(
+            limit=limit, operator_token=operator_token
+        )
+    except HTTPException:
+        raise
+    except DemoAutomationBusyError:
+        raise HTTPException(
+            status_code=status.HTTP_423_LOCKED, detail="native_demo_run_in_progress"
+        ) from None
+    except Exception:  # noqa: BLE001 -- source/SQL/UID/credential details stay private.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="native_demo_journal_unavailable",
+        ) from None
 
 
 @router.post("/arm", response_model=DemoAutomationStatus)

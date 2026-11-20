@@ -398,6 +398,15 @@ class SafeDemoAutomation:
     async def history(self, limit: int = 20) -> list[DemoAutomationRunResult]:
         return list(self._history)[-max(1, limit) :]
 
+    async def native_journal_v1(self, *, limit, operator_token):
+        from app.demo_automation.native_journal_readout_v1 import (
+            read_native_journal_for_service_v1,
+        )
+
+        return await read_native_journal_for_service_v1(
+            self, limit=limit, operator_token=operator_token
+        )
+
     async def perform_native_action_v2(self, request, *, operator_token):
         if getattr(self.settings, "ctcc_native_only_lifespan_v1", False) is True:
             raise DemoAutomationSafetyError("native_only_dispatch_disabled")

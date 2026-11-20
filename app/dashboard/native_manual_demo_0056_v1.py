@@ -58,13 +58,15 @@ _SCRIPT = r"""
   let safetyBusy = false;
   let uncertain = false;
   let protectedHold = false;
+  let journalPending = null;
+  const journalBlocked = () => journalPending === 'unknown' || journalPending > 0;
   const positive = ['clearStop', 'initializeCounter', 'configureLeverage', 'armExecute', 'entryHold'];
   const token = () => el('token').value.trim();
   const exact = (id, phrase) => el(id).value === phrase;
   const ready = () => status && status.recovered === true && status.armed === false;
   function update() {
     const auth = token().length >= 32;
-    for (const id of positive) el(id).disabled = !auth || !ready() || busy || uncertain || protectedHold;
+    for (const id of positive) el(id).disabled = !auth || !ready() || busy || uncertain || protectedHold || journalBlocked();
     el('armExecute').disabled = el('armExecute').disabled || !config.execution_enabled || status.emergency_stop !== false || status.locked !== false;
     el('configureLeverage').disabled = el('configureLeverage').disabled || !config.execution_enabled || status.emergency_stop !== false || status.locked !== false;
     el('entryHold').disabled = el('entryHold').disabled || !config.execution_enabled || status.emergency_stop !== false || status.locked !== false;
@@ -73,6 +75,8 @@ _SCRIPT = r"""
     el('emergencyStop').disabled = !auth || safetyBusy;
     el('refresh').disabled = !auth;
     el('history').disabled = !auth;
+    el('loadJournal').disabled = !auth || busy;
+    el('journalSelection').disabled = !auth || busy;
     el('uncertain').hidden = !uncertain;
     el('progress').textContent = busy ? '處理中，請保留此頁。停止與緊急停止仍可使用。' : '等待手動操作';
   }
@@ -130,6 +134,24 @@ _SCRIPT = r"""
       return redacted(value,auth);
     } catch (_) { if (method === 'POST') latch(); throw Error('回覆格式無法確認。新增曝險維持鎖定，請對帳。'); }
   }
+  function renderJournal(value) {
+    const states = {reserved:'已預留，尚待核對',consumed:'已建立送出意圖',uncertain:'持倉或結果待核對',reconciled_flat:'本機已完成平倉對帳'};
+    if (!value || value.schema_version !== 'ctcc.native_journal_readout.v1' || !['0056','0057','0058'].includes(value.database_head) || !/^[a-f0-9]{64}$/.test(value.account_binding_sha256) || value.execution_authority !== false || value.order_retry_authority !== false || value.account_complete !== false || !Array.isArray(value.entries) || !Number.isInteger(value.limit) || value.limit < 1 || value.limit > 100 || ![value.total_native,value.unresolved_native,value.unresolved_other].every(n => Number.isSafeInteger(n) && n >= 0) || value.unresolved_native > value.total_native || value.entries.length !== Math.min(value.limit,value.total_native) || value.truncated !== (value.total_native > value.limit)) throw Error('本機紀錄回覆不完整，待處理狀態維持未知。');
+    const seen = new Set();
+    const options = [];
+    const placeholder = document.createElement('option'); placeholder.value = ''; placeholder.textContent = '請選擇要對帳的交易'; options.push(placeholder);
+    for (const row of value.entries) {
+      if (!row || !/^[a-f0-9]{64}$/.test(row.reservation_id) || seen.has(row.reservation_id) || !/^[A-Z0-9]{1,16}-USDT-SWAP$/.test(row.instrument_id) || !['long','short'].includes(row.direction) || !Object.hasOwn(states,row.local_state) || row.protection_status !== 'NOT_RECHECKED') throw Error('本機紀錄無法核對，請保持停止。');
+      seen.add(row.reservation_id);
+      const option = document.createElement('option'); option.value = row.reservation_id;
+      option.textContent = row.instrument_id + '｜' + (row.direction === 'long' ? '多' : '空') + '｜' + states[row.local_state] + '｜' + row.reservation_id.slice(0,12);
+      options.push(option);
+    }
+    el('journalSelection').replaceChildren(...options);
+    journalPending = value.unresolved_native + value.unresolved_other;
+    el('journalMessage').textContent = '本機待對帳 ' + journalPending + ' 筆。' + (value.unresolved_other ? '另含舊流程待處理紀錄，請保留停止並核對本機紀錄。' : '') + (value.truncated ? '目前顯示最新 ' + value.limit + ' 筆，待處理紀錄優先。' : '') + ' 保護與交易所持倉須另按對帳確認。';
+    update();
+  }
   function baseOrder() {
     const instrument_id = el('instrument').value;
     const strategy = el('strategy').value;
@@ -176,7 +198,7 @@ _SCRIPT = r"""
   }
   async function action(name, makeBody) {
     if (busy || (uncertain && name !== 'reconcile')) return;
-    if (name !== 'reconcile' && (protectedHold || !ready() || (['arm-execute','entry-hold','configure-leverage'].includes(name) && (!config.execution_enabled || status.emergency_stop !== false || status.locked !== false)))) {
+    if (name !== 'reconcile' && (protectedHold || journalBlocked() || !ready() || (['arm-execute','entry-hold','configure-leverage'].includes(name) && (!config.execution_enabled || status.emergency_stop !== false || status.locked !== false)))) {
       el('resultMessage').textContent = '請先重新讀取已恢復且未 Arm 的狀態，並完成必要設定。'; return;
     }
     let body;
@@ -215,6 +237,16 @@ _SCRIPT = r"""
   el('refresh').addEventListener('click',async () => {
     try { renderStatus(await request('/api/demo-automation/status')); }
     catch (error) { forgetStatus(); el('statusMessage').textContent = error.message; }
+  });
+  el('loadJournal').addEventListener('click',async () => {
+    if (busy) return;
+    try { renderJournal(await request('/api/demo-automation/native/journal?limit=100')); }
+    catch (error) { journalPending = 'unknown'; el('journalMessage').textContent = error.message; update(); }
+  });
+  el('journalSelection').addEventListener('change',() => {
+    const value = el('journalSelection').value;
+    if (/^[a-f0-9]{64}$/.test(value)) el('reservation').value = value;
+    update();
   });
   el('history').addEventListener('click',async () => {
     try { show('result',await request('/api/demo-automation/history?limit=20')); el('resultMessage').textContent = '已讀取近期紀錄。'; }
@@ -323,13 +355,13 @@ def render_manual_demo_dashboard_0056_v1(settings):
     )
     body = f"""<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CTCC · Demo 手動控制</title><style>{_STYLE}</style></head><body><main>
 <header><div><div class="eyebrow">CTCC V2 · LOCAL CONTROL</div><h1>Demo 手動控制</h1><p class="muted">讀取狀態、完成恢復，再手動執行一次。所有交易仍須通過完整驗證。</p></div><span class="pill">OKX 模擬交易</span></header>
-<section class="card"><h2><span class="step">01</span>連線與目前狀態</h2><label>本機 CTCC 操作權杖<input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="輸入本機私人設定中的操作權杖"></label><div class="row"><button id="refresh" disabled>讀取狀態</button><button id="history" class="secondary" disabled>近期紀錄</button><button id="forget" class="secondary">清除權杖</button><small>只保留於本頁記憶體，關閉或重新載入後需重輸。</small></div><div class="status-grid"><div><span>啟動恢復</span><strong id="recoveredState">未知</strong></div><div><span>Arm</span><strong id="armState">未知</strong></div><div><span>緊急停止</span><strong id="stopState">未知</strong></div><div><span>鎖定狀態</span><strong id="lockState">未知</strong></div></div><p id="statusMessage" class="note" role="status">尚未讀取狀態。</p><details><summary>查看本機狀態回覆</summary><pre id="statusDetail"></pre></details></section>
+<section class="card"><h2><span class="step">01</span>連線與目前狀態</h2><label>本機 CTCC 操作權杖<input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="輸入本機私人設定中的操作權杖"></label><div class="row"><button id="refresh" disabled>讀取狀態</button><button id="history" class="secondary" disabled>舊流程紀錄</button><button id="forget" class="secondary">清除權杖</button><small>只保留於本頁記憶體，關閉或重新載入後需重輸。</small></div><div class="status-grid"><div><span>啟動恢復</span><strong id="recoveredState">未知</strong></div><div><span>Arm</span><strong id="armState">未知</strong></div><div><span>緊急停止</span><strong id="stopState">未知</strong></div><div><span>鎖定狀態</span><strong id="lockState">未知</strong></div></div><p id="statusMessage" class="note" role="status">尚未讀取狀態。</p><details><summary>查看本機狀態回覆</summary><pre id="statusDetail"></pre></details></section>
 <div id="uncertain" class="warning" hidden role="alert">操作結果不確定：此頁已鎖定新增曝險。請保留紀錄，使用預留 ID 對帳；請勿重送。對帳回覆不會自動解除此鎖定。</div>
 <div class="grid"><section class="card"><h2><span class="step">02</span>恢復與初始化</h2><p class="note">首次使用先初始化風控計數器，再核對並清除停止；已初始化者請保留原紀錄，不需重做。清除停止不會自動 Arm。</p>{_phrase("初始化風控計數器", "counterPhrase", COUNTER_CONFIRMATION_V1)}<button id="initializeCounter" disabled>初始化一次</button><div class="separator"></div>{_phrase("清除停止", "clearPhrase", CLEAR_CONFIRMATION_V2)}<button id="clearStop" disabled>核對並清除停止</button></section>
 <section class="card safety"><h2>安全控制</h2><p class="note">長時間執行中仍可操作。停止不會靜默平倉或取消既有保護。</p><button id="stop" class="secondary" disabled>停止並撤銷本機 Arm</button><div class="separator"></div>{_phrase("緊急停止", "emergencyPhrase", EMERGENCY_STOP_PHRASE)}<button id="emergencyStop" class="danger" disabled>緊急停止</button><p id="safetyMessage" class="note" role="status"></p><details><summary>查看停止回覆</summary><pre id="safetyResult"></pre></details></section>
 <section class="card wide"><h2><span class="step">03</span>商品與風險設定</h2><p class="note">{mode_note} 本機設定的槓桿上限：{config["max_leverage"]}x，合約張數上限：{config["max_contracts"]}。</p><div class="fields"><label>永續合約<select id="instrument">{symbols}</select></label><label>進場策略<select id="strategy">{strategies}</select></label><label>合約張數<input id="contracts" inputmode="decimal" autocomplete="off" placeholder="依商品合約規格填入，例：1"></label><label>槓桿上限<select id="leverage">{leverage}</select></label></div>{_phrase("空倉時設定槓桿", "leveragePhrase", CONFIGURE_LEVERAGE_CONFIRMATION_V1)}<button id="configureLeverage" disabled>核對空倉並設定槓桿</button></section>
 <section class="card"><h2><span class="step">04</span>正常 Demo 開倉</h2><p class="note">通過完整驗證並成交後，保留原 TP／SL 的交易所保護，等待原保護出場。每次只授權一次進場，成交後撤銷進場權限；不會改價、加單或自動重送。</p>{_phrase("本次 Arm", "armPhrase", ARM_PHRASE)}{_phrase("本次執行", "executePhrase", EXECUTE_PHRASE)}{_phrase("保留原 TP／SL", "holdPhrase", PROTECTED_ENTRY_CONFIRMATION_V1)}<button id="entryHold" disabled>驗證開倉並保留原保護</button><details><summary>工程進出場驗收</summary><p class="note">此流程在成交並核對保護後，立即嘗試受控平倉，用於進出場驗收。</p><button id="armExecute" class="secondary" disabled>進出場驗收：成交後立即受控平倉</button></details><p id="progress" class="note" role="status">等待手動操作</p></section>
-<section class="card"><h2>未決結果對帳</h2><p class="note">使用原預留紀錄中的 ID，重新讀取並核對既有結果。此操作不會重新送單。</p><label>預留 ID<input id="reservation" class="phrase" autocomplete="off" spellcheck="false" maxlength="64" placeholder="請從原操作紀錄複製完整 64 字元 ID"></label><button id="reconcile" disabled>對帳此預留紀錄</button><p class="note">若沒有 ID，保留此頁回覆與本機紀錄，先保持停止狀態。</p></section>
+<section class="card"><h2>未決結果對帳</h2><p class="note">送出後斷線或重新啟動，可先從本機找回交易，再讀取交易所核對。查詢與對帳不會重新送單。</p><button id="loadJournal" class="secondary" disabled>查找本機交易紀錄</button><p id="journalMessage" class="note" role="status">尚未讀取本機紀錄，待處理數量未知。</p><label>選取交易<select id="journalSelection" disabled><option value="">請先查找本機交易紀錄</option></select></label><label>預留 ID<input id="reservation" class="phrase" autocomplete="off" spellcheck="false" maxlength="64" placeholder="請從原操作紀錄複製完整 64 字元 ID"></label><button id="reconcile" disabled>對帳此預留紀錄</button><p class="note">若查詢失敗，請保持停止；不可將無法讀取當成沒有持倉或未曾送出。</p></section>
 <section class="card wide"><h2>操作結果</h2><p id="resultMessage" role="status">尚未送出操作。</p><pre id="result" aria-label="操作回覆"></pre></section></div></main><script>{script}</script></body></html>"""
     digest = lambda text: base64.b64encode(
         hashlib.sha256(text.encode("utf-8")).digest()
