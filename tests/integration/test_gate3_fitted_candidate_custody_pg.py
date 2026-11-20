@@ -122,6 +122,23 @@ _CANDIDATE_0056_SOURCE_PINS = {
 _STABLE_ROLE_IDENTITY_V2_SOURCE_SHA256 = (
     "e309e6847ca4cd0d94e932fe837fb70b95e184d6d8d30f822ca0cfed72e59290"
 )
+
+
+def _current_component_source_pins():
+    from tests.historical0056_component_source_pins_v1 import (
+        reviewed_component_source_pins_v1,
+    )
+
+    return reviewed_component_source_pins_v1(
+        _SOURCE_ROOT,
+        original_source56={
+            **_CANDIDATE_0056_SOURCE_PINS,
+            "app/core/native_role_identity_0056_v2.py": _STABLE_ROLE_IDENTITY_V2_SOURCE_SHA256,
+            "app/core/native_role_preflight_0056_full_diagnostic_v1.py": _N234_ROLE_OBSERVER_SOURCE_SHA256,
+        },
+    )
+
+
 _READ = "gate3_fitted_binding_read(text)"
 _ACK_READ = "gate3_fitted_binding_ack_read(text)"
 _ROLES = {
@@ -2700,7 +2717,9 @@ async def test_actual0056_inert_startup_candidate_binds_source_roles_and_control
     _, owner_factory, selected, _ = _actual_0056_role_observation_lab
     identity, files, files_raw = fitted_measurement._read_hermetic_inputs()
     source = fitted_measurement.source_identity(identity, files, files_raw)
-    for relative, expected in _CANDIDATE_0056_SOURCE_PINS.items():
+    current_pins = _current_component_source_pins()
+    for relative in _CANDIDATE_0056_SOURCE_PINS:
+        expected = current_pins[relative]
         assert files[relative]["sha256"] == expected
         assert sha((_SOURCE_ROOT / relative).read_bytes()) == expected
     assert (
@@ -2714,7 +2733,7 @@ async def test_actual0056_inert_startup_candidate_binds_source_roles_and_control
                 / "app/core/native_role_preflight_0056_full_diagnostic_v1.py"
             ).read_bytes()
         )
-        == _N234_ROLE_OBSERVER_SOURCE_SHA256
+        == current_pins["app/core/native_role_preflight_0056_full_diagnostic_v1.py"]
     )
 
     instant = datetime(2026, 1, 1, tzinfo=UTC)
@@ -2888,10 +2907,9 @@ async def test_actual0056_stable_role_identity_on_distinct_connections(
     identity, files, files_raw = fitted_measurement._read_hermetic_inputs()
     source = fitted_measurement.source_identity(identity, files, files_raw)
     relative = "app/core/native_role_identity_0056_v2.py"
-    assert files[relative]["sha256"] == _STABLE_ROLE_IDENTITY_V2_SOURCE_SHA256
-    assert sha((_SOURCE_ROOT / relative).read_bytes()) == (
-        _STABLE_ROLE_IDENTITY_V2_SOURCE_SHA256
-    )
+    expected_source_sha = _current_component_source_pins()[relative]
+    assert files[relative]["sha256"] == expected_source_sha
+    assert sha((_SOURCE_ROOT / relative).read_bytes()) == expected_source_sha
     assert source["manifest_sha256"] == sha(
         (_SOURCE_ROOT / "MANIFEST.sha256").read_bytes()
     )
@@ -3087,7 +3105,9 @@ async def test_actual0056_lab_only_recovery_cas_after_fresh_restricted_observati
                     / "app/core/native_role_preflight_0056_full_diagnostic_v1.py"
                 ).read_bytes()
             )
-            == _N234_ROLE_OBSERVER_SOURCE_SHA256
+            == _current_component_source_pins()[
+                "app/core/native_role_preflight_0056_full_diagnostic_v1.py"
+            ]
         )
         first = await observation.observe_restricted_native_roles_0056_v1(
             selected, source=_SOURCE_ROOT
@@ -3608,7 +3628,13 @@ async def test_actual0056_restricted_writer_creates_only_exact_stopped_genesis(
     )
     account = SimpleNamespace(expected_uid="730001")
     selection = SimpleNamespace(source_roles_0056=witness, scope_config=account)
-    selected = {"factories": factories}
+    from app.domain import native_database_profile_v1 as profiles
+
+    selected = {
+        "factories": factories,
+        "source_roles_0056": witness,
+        "database_profile": profiles.DB0056,
+    }
     # Only the exchange selection is synthetic. SQLAlchemy, role/ACL checks,
     # UID and row locks, transaction and both trigger checks are actual PG17.
     monkeypatch.setattr(genesis.selectors, "_record", lambda _: selected)
@@ -3759,7 +3785,13 @@ async def test_actual0056_restart_recovery_revokes_existing_account_arm(
         source_roles_0056=witness,
         scope_config=SimpleNamespace(expected_uid=scope.account_id),
     )
-    selected = {"factories": factories}
+    from app.domain import native_database_profile_v1 as profiles
+
+    selected = {
+        "factories": factories,
+        "source_roles_0056": witness,
+        "database_profile": profiles.DB0056,
+    }
     monkeypatch.setattr(recovery.selectors, "_record", lambda _: selected)
     ledger_scope = LedgerScope(account_id=scope.account_id, settlement_currency="USDT")
     ledger = QualificationLedgerRepository(

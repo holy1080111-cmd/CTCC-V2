@@ -19,8 +19,11 @@ _SOURCE = Path(__file__).resolve().parents[1]
 # Explicitly reviewed source58 observer files. Runtime owner catalogs
 # must still match both original independently measured physical56 references.
 _REVIEWED_SOURCE58_FILES = {
+    "app/core/native_role_identity_0056_v2.py": "bb126e2ca8683be56c6912e94765c6f21815ef7f6e8be2d1df3431ac9f17a3a3",
     "app/core/native_role_preflight_0056_full_diagnostic_v1.py": "ed230a4a839874bbcba846856ecfd7626990e844af162a82d523da6b74932116",
     "app/core/native_role_preflight_v1.py": "1ba3931e8cf2e81c712592834de37da900a86bc8cf2499b22cf9eca230fccb9d",
+    "app/core/native_role_witness_0056_v1.py": "3f7f5c3139e2c2e0a2574779560c48b579e62c793d39ad8962ef9f3bdb3baed7",
+    "app/core/native_startup_candidate_0056_v1.py": "69458555dea8f36c6b7773dfe86fd7598222b69220c1b6a6a64bc8ca632eef48",
     "app/domain/collector_current_0055_catalog_v1.py": "fa7e80105102a9eca72176c7c9243c604d275020fae37dd4fbd12f7a81d28652",
     "app/domain/collector_current_0056_inherited_catalog_v1.py": "463a608cfd96bbf3d14f3a99eae0862d5f3d2f812d08349e2b6ca7513a41284c",
     "app/domain/g12_custody_catalog_0057_v1.py": "6e6526b52387e618e3135150ee1a9891036529a834006001c1bfd833fc11f786",

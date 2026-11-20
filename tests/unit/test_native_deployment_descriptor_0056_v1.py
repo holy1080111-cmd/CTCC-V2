@@ -101,7 +101,7 @@ async def test_owner_export_requires_postgrant_and_independent_portable_match(
     monkeypatch.setattr(subject, "require_private_evidence_base_v2", Path)
     monkeypatch.setattr(subject, "_load_plan", open_plan)
     monkeypatch.setattr(
-        subject, "load_reviewed_owner_portable_0056_v1", lambda _: reference
+        subject, "load_reviewed_historical_owner56_reference_v1", lambda _: reference
     )
     monkeypatch.setattr(subject, "observe_owner_postgrant_readback_0056_v1", observe)
     monkeypatch.setattr(subject, "_publish_descriptor", publish)

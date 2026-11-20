@@ -16,10 +16,10 @@ from app.demo_automation import native_server_selectors_v2 as selectors
 from app.domain.source_primitives import canonical, sha
 from app.trade_evidence.native_private_root_v2 import require_private_evidence_base_v2
 from app.trade_qualification.account_native_proof_storage import _root_context
-from scripts.current0056_reviewed_owner_portable_v1 import (
-    load_reviewed_owner_portable_0056_v1,
-)
 from scripts.evidence_json import read_evidence_json
+from scripts.historical0056_owner_reference_dispatch_v1 import (
+    load_reviewed_historical_owner56_reference_v1,
+)
 from scripts.native_owner_postgrant_readback_0056_v1 import (
     _SCHEMA as _OWNER_READBACK_SCHEMA,
 )
@@ -130,7 +130,7 @@ async def export_owner_verified_descriptor_0056_v1(
     """Observe the actual owner and restricted roles before publishing stable pins."""
     require_private_evidence_base_v2(str(descriptor_directory))
     pins = _load_plan(plan_file, plan_file_sha256)
-    reference = load_reviewed_owner_portable_0056_v1(_SOURCE)
+    reference = load_reviewed_historical_owner56_reference_v1(_SOURCE)
     _need(
         reference.inherited_native_definitions_sha256
         == pins.portable_inherited_definitions_sha256
@@ -191,7 +191,7 @@ def _check_installed_release(
         source_archive_sha256=descriptor.source_archive_sha256,
         source_manifest_sha256=descriptor.source_manifest_sha256,
     )
-    reference = load_reviewed_owner_portable_0056_v1(_SOURCE)
+    reference = load_reviewed_historical_owner56_reference_v1(_SOURCE)
     _need(
         descriptor.inherited_native_definitions_sha256
         == reference.inherited_native_definitions_sha256

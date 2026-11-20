@@ -88,6 +88,7 @@ POSTGRES_INTEGRATION = (
     "test_native_live_physical_v1_pg.py",
     "test_native_demo_profile_0058_pg.py",
     "test_native_submission_binding_0058_pg.py",
+    "test_native_original_oco_public_0058_pg.py",
     "test_native_protective_hold_schema_v58_pg.py",
     "test_demo_event_history_epoch_repository.py",
     "test_durable_migration_downgrade.py",

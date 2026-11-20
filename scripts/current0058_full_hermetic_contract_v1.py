@@ -58,6 +58,23 @@ BINDING_CASES = tuple(
     )
     for parameter in parameters
 )
+ORIGINAL_OCO_CASES = tuple(
+    (
+        "tests.integration.test_native_original_oco_public_0058_pg",
+        f"{name}[{parameter}]",
+    )
+    for name, parameters in (
+        (
+            "test_actual0058_public_original_oco_closure_and_new_postflat_journal_preserve_lineage",
+            ("_template0", "_template1", "_template2", "_template3"),
+        ),
+        (
+            "test_actual0058_public_changed_or_incomplete_oco_remains_durably_held",
+            ("changed_protection", "partial_fill", "ambiguous_child"),
+        ),
+    )
+    for parameter in parameters
+)
 SUCCESSOR_CASES = (
     *base.SUCCESSOR_CASES,
     *live_cases.REQUIRED_CASES,
@@ -65,6 +82,7 @@ SUCCESSOR_CASES = (
     g12.CUSTODY_CASE,
     *PHYSICAL_LIVE_CASES,
     *BINDING_CASES,
+    *ORIGINAL_OCO_CASES,
     (
         "tests.integration.test_native_protective_hold_schema_v58_pg",
         "test_actual0058_original_oco_predicate_compiles_and_missing_targets_never_resolve",
@@ -77,6 +95,7 @@ REQUIRED_CASES = (
     g12.CUSTODY_CASE,
     *PHYSICAL_LIVE_CASES,
     *BINDING_CASES,
+    *ORIGINAL_OCO_CASES,
     SUCCESSOR_CASES[-1],
 )
 HISTORICAL_REPORTS = base.HISTORICAL_REPORTS
@@ -94,6 +113,7 @@ HOST_HELPERS = (
     "historical0057_on_current0058_observation_v1.py",
     "historical0056_owner_source_on_0058_v1.py",
     "run_db0058_migration_probe_v1.py",
+    "historical0056_owner_reference_dispatch_v1.py",
 )
 digest, canonical, _need = g12.digest, g12.canonical, g12._need
 _SHA, _GIT = g12._HEX, g12._GIT

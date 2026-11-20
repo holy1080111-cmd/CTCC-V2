@@ -581,7 +581,9 @@ async def test_actual0056_control_monitor_joins_exact_release_and_restricted_tls
     current = await deployment.identity.observe_restricted_role_identity_0056_v2(
         selected, source=deployment._SOURCE
     )
-    reference = deployment.load_reviewed_owner_portable_0056_v1(deployment._SOURCE)
+    reference = deployment.load_reviewed_historical_owner56_reference_v1(
+        deployment._SOURCE
+    )
     ca_file = os.environ["CTCC_DEVVAL_CUSTODY_TEST_TLS_CA_FILE"]
     ca_sha = os.environ["CTCC_DEVVAL_CUSTODY_TEST_TLS_CA_SHA256"]
     descriptor = deployment._Descriptor(
