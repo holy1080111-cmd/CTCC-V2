@@ -3916,9 +3916,10 @@ def main():
         args.postgres_component_index is not None
         and (
             type(args.postgres_component_index) is not int
-            # The captured source57/58 dispatcher alone may admit its third
-            # component. Every historical/default profile keeps two owners.
-            or not 0 <= args.postgres_component_index <= POSTGRES_COMPONENT_COUNT
+            # The captured source58 runner alone may admit five components;
+            # source57 checks its three and historical/default keeps two below.
+            # This outer bound only permits routing to the matching verifier.
+            or not 0 <= args.postgres_component_index < 5
         )
     ):
         raise ValueError("postgres_component_selection_invalid")

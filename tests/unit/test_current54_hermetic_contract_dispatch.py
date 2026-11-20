@@ -120,6 +120,68 @@ def test_unknown_archive_head_is_rejected_before_runner_selection(tmp_path):
         )
 
 
+def _postgres_argv(path, pin, output, index):
+    return [
+        "verify_final_hermetic.py",
+        "--archive",
+        str(path),
+        "--archive-sha256",
+        pin,
+        "--commit",
+        "a" * 40,
+        "--tree",
+        "b" * 40,
+        "--output",
+        str(output),
+        "--suite",
+        "postgres",
+        "--postgres-component-index",
+        str(index),
+    ]
+
+
+@pytest.mark.parametrize("index", [3, 4])
+def test_public_entrypoint_routes_both_new58_components_to_exact_captured_runner(
+    tmp_path, monkeypatch, index
+):
+    path = tmp_path / "source.tar"
+    pin = _archive(path, "0058")
+    captured = path.read_bytes()
+    calls = []
+
+    def reject(*, archive_bytes):
+        calls.append(archive_bytes)
+        raise ValueError("DECLARED_MATCHED58_RUNNER_REJECTION")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "scripts.verify_current0058_full_hermetic",
+        SimpleNamespace(main=reject),
+    )
+    output = tmp_path / "results"
+    monkeypatch.setattr(sys, "argv", _postgres_argv(path, pin, output, index))
+    with pytest.raises(ValueError, match="^DECLARED_MATCHED58_RUNNER_REJECTION$"):
+        generic.main()
+    assert calls == [captured]
+    assert not output.exists()
+
+
+@pytest.mark.parametrize(
+    "head,index",
+    [("0052", 2), ("0052", 3), ("0052", 4), ("0057", 3), ("0057", 4), ("0058", 5)],
+)
+def test_source58_routing_does_not_expand_other_profiles_or_admit_a_sixth_component(
+    tmp_path, monkeypatch, head, index
+):
+    path = tmp_path / "source.tar"
+    pin = _archive(path, head)
+    output = tmp_path / "results"
+    monkeypatch.setattr(sys, "argv", _postgres_argv(path, pin, output, index))
+    with pytest.raises(ValueError):
+        generic.main()
+    assert not output.exists()
+
+
 def test_historical52_routes_to_unchanged_historical_runner(tmp_path):
     path = tmp_path / "source.tar"
     pin = _archive(path, "0052")
