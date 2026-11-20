@@ -93,7 +93,10 @@ five source58 components; each captured-source verifier still enforces its own
 closed topology, including the unchanged historical two/three-component limits.
 The fix passed214 Windows unit checks. The
 [complete sourcea22b022 rerun](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/44795244461)
-has passed component0 and component2; the full union remains incomplete. Its
+passed all five PostgreSQL components, with255,278,142,173 and292 cases
+respectively and no skips. Independent matching archived readback verifies
+components0/1/3/4 from that run; component2 has separate complete readback from
+another run of the exact same source. This is not a final-source full union. Its
 Linux6 shard failed one obsolete test which still classified component3 as
 invalid. The source58 dispatcher correctly routed it to archive admission.
 The fixture now checks invalid indices5 and6; all6 argument-boundary cases
@@ -112,8 +115,33 @@ same original account/source deadlines together.
 
 The configured Notion runtime token and destination have completed official
 read-only database/data-source verification for all four exact property IDs and
-types. This is distinct from a durable report delivery. Local destination-file
-privacy is being hardened; no report POST or worker was run by that readback.
+types. The destination now has independently verified owner-only permissions;
+its bytes, identity and token were preserved. This is distinct from a durable
+report delivery. No report POST or worker was run by that readback.
+
+The [source8a91e5c full run](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/44813032848)
+failed collection in all21 execution jobs. The shared cause was an unchanged
+legacy postpublication policy pin encountering the newly reviewed staged public
+journal. The bounded repair updates the two exact source pins and explicitly
+denies the new stage markers in the legacy journal. All96 legacy/staged scoped
+checks pass without skips; a new complete matching-source run is still required.
+
+A faithful local TCP443 rehearsal now follows the original qualification through
+durable-intent readback and native transport preparation. Even after removing a
+duplicate public semantic replay, it refuses before TLS because the unchanged
+five-second account deadline expires. The measured2 failing positive cases and
+1 passing stale-data negative are retained. Genuine source-guard costs were
+excluded from that lower bound. This is an actionable engineering failure,
+not an execution or readiness result. Preparation is being separated from the
+mandatory complete recheck immediately before actual order bytes; freshness,
+geometry, account locks and one-shot submission remain mandatory.
+
+The stopped original Docker VM has a complete private cold backup of
+71,349,305,344 bytes. A separate full readback matches the held original SHA256,
+and original file identity, size and modification time remain unchanged.
+This preserves the original state but does not prove a PostgreSQL restore,
+current migration head or exchange exposure. Raw VM contents are excluded from
+Git, reports, Notion and the release bundle. No old container was started.
 
 Final-source Windows/Linux/PostgreSQL/Docker regression, installed activation,
 final secret audit, matching GitHub CI, PR/main/release and final immutable
