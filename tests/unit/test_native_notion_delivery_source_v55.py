@@ -92,3 +92,17 @@ async def test_current58_reader_refuses_foreign_binding_with_safe_phase_before_s
         await current.read_current58_notion_projection_v1(object(), key=object())
     assert str(failure.value) == "current58_notion_projection_refused"
     assert failure.value.stage == "lease"
+
+
+@pytest.mark.parametrize("component", ("identity_pin", "private_acl"))
+def test_real_notion_guard_pins_root_identity_and_nested_privacy_checks(
+    monkeypatch, component
+):
+    if component == "identity_pin":
+        monkeypatch.setattr(source.root_pin._RootIdentityPin, "check", lambda _: None)
+    else:
+        monkeypatch.setattr(
+            source.root_pin.private_root, "_windows_private", lambda _: None
+        )
+    with pytest.raises(guard.NativeSourceClosureError):
+        source._NATIVE_GUARD()

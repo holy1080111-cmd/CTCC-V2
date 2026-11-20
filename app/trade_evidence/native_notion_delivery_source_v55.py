@@ -28,6 +28,7 @@ from app.trade_evidence import (
     storage,
 )
 from app.trade_evidence import native_current58_reporting_v1 as current58
+from app.trade_evidence import native_outbox_root_pin_v1 as root_pin
 from app.trade_evidence import notion_adapter as notion
 from app.trade_evidence.submission_reporting import pin, queue
 from app.trade_qualification import account_history_source_v1 as history
@@ -113,6 +114,10 @@ def _retire(state):
 
 def _check(state):
     guard.check_saved_native_guard_v1(state)
+    try:
+        state["root_pin"].check()
+    except Exception:  # noqa: BLE001 -- private filesystem failures use the existing pending-source contract.
+        _deny()
     stamp = native_clock.native_stamp()
     validate_stamps((state["last"], stamp))
     state["last"] = stamp
@@ -261,8 +266,13 @@ async def acquire_native_notion_delivery_source_v55(
         "closed": False,
     }
     guard.save_native_guard_v1(state, _NATIVE_GUARD)
-    context = outbox._root_context(checked_root)
-    state["root_context"], state["directory"] = context, context.__enter__()
+    # Retain identity/ancestor custody, not the exclusive publisher lease.
+    # Every read/claim/dispatch keeps its original independent transaction.
+    context = root_pin.pin_outbox_root_v1(checked_root)
+    try:
+        state["root_context"], state["root_pin"] = context, context.__enter__()
+    except Exception:  # noqa: BLE001 -- do not leak a private pathname or ACL error.
+        _deny()
     engine = current_cap = None
     binding = object()
     kept = False
@@ -591,6 +601,8 @@ _NATIVE_GUARD = guard.install_native_guards_v1(
         current58,
         *current58._REPORTING_DEPENDENCIES_V1,
         current_projection,
+        root_pin,
+        root_pin.private_root,
         reports.catalog,
         reports.report_schema,
         reports.forensic,

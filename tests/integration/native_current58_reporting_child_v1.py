@@ -122,6 +122,21 @@ async def check():
         proof = json.loads(state["proof_json"])
         need(proof["database_head"] == "0058" and proof["spool_id"] == spool_id)
         need(state["metadata"][0][8] != state["metadata"][1][8])
+        STAGE[0] = "actual58_pinned_root_independent_exclusive_transactions"
+        from app.trade_evidence import outbox
+
+        state["root_pin"].check()
+        with outbox._transaction(
+            Path(settings.notion_outbox_root), report_id
+        ) as directory:
+            loaded, _ = outbox._load(directory, report_id)
+            need(loaded.envelope_sha256 == envelope)
+            try:
+                with outbox._transaction(Path(settings.notion_outbox_root), report_id):
+                    raise AssertionError("publisher_lease_was_not_exclusive")
+            except outbox.OutboxError:
+                pass
+        state["root_pin"].check()
         need(not current._LEASES and not current._UNKNOWN and not source._ISSUING)
         permit.close()
         permit = None
@@ -134,6 +149,8 @@ async def check():
             "independent_role_tls_engines": 3,
             "projection_and_local_pair_readback": True,
             "notion_source_distinct_committed_readbacks": 2,
+            "root_identity_pinned_between_transactions": True,
+            "publisher_transaction_lease_still_exclusive": True,
             "report_spool_sha256": spool_id,
             "envelope_sha256": envelope,
             "venue_data": "DECLARED_SYNTHETIC",
