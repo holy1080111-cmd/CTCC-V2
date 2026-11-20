@@ -62,9 +62,13 @@ def checked_query(path, params):
         require(not query)  # Whole account: no selected-symbol/currency filter.
     elif path == "/api/v5/trade/order":
         require(
-            set(query) == {"instId", "clOrdId"}
+            set(query) in ({"instId", "clOrdId"}, {"instId", "ordId"})
             and _INSTRUMENT.fullmatch(query["instId"]) is not None
-            and _CLIENT_ID.fullmatch(query["clOrdId"]) is not None
+            and (
+                _CLIENT_ID.fullmatch(query["clOrdId"]) is not None
+                if "clOrdId" in query
+                else _ID.fullmatch(query["ordId"]) is not None
+            )
         )
     elif path == "/api/v5/account/leverage-info":
         require(
@@ -87,7 +91,10 @@ def checked_query(path, params):
         elif path in {"/api/v5/trade/fills", "/api/v5/trade/fills-history"}:
             require(
                 query.get("instType") == "SWAP"
-                and _INSTRUMENT.fullmatch(query.get("instId", "")) is not None
+                and (
+                    _INSTRUMENT.fullmatch(query.get("instId", "")) is not None
+                    or set(query) == {"instType", "begin", "end"}
+                )
             )
             if set(query) == {"instType", "instId", "ordId"}:
                 require(_ID.fullmatch(query["ordId"]) is not None)
@@ -95,12 +102,16 @@ def checked_query(path, params):
                 # New negative close/history DATA purpose: a fixed bounded
                 # same-instrument record-generation window, never all-time.
                 require(
-                    set(query) == {"instType", "instId", "begin", "end"}
+                    set(query)
+                    in (
+                        {"instType", "instId", "begin", "end"},
+                        {"instType", "begin", "end"},
+                    )
                     and _TIMESTAMP.fullmatch(query["begin"]) is not None
                     and _TIMESTAMP.fullmatch(query["end"]) is not None
                     and int(query["begin"]) <= int(query["end"])
                 )
-        elif path == "/api/v5/account/bills-archive":
+        elif path in {"/api/v5/account/bills-archive", "/api/v5/account/bills"}:
             require(
                 set(query) == {"begin", "end"}
                 and _TIMESTAMP.fullmatch(query["begin"]) is not None
