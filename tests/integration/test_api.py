@@ -16,7 +16,7 @@ def test_liveness() -> None:
         == "qualification_execution_unavailable"
     )
     assert response.status_code == 200
-    assert response.json()["version"] == "1.6.9"
+    assert response.json()["version"] == "2.0.0"
 
 
 def test_capabilities_are_honest() -> None:

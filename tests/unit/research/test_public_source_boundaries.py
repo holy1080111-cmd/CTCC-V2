@@ -166,6 +166,11 @@ def test_public_source_has_only_explicit_reviewed_consumers():
         APP / "trade_qualification" / "global_public_runtime_v1.py": (
             ("app.public_market_source", (("public_runtime_journal", "journal"),)),
         ),
+        # The staged producer uses the same journal with an explicit one-use
+        # OHLC/account/mutable phase protocol; no other source import is added.
+        APP / "trade_qualification" / "global_public_staged_v2.py": (
+            ("app.public_market_source", (("public_runtime_journal", "journal"),)),
+        ),
         # Live acquisition retains the unchanged anonymous Global journal;
         # it reaches acquisition only through the reviewed Global coordinator.
         APP / "trade_qualification" / "native_live_public_source_v1.py": (
@@ -175,6 +180,23 @@ def test_public_source_has_only_explicit_reviewed_consumers():
         # constructor, source substitution or promotion capability is admitted.
         APP / "okx_live" / "qualification_math_v1.py": (
             ("app.public_market_source", (("public_runtime_journal", "journal"),)),
+        ),
+        # The native guard records the actual defining clock, receipt, and
+        # storage modules. Importing these exact modules adds no acquisition
+        # route or caller-supplied qualification authority.
+        APP / "okx_live" / "owned_qualification_v1.py": (
+            (
+                "app.public_market_source",
+                (("public_clock", "public_clock_source"),),
+            ),
+            (
+                "app.public_market_source",
+                (("public_market_receipts", "public_receipt_contracts"),),
+            ),
+            (
+                "app.public_market_source",
+                (("public_receipt_storage", "public_receipt_source"),),
+            ),
         ),
         APP / "trade_qualification" / "global_public_capture_companion_v1.py": (
             (
@@ -658,6 +680,77 @@ def test_exact_live_consumers_reject_new_capture_alias_relative_and_duplicate_im
     monkeypatch.setattr(sys.modules[__name__], "nodes", changed)
     with pytest.raises(AssertionError):
         test_public_source_has_only_explicit_reviewed_consumers()
+
+
+@pytest.mark.parametrize(
+    ("area", "filename"),
+    (
+        ("trade_qualification", "global_public_staged_v2.py"),
+        ("okx_live", "owned_qualification_v1.py"),
+    ),
+)
+@pytest.mark.parametrize(
+    "import_line",
+    (
+        "from app.public_market_source import public_market_capture",
+        "from app.public_market_source import public_clock as caller_alias",
+        "from app.public_market_source.public_clock import native_stamp",
+        "from ..public_market_source import public_clock",
+    ),
+)
+def test_staged_and_guard_definers_reject_unreviewed_import_shape(
+    monkeypatch, area, filename, import_line
+):
+    # A mutation refusal must reach this consumer after the genuine source
+    # baseline succeeds, rather than being masked by an unrelated stale roster.
+    test_public_source_has_only_explicit_reviewed_consumers()
+    original_nodes = nodes
+    consumer = APP / area / filename
+    unreviewed = ast.parse(import_line).body[0]
+    visited = []
+
+    def changed(path):
+        yield from original_nodes(path)
+        if path == consumer:
+            visited.append(path)
+            yield unreviewed
+
+    monkeypatch.setattr(sys.modules[__name__], "nodes", changed)
+    with pytest.raises(AssertionError) as refused:
+        test_public_source_has_only_explicit_reviewed_consumers()
+    assert visited == [consumer]
+    boundary = refused.traceback[-1].frame.f_locals
+    assert boundary["path"] == consumer
+    assert boundary["node"] is unreviewed
+
+
+def test_public_source_rejects_an_unreviewed_new_consumer(monkeypatch):
+    test_public_source_has_only_explicit_reviewed_consumers()
+    original_nodes = nodes
+    original_rglob = type(APP).rglob
+    consumer = APP / "okx_live" / "unreviewed_public_consumer.py"
+    unreviewed = ast.parse(
+        "from app.public_market_source import public_clock as public_clock_source"
+    )
+
+    def with_new_consumer(root, pattern):
+        yield from original_rglob(root, pattern)
+        if root == APP and pattern == "*.py":
+            yield consumer
+
+    def with_new_import(path):
+        if path == consumer:
+            yield from ast.walk(unreviewed)
+        else:
+            yield from original_nodes(path)
+
+    monkeypatch.setattr(type(APP), "rglob", with_new_consumer)
+    monkeypatch.setattr(sys.modules[__name__], "nodes", with_new_import)
+    with pytest.raises(AssertionError) as refused:
+        test_public_source_has_only_explicit_reviewed_consumers()
+    boundary = refused.traceback[-1].frame.f_locals
+    assert boundary["path"] == consumer
+    assert boundary["node"] is unreviewed.body[0]
 
 
 @pytest.mark.parametrize(
