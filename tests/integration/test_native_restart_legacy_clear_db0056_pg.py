@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import select
 
+from app.core.native_locked_demo_control_0056_v1 import NativeLockedDemoControl0056Error
 from app.core.native_role_witness_0056_v1 import (
     observe_restricted_native_roles_0056_witness_v1,
 )
@@ -157,7 +158,12 @@ async def test_actual0056_restart_clear_preserves_history_rolls_back_and_reopens
             await ack._verify_legacy_audit(session, replay, marker, proof, result)
         return proof, marker, metadata
 
-    with pytest.raises(RuntimeError, match="^synthetic_crash_before_commit$"):
+    # The real held-control boundary redacts a body failure. The transaction
+    # must still roll back all clear/audit state before a later invocation.
+    with pytest.raises(
+        NativeLockedDemoControl0056Error,
+        match="^native_locked_demo_control_0056_unavailable$",
+    ):
         await clear_once(abort=True)
     async with owner_factory() as session:
         rolled_back = await session.get(DemoAutomationState, 1)
