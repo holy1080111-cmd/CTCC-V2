@@ -197,7 +197,7 @@ PREPARE_SQL = f"""CREATE FUNCTION public.native_live_controlled_close_prepare_v1
  OR q->>'instId' IS DISTINCT FROM original_intent.intent_json::jsonb->>'instrument_id'
  OR q->>'tdMode' IS DISTINCT FROM 'isolated' OR q->>'posSide' IS DISTINCT FROM 'net'
  OR q->>'ordType' IS DISTINCT FROM 'fok' OR q->'reduceOnly' IS DISTINCT FROM 'true'::jsonb
- OR q->>'side' IS DISTINCT FROM CASE original_intent.intent_json::jsonb->>'direction' WHEN 'long' THEN 'sell' WHEN 'short' THEN 'buy' END
+ OR q->>'side' IS DISTINCT FROM (CASE original_intent.intent_json::jsonb->>'direction' WHEN 'long' THEN 'sell' WHEN 'short' THEN 'buy' END)
  OR (q->>'sz')::numeric IS DISTINCT FROM (original_intent.intent_json::jsonb->>'contracts')::numeric
  OR (q->>'px')::numeric IS DISTINCT FROM (original_intent.intent_json::jsonb->>'stop_loss')::numeric
  OR q->>'clOrdId' IS DISTINCT FROM j->>'close_client_order_id'
