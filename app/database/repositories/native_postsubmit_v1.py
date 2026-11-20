@@ -147,6 +147,108 @@ async def _checked_postsubmit_catalog(binding, session):
     return None
 
 
+def _close_source(view, *, session, key):
+    from app.trade_qualification import native_controlled_close_v1 as close
+    from app.trade_qualification import native_postsubmit_reconciliation_v1 as post
+
+    need(key is close._DB_KEY_V1 and type(view) is post.NativeCloseIntentForOwnerV1)
+    actual = post._replay_native_close_intent_for_owner_v1(
+        view, key=close._SOURCE_KEY_V1
+    )
+    need(actual is view)
+    _, source = _source(view.binding)
+    need(
+        source is view.source_context
+        and type(session) is AsyncSession
+        and session.in_transaction()
+        and not session.in_nested_transaction()
+        and session.get_bind() is source.session_factory.kw["bind"].sync_engine
+    )
+    return source
+
+
+@asynccontextmanager
+async def _held_owned_close_database_v1(view, *, session, key):
+    """Keep the original negative close's actual writer through physical POST."""
+    source = _close_source(view, session=session, key=key)
+    profile = _database_profile(view.binding)
+    if profile is None:
+        # The unchanged head55 physical reader performs its own strict checks.
+        yield
+        _close_source(view, session=session, key=key)
+        return
+    need(session not in _HELD_POSTSUBMIT_0056)
+    for sql in (
+        "SET TRANSACTION ISOLATION LEVEL READ COMMITTED",
+        "SET LOCAL search_path=pg_catalog,public,pg_temp",
+        "SET LOCAL TIME ZONE 'UTC'",
+        "SET LOCAL synchronous_commit=on",
+        "SET LOCAL statement_timeout='1500ms'",
+        "SET LOCAL lock_timeout='1500ms'",
+    ):
+        await session.execute(text(sql))
+        _close_source(view, session=session, key=key)
+    async with checkpoint.held_qualification_checkpoint_0056_v1(
+        profile[0],
+        session,
+        control.ControlScope(source.scope.environment, source.scope.account_id),
+        roles=profile[1],
+    ) as held:
+        _close_source(view, session=session, key=key)
+        need(held.selected.writer_factory is source.session_factory)
+        _HELD_POSTSUBMIT_0056[session] = (view.binding, held)
+        try:
+            yield
+            _close_source(view, session=session, key=key)
+            await held.recheck_catalog()
+            _close_source(view, session=session, key=key)
+            current, event = await held.recheck_control()
+            _close_source(view, session=session, key=key)
+            need(
+                current == held.control.control.state
+                and event == held.control.control.event_sha256,
+                "native_close_original_0056_control_changed",
+            )
+        finally:
+            _HELD_POSTSUBMIT_0056.pop(session, None)
+
+
+async def _read_owned_close_control_v1(view, *, session, key):
+    source = _close_source(view, session=session, key=key)
+    profile = _database_profile(view.binding)
+    if profile is None:
+        return await DemoControlRepositoryV2.read_in_transaction(
+            session,
+            control.ControlScope(source.scope.environment, source.scope.account_id),
+        )
+    await _checked_postsubmit_catalog(view.binding, session)
+    current = _HELD_POSTSUBMIT_0056[session]
+    state, event = await current[1].recheck_control()
+    _close_source(view, session=session, key=key)
+    need(
+        state == current[1].control.control.state
+        and event == current[1].control.control.event_sha256,
+        "native_close_original_0056_control_changed",
+    )
+    return state, event
+
+
+async def _verify_owned_terminal_spool_v1(binding, repository, session, spool):
+    from app.database.repositories import native_closed_reporting_v55 as reporting
+
+    if _database_profile(binding) is None:
+        result = await reporting.verify_native_terminal_spool_v55(
+            repository, session, spool
+        )
+    else:
+        # The authentic original DB0056 held transaction verifies all inherited
+        # terminal/report definitions. Reuse only the unchanged row-policy body.
+        await _checked_postsubmit_catalog(binding, session)
+        result = await reporting._replay_native_terminal_spool(session, spool)
+    _source(binding)
+    return result
+
+
 def _row(model, *, exclude=()):
     result = {}
     for column in type(model).__table__.columns:
@@ -3011,7 +3113,6 @@ async def record_native_filled_report_ready_v1(binding):
     from app.database.models.submission_reporting import (
         QualificationReportSpool as Spool,
     )
-    from app.database.repositories import native_closed_reporting_v55 as reporting
     from app.database.repositories import submission_reporting as shared
     from app.domain import native_closed_report_schema_v55 as policy
     from app.trade_evidence import outbox
@@ -3109,9 +3210,7 @@ async def record_native_filled_report_ready_v1(binding):
             repository = shared.SubmissionReportingRepository(
                 source.session_factory, clock=_now
             )
-            await reporting.verify_native_terminal_spool_v55(
-                repository, parts[3], saved
-            )
+            await _verify_owned_terminal_spool_v1(binding, repository, parts[3], saved)
             _source(binding)
             state["filled_terminal_spool"] = canonical(_row(saved))
         state["filled_report_policy_result"] = (outcome, permitted, spool_id, parts[-1])

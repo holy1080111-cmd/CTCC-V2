@@ -439,10 +439,6 @@ async def _lock_owned_native_close_transport_v1(state, *, session, key):
 
     from app.database.repositories import native_postsubmit_v1 as repository
     from app.database.repositories import qualification_ledger as ledger
-    from app.database.repositories.demo_control_current55_v2 import (
-        DemoControlRepositoryV2,
-    )
-    from app.trade_qualification import demo_control as control
 
     facts = _replay_native_close_transport_facts_v1(state, key=key)
     factory = facts.session_factory
@@ -468,8 +464,8 @@ async def _lock_owned_native_close_transport_v1(state, *, session, key):
     _replay_native_close_transport_facts_v1(state, key=key)
     await ledger._require_event_journal_write_schema(session, facts.request.scope)
     _replay_native_close_transport_facts_v1(state, key=key)
-    current, event = await DemoControlRepositoryV2.read_in_transaction(
-        session, control.ControlScope("demo", facts.request.scope.account_id)
+    current, event = await repository._read_owned_close_control_v1(
+        state["view"], session=session, key=_DB_KEY_V1
     )
     _replay_native_close_transport_facts_v1(state, key=key)
     repo = ledger.QualificationLedgerRepository(factory, clock=repository._now)
@@ -522,6 +518,73 @@ async def _lock_owned_native_close_transport_v1(state, *, session, key):
     return _require_owned_native_close_transport_lock_v1(
         state, session=session, key=key
     )
+
+
+def _held_owned_native_close_database_v1(state, *, session, key):
+    from app.database.repositories import native_postsubmit_v1 as repository
+
+    _replay_native_close_transport_facts_v1(state, key=key)
+    return repository._held_owned_close_database_v1(
+        state["view"], session=session, key=_DB_KEY_V1
+    )
+
+
+def _negative_shared_need_v1(value):
+    if value is not True:
+        raise NativeControlledCloseError(
+            "native_close_shared_control_unconfirmed"
+        ) from None
+
+
+def _negative_shared_control_v1(rows):
+    _negative_shared_need_v1(type(rows) is tuple and len(rows) == 1)
+    row = rows[0]
+    _negative_shared_need_v1(type(row) is tuple and len(row) == 7)
+    identity, revision, armed, stopped, locked, latch, reasons = row
+    _negative_shared_need_v1(
+        type(identity) is int
+        and identity == 1
+        and type(revision) is int
+        and 1 <= revision < 2**63
+        and armed is False
+        and all(type(value) is bool for value in (stopped, locked, latch))
+        and type(reasons) is list
+        and len(reasons) <= 128
+        and all(type(reason) is str and 0 < len(reason) <= 250 for reason in reasons)
+        and len(set(reasons)) == len(reasons)
+        and locked is bool(reasons)
+        and (not stopped or locked and "emergency_stop_engaged" in reasons)
+    )
+    return (*row[:6], tuple(reasons))
+
+
+async def _lock_shared_owned_native_close_control_v1(state, *, session, key):
+    """Fence the typed shared stop for this exact reduce-only close, never Arm."""
+    from sqlalchemy import text
+
+    _require_owned_native_close_transport_lock_v1(state, session=session, key=key)
+    await session.execute(
+        text("LOCK TABLE public.demo_automation_state IN SHARE MODE NOWAIT")
+    )
+    _require_owned_native_close_transport_lock_v1(state, session=session, key=key)
+    rows = tuple(
+        tuple(row)
+        for row in (
+            await session.execute(
+                text(
+                    "SELECT id,control_revision,armed,emergency_stop,locked,"
+                    "restart_latch_required,lock_reasons FROM public.demo_automation_state "
+                    "ORDER BY id LIMIT 2"
+                )
+            )
+        ).all()
+    )
+    _require_owned_native_close_transport_lock_v1(state, session=session, key=key)
+    observed = _negative_shared_control_v1(rows)
+    held = state["transport_lock"]
+    previous = held.get("shared_negative_control")
+    _negative_shared_need_v1(previous is None or previous == observed)
+    held["shared_negative_control"] = observed
 
 
 def _require_actual_close_connection_v1(held, session, engine):
@@ -915,6 +978,8 @@ _NATIVE_GUARD = guard.install_native_guards_v1(
         "_bind_owned_native_close_transport_v1",
         "_replay_native_close_transport_facts_v1",
         "_lock_owned_native_close_transport_v1",
+        "_held_owned_native_close_database_v1",
+        "_lock_shared_owned_native_close_control_v1",
         "_require_owned_native_close_transport_lock_v1",
         "_inhibit_owned_native_close_transport_v1",
         "_replay_owned_native_close_intent_for_root_v1",

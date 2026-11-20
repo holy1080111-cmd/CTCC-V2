@@ -6,6 +6,7 @@ ever opening a socket, invoking an SDK write or manufacturing a genuine cap.
 """
 
 import asyncio
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
@@ -132,7 +133,9 @@ def test_native_close_intent_is_not_constructible():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure", ("bind", "response", "late_lock", "cancel"))
+@pytest.mark.parametrize(
+    "failure", ("bind", "held", "response", "late_lock", "cancel", "held_exit")
+)
 async def test_real_close_attempt_body_retains_unknown_and_stops_after_transaction_exit(
     failure,
 ):
@@ -200,6 +203,19 @@ async def test_real_close_attempt_body_retains_unknown_and_stops_after_transacti
         events.append("lock")
         await asyncio.sleep(0)
 
+    @asynccontextmanager
+    async def held(actual, *, session, key):
+        assert actual is state
+        events.append("held_enter")
+        if failure == "held":
+            raise ValueError("private catalog details must not escape")
+        try:
+            yield
+        finally:
+            events.append("held_exit")
+        if failure == "held_exit":
+            raise ValueError("private late catalog details must not escape")
+
     def discard(actual, *, key):
         assert actual is state
         state["unknown"] = (record, journal)
@@ -219,6 +235,7 @@ async def test_real_close_attempt_body_retains_unknown_and_stops_after_transacti
     functions = {
         "_bind_owned_native_close_transport_v1": bind,
         "_lock_owned_native_close_transport_v1": lock,
+        "_held_owned_native_close_database_v1": held,
         "_discard_owned_native_close_intent_for_root_v1": discard,
         "_inhibit_owned_native_close_transport_v1": inhibit,
     }
@@ -242,12 +259,57 @@ async def test_real_close_attempt_body_retains_unknown_and_stops_after_transacti
     with pytest.raises(expected) as error:
         await body(state, (), asyncio.get_running_loop().time() + 1)
     assert "private" not in str(error.value)
-    assert events.count("post") == (0 if failure == "bind" else 1)
+    assert events.count("post") == (0 if failure in {"bind", "held"} else 1)
     assert events.count("persistent_stop") == 1
     assert events.index("discard") < events.index("persistent_stop")
     assert state["unknown"] == (record, journal)
     if failure != "bind":
         assert events.index("transaction_exit") < events.index("persistent_stop")
+    if failure not in {"bind", "held"}:
+        assert (
+            events.index("held_enter")
+            < events.index("post")
+            < events.index("held_exit")
+        )
+        assert events.index("held_exit") < events.index("transaction_exit")
         assert journal.body_raw == b'{"code":"0","data":[]}' and journal.eof is True
     with pytest.raises(ValueError):
         guard._function_pin(body, {})
+
+
+@pytest.mark.asyncio
+async def test_negative_close_tls_uses_only_its_genuine_negative_shared_fence():
+    events, token = [], object()
+    record = {
+        "tls_ready": False,
+        "close_purpose": write._CLOSE_INTENT_KEY_V1,
+        "state": object(),
+        "session": object(),
+    }
+
+    async def positive(*args, **kwargs):
+        pytest.fail("an EStop close must not require healthy positive Arm authority")
+
+    async def control(*args, **kwargs):
+        events.append("native_control")
+
+    async def shared(*args, **kwargs):
+        events.append("negative_shared")
+
+    functions = {
+        "_lock_owned_native_close_transport_v1": control,
+        "_lock_shared_owned_native_close_control_v1": shared,
+    }
+    body = foreign_primitive_v1(
+        write._PhysicalWriteGateV2.tls_ready_after_locked_readback,
+        {
+            "_checked_gate": lambda actual: record,
+            "_close_function_v1": lambda actual, name: functions[name],
+            "_native_caller": SimpleNamespace(
+                _lock_shared_native_write_control_v2=positive
+            ),
+        },
+    )
+    await body(token)
+    assert events == ["native_control", "negative_shared"]
+    assert record["tls_ready"] is True

@@ -71,6 +71,8 @@ _CLOSE_API_NAMES_V1 = (
     "_bind_owned_native_close_transport_v1",
     "_replay_native_close_transport_facts_v1",
     "_lock_owned_native_close_transport_v1",
+    "_held_owned_native_close_database_v1",
+    "_lock_shared_owned_native_close_control_v1",
     "_require_owned_native_close_transport_lock_v1",
     "_discard_owned_native_close_intent_for_root_v1",
     "_inhibit_owned_native_close_transport_v1",
@@ -396,15 +398,19 @@ class _PhysicalWriteGateV2:
             await _close_function_v1(record, "_lock_owned_native_close_transport_v1")(
                 record["state"], session=record["session"], key=_CLOSE_INTENT_KEY_V1
             )
+            await _close_function_v1(
+                record, "_lock_shared_owned_native_close_control_v1"
+            )(record["state"], session=record["session"], key=_CLOSE_INTENT_KEY_V1)
         else:
             await ledger._lock_native_intent_for_transport_v2(
                 record["state"], session=record["session"], key=_INTENT_KEY
             )
         # Acquire only after TLS and native readback. Keep the same transaction
         # through SSL/raw writes so a committed shared stop cannot race them.
-        await _native_caller._lock_shared_native_write_control_v2(
-            record["session"], action=action
-        )
+        if record.get("close_purpose") is not _CLOSE_INTENT_KEY_V1:
+            await _native_caller._lock_shared_native_write_control_v2(
+                record["session"], action=action
+            )
         _checked_gate(self)
         record["tls_ready"] = True
 
@@ -1779,7 +1785,13 @@ async def _submit_close_v1(state, api, absolute_deadline):
             facts = _close_function_v1(holder, "_bind_owned_native_close_transport_v1")(
                 state, key=_CLOSE_INTENT_KEY_V1
             )
-            async with facts.session_factory() as session, session.begin():
+            async with (
+                facts.session_factory() as session,
+                session.begin(),
+                _close_function_v1(holder, "_held_owned_native_close_database_v1")(
+                    state, session=session, key=_CLOSE_INTENT_KEY_V1
+                ),
+            ):
                 await _close_function_v1(
                     holder, "_lock_owned_native_close_transport_v1"
                 )(state, session=session, key=_CLOSE_INTENT_KEY_V1)
