@@ -29,6 +29,109 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 _ARCHIVE = Path("/ctcc-admitted-test-source.tar")
 
 
+async def test_actual0056_owned_arm_rechecks_shared_stop_and_commits_exact_control(
+    _actual_0056_role_observation_lab,  # noqa: F811
+    monkeypatch,
+):
+    from types import SimpleNamespace
+
+    from sqlalchemy import insert
+
+    from app.core.native_role_witness_0056_v1 import (
+        observe_restricted_native_roles_0056_witness_v1,
+    )
+    from app.database.repositories import demo_control_current56_v1 as repository56
+    from app.database.repositories import (
+        native_legacy_control_genesis_0056_v1 as legacy,
+    )
+    from app.database.repositories.demo_control import ControlObservation
+    from app.trade_qualification import demo_control as domain
+    from app.trade_qualification import native_demo_control_owner_v2 as facade
+    from tests.controlled_writer_coverage_fixtures import _store_control_fixture
+
+    owner, _, selected, _ = _actual_0056_role_observation_lab
+    roles = await observe_restricted_native_roles_0056_witness_v1(
+        selected, source=control.deployment._SOURCE
+    )
+    scope = domain.ControlScope("demo", "730036")
+    owner_token = b"a" * 32
+    at = datetime.now(UTC)
+    acquired = domain.acquire(
+        None,
+        scope=scope,
+        owner_sha256=domain.owner_binding(owner_token),
+        pins=domain.ControlPins("1" * 64, "2" * 64, "3" * 64),
+        now=at,
+    )
+    async with owner.begin() as connection:
+        event = await _store_control_fixture(
+            connection,
+            acquired,
+            command_id="4" * 64,
+            action="acquire",
+            previous_sha256=None,
+        )
+        await connection.execute(
+            insert(DemoAutomationState).values(**legacy._stopped_values(at, "5" * 64))
+        )
+    repo = repository56.DemoControlRepository0056V1(
+        selected, roles=roles, scope=scope, clock=lambda: datetime.now(UTC)
+    )
+    with pytest.raises(
+        facade.NativeDemoControlError, match="original_0056_arm_required"
+    ):
+        await repo._arm_owned_0056(object(), owner_token, "6" * 64)
+    with pytest.raises(repository56.DemoControlRepository0056Error):
+        await repo.change(
+            scope,
+            owner_token=owner_token,
+            owner_epoch=1,
+            expected_revision=1,
+            action="arm_requested",
+            command_id="6" * 64,
+            arm_expires_at=at + timedelta(seconds=25),
+        )
+    expected = SimpleNamespace(
+        previous=ControlObservation(acquired, event, at),
+        shared_revision=1,
+        expires_at=at + timedelta(seconds=25),
+    )
+    consumed = set()
+
+    def checked(_attempt, actual, actual_scope):
+        assert actual is repo and actual_scope == scope
+        return expected
+
+    def take(attempt, actual, actual_scope):
+        assert attempt not in consumed
+        consumed.add(attempt)
+        return checked(attempt, actual, actual_scope)
+
+    # Only the in-memory authenticated operator handoff is substituted.
+    # Control locking, exact schema, shared stop, SQL and readback run live.
+    monkeypatch.setattr(facade, "_replay_owned_0056_arm", checked)
+    monkeypatch.setattr(facade, "_observe_owned_arm_0056", take)
+    with pytest.raises(repository56.DemoControlRepository0056Error):
+        await repo._arm_owned_0056(object(), owner_token, "6" * 64)
+    async with owner.begin() as connection:
+        await connection.execute(
+            update(DemoAutomationState).values(
+                control_revision=2, emergency_stop=False, locked=False, lock_reasons=[]
+            )
+        )
+    with pytest.raises(repository56.DemoControlRepository0056Error):
+        await repo._arm_owned_0056(object(), owner_token, "6" * 64)
+    expected.shared_revision = 2
+    armed = await repo._arm_owned_0056(object(), owner_token, "6" * 64)
+    assert armed.state.revision == 2
+    assert armed.state.arm_request_id == "6" * 64
+    assert armed.state.arm_expires_at == expected.expires_at
+    assert armed.execution_authority is False
+    independently_verified = await repo.read(scope)
+    assert independently_verified.state == armed.state
+    assert independently_verified.event_sha256 == armed.event_sha256
+
+
 async def test_actual0056_coverage_replays_held_checkpoint_without_authority(
     _actual_0056_role_observation_lab,  # noqa: F811
 ):

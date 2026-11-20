@@ -28,6 +28,16 @@ _FENCE = text(
     "public.demo_control_clear_acknowledgements_v2 "
     "IN ROW EXCLUSIVE MODE NOWAIT"
 )
+_SHARED_FENCE = text("LOCK TABLE public.demo_automation_state IN SHARE MODE NOWAIT")
+_SHARED_CONTROL = text("""
+SELECT id, control_revision, armed, emergency_stop, locked, restart_latch_required,
+       lock_reasons, active_trades, active_instrument_id, active_client_order_id,
+       active_start_equity, active_started_at, last_started_at, last_completed_at, last_error
+FROM public.demo_automation_state LIMIT 2
+""")
+_ACTIVE_SOAK = text(
+    "SELECT 1 FROM public.demo_soak_sessions WHERE state='running' LIMIT 1"
+)
 
 
 class DemoControlRepository0056Error(control.DemoControlError):
@@ -165,11 +175,14 @@ class DemoControlRepository0056V1:
         # actual readwrite database, with the selected role and UID locks.
         return await self.read(self._scope)
 
-    async def _mutate(self, scope, *, action, command_id, transition):
+    async def _mutate(self, scope, *, action, command_id, transition, arm_attempt=None):
         attempted = False
         try:
             control.sha(command_id)
             self._check_scope(scope)
+            _need((action == "arm_requested") is (arm_attempt is not None))
+            if arm_attempt is not None:
+                self._check_arm_attempt(arm_attempt, scope)
             async with self._factory() as session:
                 tx = await session.begin()
                 async with self._held(session, scope, mutate=True) as (
@@ -179,11 +192,38 @@ class DemoControlRepository0056V1:
                 ):
                     if action == "acquire" and self._expected_acquire_event is not None:
                         _need(before.event == self._expected_acquire_event)
-                    state = transition(before.state, before.metadata[9])
+                    if arm_attempt is None:
+                        state = transition(before.state, before.metadata[9])
+                        arm_fields_valid = (
+                            state.arm_request_id is state.arm_expires_at is None
+                        )
+                    else:
+                        expected = self._check_arm_attempt(arm_attempt, scope)
+                        _need(
+                            (before.state, before.event)
+                            == (expected.previous.state, expected.previous.event_sha256)
+                        )
+                        await self._read_shared_arm_fence(
+                            session, expected.shared_revision
+                        )
+                        check()
+                        self._check_arm_attempt(arm_attempt, scope)
+                        observed = await lineage._metadata(session)
+                        check()
+                        _need(
+                            observed[:9] == before.metadata[:9]
+                            and observed[9] >= before.metadata[9]
+                        )
+                        state = transition(before.state, observed[9])
+                        arm_fields_valid = (
+                            state.arm_request_id == command_id
+                            and state.arm_expires_at == expected.expires_at
+                            and state.emergency_stop is False
+                        )
                     _need(
                         state.scope == scope
                         and state.revision == before.state.revision + 1
-                        and state.arm_request_id is state.arm_expires_at is None
+                        and arm_fields_valid
                         and not (
                             before.state.emergency_stop and not state.emergency_stop
                         )
@@ -210,10 +250,34 @@ class DemoControlRepository0056V1:
                             or after[9] < state.lease_until
                         )
                     )
+                    if arm_attempt is not None:
+                        self._check_arm_attempt(arm_attempt, scope)
+                        _need(state.arm_intent_current(after[9]))
                 self._check_scope(scope)
+                if arm_attempt is not None:
+                    self._check_arm_attempt(arm_attempt, scope)
                 attempted = True
                 await tx.commit()
-            actual = await self._read(scope)
+            if arm_attempt is None:
+                actual = await self._read(scope)
+            else:
+                self._check_arm_attempt(arm_attempt, scope)
+                async with (
+                    self._factory() as reader,
+                    reader.begin(),
+                    self._held(reader, scope, mutate=False) as (_, actual, check),
+                ):
+                    await self._read_shared_arm_fence(reader, expected.shared_revision)
+                    metadata = await lineage._metadata(reader)
+                    check()
+                    self._check_arm_attempt(arm_attempt, scope)
+                    _need(
+                        reader is not session
+                        and metadata[:9] == actual.metadata[:9]
+                        and actual.metadata[9] <= metadata[9]
+                        and actual.state.arm_intent_current(metadata[9])
+                    )
+                self._check_arm_attempt(arm_attempt, scope)
             _need(
                 actual.state == state
                 and actual.event == event
@@ -235,6 +299,70 @@ class DemoControlRepository0056V1:
                     "native_control_repository_0056_uncertain"
                 ) from None
             _need(False)
+
+    def _check_arm_attempt(self, attempt, scope):
+        from app.trade_qualification import native_demo_control_owner_v2 as owner
+
+        return owner._replay_owned_0056_arm(attempt, self, scope)
+
+    async def _read_shared_arm_fence(self, session, revision):
+        engine = self._factory.kw["bind"]
+        transaction = session.sync_session.get_transaction()
+        locked._require_session(session, engine, transaction)
+        _need(
+            type(revision) is int
+            and revision >= 1
+            and all(
+                session.get_bind(clause=statement) is engine.sync_engine
+                for statement in (_SHARED_FENCE, _SHARED_CONTROL, _ACTIVE_SOAK)
+            )
+        )
+        await session.execute(_SHARED_FENCE)
+        locked._require_session(session, engine, transaction)
+        rows = (await session.execute(_SHARED_CONTROL)).all()
+        locked._require_session(session, engine, transaction)
+        _need(len(rows) == 1)
+        row = rows[0]
+        active_soak = await session.scalar(_ACTIVE_SOAK)
+        locked._require_session(session, engine, transaction)
+        _need(
+            row[0] == 1
+            and type(row[1]) is int
+            and row[1] == revision
+            and row[2] is row[3] is row[4] is False
+            and row[5] is True
+            and row[6] == []
+            and row[7] in ({}, [])
+            and row[8] is row[9] is row[10] is row[11] is None
+            and (row[12] is None or (row[13] is not None and row[12] <= row[13]))
+            and row[14] in (None, "")
+            and active_soak is None
+        )
+
+    async def _arm_owned_0056(self, attempt, owner_token, command_id):
+        from app.trade_qualification import native_demo_control_owner_v2 as owner
+
+        scope = self._scope
+        expected = owner._observe_owned_arm_0056(attempt, self, scope)
+        _need(
+            control.owner_binding(owner_token) == expected.previous.state.owner_sha256
+        )
+        return await self._mutate(
+            scope,
+            action="arm_requested",
+            command_id=command_id,
+            transition=lambda previous, now: control.advance(
+                previous,
+                owner_sha256=control.owner_binding(owner_token),
+                owner_epoch=expected.previous.state.owner_epoch,
+                expected_revision=expected.previous.state.revision,
+                action="arm_requested",
+                command_id=command_id,
+                now=now,
+                arm_expires_at=expected.expires_at,
+            ),
+            arm_attempt=attempt,
+        )
 
     async def acquire(self, scope, *, owner_token, pins, command_id):
         return await self._mutate(

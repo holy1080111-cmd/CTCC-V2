@@ -29,6 +29,7 @@ from app.database.repositories import (
     demo_operator_acknowledgements_current55_v1 as operator_repository,
 )
 from app.database.repositories import public_runtime_bundle_custody as custody
+from app.demo_automation import native_caller_v2 as production
 from app.domain import native_clock
 from app.domain.source_primitives import canonical, decode, sha, utc_from_ns
 from app.exchange.okx.private_rest import (
@@ -57,6 +58,7 @@ _OWNERS = {}
 _ACTIVE = {}
 _UNKNOWN = {}
 _HANDLES = {}
+_ARM_0056 = {}
 
 
 class NativeDemoControlError(ValueError):
@@ -171,6 +173,145 @@ class _MeasuredGenesisV1:
                 }
             )
         )
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class _OwnedArmExpectation0056:
+    previous: historical_repository.ControlObservation
+    shared_revision: int
+    expires_at: datetime
+
+
+def _observe_owned_arm_0056(attempt, repository, scope):
+    expected = _replay_owned_0056_arm(attempt, repository, scope)
+    state = _ARM_0056[attempt][0]
+    if state.get("owned_arm_0056_repository_started") is True:
+        _deny("native_demo_control_original_0056_arm_attempt_burned")
+    state["owned_arm_0056_repository_started"] = True
+    return expected
+
+
+def _replay_owned_0056_arm(attempt, repository, scope):
+    _REQUIRE_KERNEL()
+    retained = _ARM_0056.get(attempt) if type(attempt) is object else None
+    if retained is None:
+        _deny("native_demo_control_original_0056_arm_required")
+    state, cap, caller, request, plan, expected, generation, mono_deadline = retained
+    owner = _require_context(state)
+    shared, selection = production._check_pending_owned_arm_0056(
+        caller, request, plan, cap
+    )
+    stamp = _stamp()
+    now = utc_from_ns(stamp["utc_ns"])
+    if (
+        _OWNERS.get(cap) is not state
+        or _HANDLES.get(cap) is not state
+        or state["phase"] != "OWNED_ARM_0056"
+        or state["repository"] is not repository
+        or type(repository) is not repository56.DemoControlRepository0056V1
+        or state["scope"] != scope
+        or shared != expected.shared_revision
+        or selection is not state["identity_selection"]
+        or caller["factories"] is not state["db0056_factories"]
+        or state["observation"] is not expected.previous
+        or owner._observation is not expected.previous
+        or owner._generation != generation
+        or owner._local_estop is not False
+        or owner._arm_intent is not False
+        or not expected.previous.observed_at <= now < expected.expires_at
+        or stamp["monotonic_ns"] >= mono_deadline
+    ):
+        _deny("native_demo_control_original_0056_arm_changed")
+    return expected
+
+
+async def _request_owned_arm_0056(cap, caller, request, plan, *, expires_at):
+    """Take one authenticated caller request and retain uncertainty on failure."""
+    _REQUIRE_KERNEL()
+    state = _OWNERS.get(cap) if type(cap) is OwnedDemoControlSessionV2 else None
+    if state is None:
+        _deny("native_demo_control_original_0056_arm_required")
+    shared, selected = production._check_pending_owned_arm_0056(
+        caller, request, plan, cap
+    )
+    owner = _require_context(state)
+    before = state["observation"]
+    stamp = _stamp()
+    now = utc_from_ns(stamp["utc_ns"])
+    expires_at = control.utc(expires_at)
+    if (
+        type(state["repository"]) is not repository56.DemoControlRepository0056V1
+        or state["phase"] != "READY_DISARMED"
+        or state.get("owned_arm_0056_spent", False)
+        or before is not owner._observation
+        or before.state.emergency_stop is not False
+        or before.state.arm_request_id is not None
+        or before.state.arm_expires_at is not None
+        or owner._arm_intent is not False
+        or owner._local_estop is not False
+        or selected is not state["identity_selection"]
+        or not now
+        < expires_at
+        <= min(
+            before.state.lease_until, now + timedelta(seconds=control.MAX_ARM_SECONDS)
+        )
+    ):
+        _deny("native_demo_control_original_0056_arm_changed")
+    remaining = _remaining_control(state)
+    mono_deadline = min(
+        int(owner._lease_monotonic_deadline * 1_000_000_000),
+        stamp["monotonic_ns"]
+        + int(min(remaining, (expires_at - now).total_seconds()) * 1_000_000_000),
+    )
+    state["owned_arm_0056_spent"] = True
+    state["phase"] = "OWNED_ARM_0056"
+    attempt = object()
+    _ARM_0056[attempt] = (
+        state,
+        cap,
+        caller,
+        request,
+        plan,
+        _OwnedArmExpectation0056(before, shared, expires_at),
+        owner._generation,
+        mono_deadline,
+    )
+    try:
+        async with asyncio.timeout(min(remaining, (expires_at - now).total_seconds())):
+            _replay_owned_0056_arm(attempt, state["repository"], state["scope"])
+            result = await owner._perform(
+                "arm_requested", arm_expires_at=expires_at, _owned_arm_0056=attempt
+            )
+            _require_context(state)
+            production._check_pending_owned_arm_0056(caller, request, plan, cap)
+            if (
+                _OWNERS.get(cap) is not state
+                or state["phase"] != "OWNED_ARM_0056"
+                or owner._generation != _ARM_0056[attempt][6]
+                or owner._observation is not result
+                or owner.observed_arm_intent is not True
+                or result.state.arm_expires_at != expires_at
+                or not result.state.arm_intent_current(_now())
+            ):
+                _deny("native_demo_control_original_0056_arm_readback_changed")
+            state["observation"] = result
+            state["phase"] = "READY_ARMED"
+            await _actual_observation(state)
+            production._check_pending_owned_arm_0056(caller, request, plan, cap)
+            if (
+                _OWNERS.get(cap) is not state
+                or state["phase"] != "READY_ARMED"
+                or owner._generation != _ARM_0056[attempt][6]
+                or not owner.observed_arm_intent
+            ):
+                _deny("native_demo_control_original_0056_arm_readback_changed")
+            return result
+    except BaseException as error:  # noqa: BLE001 -- original owner is retained before the caller persists a stop.
+        _OWNERS.pop(cap, None)
+        _retain(state)
+        _raise_fixed(error, "native_demo_control_0056_arm_unconfirmed")
+    finally:
+        _ARM_0056.pop(attempt, None)
 
 
 def _stamp():
@@ -947,6 +1088,7 @@ def _make_kernel():
             "repository56",
             "historical_repository",
             "operator_repository",
+            "production",
             "lineage_repository",
             "legacy_lineage",
             "journal_repository",
@@ -970,6 +1112,25 @@ def _make_kernel():
     functions = tuple(
         (owner, name, callable_pin(getattr(owner, name)))
         for owner, names in (
+            (
+                production,
+                (
+                    "_check_pending_owned_arm_0056",
+                    "_service",
+                    "_ready",
+                    "_check_request_v2",
+                    "_freeze_request_v2",
+                ),
+            ),
+            (
+                repository56.DemoControlRepository0056V1,
+                (
+                    "_arm_owned_0056",
+                    "_check_arm_attempt",
+                    "_read_shared_arm_fence",
+                    "_mutate",
+                ),
+            ),
             (
                 original.DemoControlOwner,
                 (
@@ -1069,7 +1230,7 @@ def _make_kernel():
         for name, value in OwnedDemoControlSessionV2.__dict__.items()
         if hasattr(value, "__code__") or type(value) is property
     )
-    storage = (_OWNERS, _ACTIVE, _UNKNOWN, _HANDLES)
+    storage = (_OWNERS, _ACTIVE, _UNKNOWN, _HANDLES, _ARM_0056, production._ACTIVE)
     native_aliases = tuple(
         (name, getattr(native, name))
         for name in (
@@ -1124,6 +1285,8 @@ def _make_kernel():
             or namespace["_ACTIVE"] is not storage[1]
             or namespace["_UNKNOWN"] is not storage[2]
             or namespace["_HANDLES"] is not storage[3]
+            or namespace["_ARM_0056"] is not storage[4]
+            or production._ACTIVE is not storage[5]
             or tuple(namespace["_OPERATIONS"].items()) != operation_items
             or (
                 namespace["_NOW"],

@@ -97,6 +97,10 @@ LEGACY_CONTROL_GENESIS_CASE = (
     DB0056_CONTROL_MONITOR_TEST_PATH.removesuffix(".py").replace("/", "."),
     "test_actual0056_owner_initializes_legacy_singleton_only_as_stopped",
 )
+OWNED_ARM_CASE = (
+    DB0056_CONTROL_MONITOR_TEST_PATH.removesuffix(".py").replace("/", "."),
+    "test_actual0056_owned_arm_rechecks_shared_stop_and_commits_exact_control",
+)
 REPORT_RESUME_CASE = (
     DB0056_REPORT_RESUME_TEST_PATH.removesuffix(".py").replace("/", "."),
     "test_actual0056_report_resume_refuses_missing_cleanup_no_new_rows",
@@ -112,6 +116,7 @@ CURRENT56_PG1_REQUIRED_CASES = (
     CONTROL_LIFECYCLE_CASE,
     COVERAGE_CHECKPOINT_CASE,
     LEGACY_CONTROL_GENESIS_CASE,
+    OWNED_ARM_CASE,
     REPORT_RESUME_CASE,
     INITIAL_TRANSPORT_CASE,
 )

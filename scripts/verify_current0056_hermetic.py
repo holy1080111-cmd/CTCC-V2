@@ -165,6 +165,7 @@ _FITTED_CASES = (
     contract.CONTROL_LIFECYCLE_CASE,
     contract.COVERAGE_CHECKPOINT_CASE,
     contract.LEGACY_CONTROL_GENESIS_CASE,
+    contract.OWNED_ARM_CASE,
     contract.REPORT_RESUME_CASE,
     contract.INITIAL_TRANSPORT_CASE,
     (

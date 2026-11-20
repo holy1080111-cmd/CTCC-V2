@@ -102,7 +102,9 @@ class DemoControlOwner:
                 self._arm_intent = False
                 return False
 
-    async def _perform(self, action, *, arm_expires_at=None, pins=None):
+    async def _perform(
+        self, action, *, arm_expires_at=None, pins=None, _owned_arm_0056=None
+    ):
         # Capture before the mutex await: a queued Arm must not adopt a newer
         # generation after disarm/shutdown revoked the invocation while waiting.
         with self._local:
@@ -133,16 +135,33 @@ class DemoControlOwner:
                 else:
                     if previous is None:
                         raise DemoControlError("control_owner_missing_observation")
-                    result = await self.repository.change(
-                        self.scope,
-                        owner_token=self._owner_token,
-                        owner_epoch=previous.state.owner_epoch,
-                        expected_revision=previous.state.revision,
-                        action=action,
-                        command_id=command_id,
-                        arm_expires_at=arm_expires_at,
-                        pins=pins,
-                    )
+                    if _owned_arm_0056 is not None:
+                        from app.database.repositories.demo_control_current56_v1 import (
+                            DemoControlRepository0056V1,
+                        )
+
+                        if (
+                            action != "arm_requested"
+                            or pins is not None
+                            or type(self.repository) is not DemoControlRepository0056V1
+                        ):
+                            raise DemoControlError(
+                                "control_owned_arm_repository_required"
+                            )
+                        result = await self.repository._arm_owned_0056(
+                            _owned_arm_0056, self._owner_token, command_id
+                        )
+                    else:
+                        result = await self.repository.change(
+                            self.scope,
+                            owner_token=self._owner_token,
+                            owner_epoch=previous.state.owner_epoch,
+                            expected_revision=previous.state.revision,
+                            action=action,
+                            command_id=command_id,
+                            arm_expires_at=arm_expires_at,
+                            pins=pins,
+                        )
                 with self._local:
                     if type(result) is not ControlObservation:
                         raise DemoControlError("control_observation_type_invalid")

@@ -7007,6 +7007,8 @@ _CONTROLLED_SOURCE_PATHS_V1 = (
     "app/trade_qualification/portfolio.py",
     "app/trade_qualification/demo_control.py",
     "app/trade_qualification/demo_control_runtime.py",
+    "app/demo_automation/native_caller_v2.py",
+    "app/database/repositories/demo_automation.py",
     "app/trade_qualification/demo_control_clear_v2.py",
     "app/trade_qualification/demo_policy_counter_initialization_v1.py",
     "app/trade_qualification/account_original_balance_measurement_v1.py",

@@ -289,6 +289,34 @@ async def _lock_shared_native_write_control_v2(session, *, action):
     _ready(safe_demo_automation, state)
 
 
+def _check_pending_owned_arm_0056(state, request, plan, owner):
+    service = state["service"]
+    settings = _ready(service, state)
+    _check_request_v2(request, plan)
+    _need(
+        state["action"] == "arm_execute"
+        and state.get("pending_arm_0056") is request
+        and state.get("arm_plan_0056") is plan
+        and state.get("controller") is owner
+        and state["selection"] is not None
+        and state["factories"].writer_factory is service.repository.session_factory
+        and service._recovered is True
+        and state["submitted_or_unknown"] is False
+        and type(state.get("shared_control_revision")) is int
+        and state["shared_control_revision"] >= 1
+        and settings.environment == "production"
+        and settings.okx_demo_allow_order_writes is True
+        and settings.okx_demo_auto_execution is True
+        and settings.okx_demo_require_protection is True
+        and settings.okx_ws_enabled is True
+        and plan.instrument_id in settings.okx_demo_allowed_symbol_list
+        and plan.contracts <= settings.okx_demo_max_order_size_contracts
+        and plan.leverage <= settings.okx_demo_max_leverage,
+        "native_demo_owned_arm_0056_required",
+    )
+    return state["shared_control_revision"], state["selection"]
+
+
 def _roots(settings, invocation_id):
     from app.trade_qualification import account_native_proof_storage as storage
 
@@ -646,18 +674,13 @@ async def perform_native_demo_action_v2(service, request, *, operator_token):
                     _check_request_v2(request, selected)
                     # Captured BEFORE prepare: this shortens the actual native
                     # lease. The native owner independently enforces its cap.
-                    await owner.request_arm(
-                        expires_at=min(
-                            (
-                                selection.current_plan.created_at
-                                + timedelta(
-                                    seconds=selection.current_plan.max_batch_seconds
-                                )
-                            ),
-                            prepare_started
-                            + timedelta(seconds=demo_control.MAX_ARM_SECONDS),
-                        )
+                    expires_at = min(
+                        selection.current_plan.created_at
+                        + timedelta(seconds=selection.current_plan.max_batch_seconds),
+                        prepare_started
+                        + timedelta(seconds=demo_control.MAX_ARM_SECONDS),
                     )
+                    await owner.request_arm(expires_at=expires_at)
                     _ready(service, state)
                     source_roots = controlled.ControlledAccountRootsV6(
                         state["roots"]["current-history-raw"],
