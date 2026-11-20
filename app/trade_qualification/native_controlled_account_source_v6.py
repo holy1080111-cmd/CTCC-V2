@@ -12,7 +12,7 @@ CURRENT freshness or dispatch authority through these DATA-only contexts.
 
 import asyncio
 from collections.abc import Coroutine
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field, fields, is_dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Context, Decimal, localcontext
@@ -3141,6 +3141,7 @@ def bind_issued_demo_transport_v2(binding, *, key):
         _deny("controlled_account_dedicated_native_transport_client_required")
     token = object.__new__(_DemoTransportBindingV2)
     record = {
+        "token": token,
         "state": state,
         "held": binding,
         "client": client,
@@ -3154,6 +3155,9 @@ def bind_issued_demo_transport_v2(binding, *, key):
         "factory": state["control"]["factory"],
         "owner": state["control"]["owner"],
         "scope": state["control"]["scope"],
+        # Capture while the genuine selector/Arm is still current. Safety and
+        # retained DATA must not replay that trading lease after submission.
+        "database_profile": _owned_database_0056_v6(state),
     }
     _TRANSPORT_V6[token] = record
     state["transport_binding"] = token
@@ -3216,11 +3220,81 @@ def _inhibit_issued_demo_transport_v2(binding, *, key):
     return _INHIBIT_TRANSPORT_V6(record)
 
 
+def _transport_safety_database_v6(record):
+    """Replay only the spent transport's original database, without a lease."""
+    ctrl = record["state"]["control"]
+    repository = record["repository"]
+    if (
+        _TRANSPORT_V6.get(record["token"]) is not record
+        or repository is not ctrl["repository"]
+        or repository.session_factory is not record["factory"]
+        or record["factory"] is not ctrl["factory"]
+        or record["scope"] != ctrl["scope"]
+    ):
+        _deny("controlled_account_original_transport_database_changed")
+    profile = record["database_profile"]
+    if profile is None:
+        if (
+            type(repository) is not DemoControlRepositoryV2
+            or ctrl.get("db0056_factories") is not None
+            or ctrl.get("db0056_roles") is not None
+        ):
+            _deny("controlled_account_original_transport_database_changed")
+        return None
+    if type(profile) is not tuple or len(profile) != 2:
+        _deny("controlled_account_original_transport_database_changed")
+    selected, roles = profile
+    if (
+        type(repository) is not repository56.DemoControlRepository0056V1
+        or type(selected) is not selector56.ConfiguredNativeDemoFactoriesV2
+        or type(roles) is not witness56.RestrictedNativeRoles0056WitnessV1
+        or selected is not ctrl["db0056_factories"]
+        or roles is not ctrl["db0056_roles"]
+        or selected.writer_factory is not record["factory"]
+        or repository._selected is not selected
+        or repository._roles is not roles
+        or repository._scope != record["scope"]
+    ):
+        _deny("controlled_account_original_transport_database_changed")
+    return profile
+
+
+async def _held_retained_transport_control_v6(record, session):
+    profile = _transport_safety_database_v6(record)
+    if profile is None:
+        await catalog55.verify_actual_control_catalog_v2(session)
+        state, event = await DemoControlRepositoryV2.read_in_transaction(
+            session, record["scope"]
+        )
+        yield state, event
+        return
+    selected, roles = profile
+    async with control56.held_native_writer_control_0056_v1(
+        selected,
+        session,
+        record["scope"],
+        roles=roles,
+        purpose=control56.NativeWriterControlPurpose0056.PREPARE_OBSERVATION,
+    ) as held:
+        held.check_held()
+        actual = held.observation.control
+        yield actual.state, actual.event_sha256
+        held.check_held()
+        if (
+            await control56.writer56.observe_restricted_readwrite_writer_0056_v1(
+                session
+            )
+            != held.observation.writer_catalog
+        ):
+            _deny("controlled_account_cleanup_control_database_changed")
+        held.check_held()
+
+
 def _make_transport_inhibitor_v6():
     revoke = owner55.original.DemoControlOwner._revoke
     tighten = owner55.original.DemoControlOwner._tighten
     owner_type = owner55.original.DemoControlOwner
-    repository_type = DemoControlRepositoryV2
+    database = _transport_safety_database_v6
     owner_kernel = owner55._REQUIRE_KERNEL
     timeout = asyncio.timeout
 
@@ -3248,7 +3322,6 @@ def _make_transport_inhibitor_v6():
         if (
             type(owner) is not owner_type
             or owner is not ctrl["owner"]
-            or type(record["repository"]) is not repository_type
             or owner.repository is not record["repository"]
             or record["factory"] is not ctrl["factory"]
             or record["scope"] != ctrl["scope"]
@@ -3256,6 +3329,7 @@ def _make_transport_inhibitor_v6():
             _deny("controlled_account_original_transport_safety_owner_changed")
         revoke(owner, stop=True)
         _RETIRE_SOURCE_V6(state, uncertain=True)
+        database(record)
         return persist(record)
 
     return inhibit
@@ -3917,6 +3991,52 @@ def _replay_native_recovery_read_source_v1(source_generation, *, key):
     # been replaced by this new DATA read context.
     _reconciliation_identity_v6(record, deadline=True)
     return _reconciliation_view_v6(record, postsubmit)
+
+
+def _replay_reconciliation_database_v6(view, *, key):
+    """Original retained DATA database; never grants freshness, Arm or submit."""
+    from app.database.repositories import native_postsubmit_v1 as repository
+    from app.trade_qualification import native_postsubmit_reconciliation_v1 as post
+
+    if (
+        key is not repository._SOURCE_KEY_V1
+        or type(view) is not post.NativeReconciliationSourceContextV1
+    ):
+        _deny("controlled_account_reconciliation_database_purpose_required")
+    record = _RECONCILIATION_READ_V6.get(view.source_generation)
+    if (
+        type(record) is not dict
+        or record["view"] is not view
+        or view.session_factory is not record["writer_factory"]
+        or view.scope != record["scope"]
+    ):
+        _deny("controlled_account_reconciliation_database_source_required")
+    actual, expected = native._context(), record["context"]
+    if actual[:3] != expected[:3] or actual[3] is not expected[3]():
+        _deny("controlled_account_reconciliation_original_task_changed")
+    for factory, pin, route in record["factories"]:
+        if (
+            history._factory_pin(factory) != pin
+            or native._database_connection_pin_v4(factory) != route
+        ):
+            _deny("controlled_account_reconciliation_actual_factory_changed")
+    if record["source_state"] is None:
+        # Recovery currently originates only in the strict head55 selector.
+        if record["transport"] is not None or record["control_owner"] is not None:
+            _deny("controlled_account_reconciliation_database_source_required")
+        return None
+    transport = _TRANSPORT_V6.get(record["transport"])
+    if (
+        type(transport) is not dict
+        or transport["state"] is not record["source_state"]
+        or transport["factory"] is not view.session_factory
+        or transport["factory"] is not record["writer_factory"]
+        or transport["owner"] is not record["control_owner"]
+        or transport["scope"].environment != view.scope.environment
+        or transport["scope"].account_id != view.scope.account_id
+    ):
+        _deny("controlled_account_reconciliation_database_source_required")
+    return _transport_safety_database_v6(transport)
 
 
 def _reconciliation_retained_buffers_v6(record):
@@ -6415,12 +6535,11 @@ async def _read_filled_cleanup_control_v12(record):
     if (
         history._factory_pin(factory) != record["negative_factory_pin"]
         or record["transport"]["factory"] is not factory
-        or type(ctrl["repository"]) is not DemoControlRepositoryV2
         or ctrl["repository"].session_factory is not factory
         or record["transport"]["owner"].repository is not ctrl["repository"]
     ):
         _deny("controlled_account_cleanup_control_factory_changed")
-    async with factory() as session, session.begin():
+    async with factory() as session, session.begin(), AsyncExitStack() as stack:
         _negative_cleanup_control_check_v13(record)
         if type(session) is not AsyncSession:
             _deny("controlled_account_cleanup_control_native_session_required")
@@ -6433,10 +6552,10 @@ async def _read_filled_cleanup_control_v12(record):
         ):
             await session.execute(text(statement))
             _negative_cleanup_control_check_v13(record)
-        await catalog55.verify_actual_control_catalog_v2(session)
-        _negative_cleanup_control_check_v13(record)
-        state, event = await DemoControlRepositoryV2.read_in_transaction(
-            session, ctrl["scope"]
+        state, event = await stack.enter_async_context(
+            asynccontextmanager(_held_retained_transport_control_v6)(
+                record["transport"], session
+            )
         )
         record["control_read_pending"] = (state, event)
         _negative_cleanup_control_check_v13(record)
@@ -7849,6 +7968,7 @@ def _install_source_kernel_v6():
         "_replay_issued_demo_reconciliation_context_v2",
         "_acquire_native_recovery_read_source_v1",
         "_replay_native_recovery_read_source_v1",
+        "_replay_reconciliation_database_v6",
         "acquire_native_close_read_source_v1",
         "_replay_native_close_read_source_v1",
         "acquire_native_close_post_read_source_v1",

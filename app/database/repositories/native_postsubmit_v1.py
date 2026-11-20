@@ -9,7 +9,7 @@ actual55 closure body can resolve a genuinely observed complete zero-fill FOK.
 from __future__ import annotations
 
 import itertools
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -34,6 +34,7 @@ from app.database.models.submission_reporting import (
 )
 from app.database.repositories import account_issued_revision_current55_v1 as issued
 from app.database.repositories import qualification_ledger as ledger
+from app.database.repositories import qualification_native_checkpoint_v2 as checkpoint
 from app.database.repositories.account_capture_journal import (
     AccountCaptureJournalRepository,
 )
@@ -54,6 +55,7 @@ from app.trade_qualification import reservations
 _SOURCE_KEY_V1 = object()
 _RECOVERY_CLOSE_HISTORIES_V1 = {}
 _RECOVERY_HISTORY_BUFFERS_V1 = {}
+_HELD_POSTSUBMIT_0056 = {}
 _MAX_OUTCOMES = 4096
 _CHUNK = 65536
 _META = text(
@@ -85,6 +87,64 @@ def _source(binding):
         and type(source.session_factory) is async_sessionmaker
     )
     return state, source
+
+
+def _database_profile(binding):
+    from app.trade_qualification import native_controlled_account_source_v6 as account
+
+    state, source = _source(binding)
+    pin = account.history._factory_pin(source.session_factory)
+    route = account.native._database_connection_pin_v4(source.session_factory)
+    scope = canonical(source.scope.model_dump(mode="json"))
+    saved = state.get("postsubmit_database_origin_v6")
+    if saved is None:
+        profile = account._replay_reconciliation_database_v6(source, key=_SOURCE_KEY_V1)
+        saved = (source, source.session_factory, pin, route, scope, profile)
+        # Retain on the already-authenticated postsubmit state. Final negative
+        # DATA append follows genuine transport/read registry retirement and
+        # must retain this original database without reviving either registry.
+        state["postsubmit_database_origin_v6"] = saved
+    need(
+        type(saved) is tuple
+        and len(saved) == 6
+        and saved[0] is source
+        and saved[1] is source.session_factory
+        and saved[2:5] == (pin, route, scope),
+        "native_postsubmit_original_database_changed",
+    )
+    profile = saved[5]
+    need(
+        profile is None
+        or (
+            type(profile) is tuple
+            and len(profile) == 2
+            and profile[0].writer_factory is source.session_factory
+        ),
+        "native_postsubmit_original_database_changed",
+    )
+    return profile
+
+
+async def _checked_postsubmit_catalog(binding, session):
+    profile = _database_profile(binding)
+    if profile is None:
+        result = await verify_actual_issuer_catalog_v2(session)
+        _source(binding)
+        return result
+    current = _HELD_POSTSUBMIT_0056.get(session)
+    need(
+        type(current) is tuple
+        and len(current) == 2
+        and current[0] is binding
+        and current[1].selected is profile[0]
+        and current[1].session is session,
+        "native_postsubmit_original_0056_transaction_required",
+    )
+    await current[1].recheck_catalog()
+    _source(binding)
+    # This exact inherited graph includes the terminal/close bodies and index.
+    # Its false native_baseline_admission field is never turned into authority.
+    return None
 
 
 def _row(model, *, exclude=()):
@@ -154,7 +214,11 @@ async def _transaction(binding):
     repository = ledger.QualificationLedgerRepository(
         source.session_factory, clock=_now
     )
-    async with source.session_factory() as session, session.begin():
+    async with (
+        source.session_factory() as session,
+        session.begin(),
+        AsyncExitStack() as stack,
+    ):
         need(
             type(session) is AsyncSession
             and session.get_bind().dialect.name == "postgresql"
@@ -176,15 +240,34 @@ async def _transaction(binding):
             == "read committed"
         )
         _source(binding)
-        await verify_actual_issuer_catalog_v2(session)
-        _source(binding)
-        # Same UID -> current55 Control -> scope lock order as native reserve.
+        profile = _database_profile(binding)
+        control_scope = control.ControlScope(
+            source.scope.environment, source.scope.account_id
+        )
+        held = None
+        if profile is None:
+            await verify_actual_issuer_catalog_v2(session)
+            _source(binding)
+        else:
+            held = await stack.enter_async_context(
+                checkpoint.held_qualification_checkpoint_0056_v1(
+                    profile[0], session, control_scope, roles=profile[1]
+                )
+            )
+            _source(binding)
+            need(held.selected.writer_factory is source.session_factory)
+            _HELD_POSTSUBMIT_0056[session] = (binding, held)
+            stack.callback(_HELD_POSTSUBMIT_0056.pop, session)
+        # Same UID -> original selected Control -> scope lock order as reserve.
         await ledger._require_event_journal_write_schema(session, source.scope)
         _source(binding)
-        control_state, event = await DemoControlRepositoryV2.read_in_transaction(
-            session,
-            control.ControlScope(source.scope.environment, source.scope.account_id),
-        )
+        if held is None:
+            control_state, event = await DemoControlRepositoryV2.read_in_transaction(
+                session, control_scope
+            )
+        else:
+            actual = held.control.control
+            control_state, event = actual.state, actual.event_sha256
         _source(binding)
         scope_row = await repository._locked(session, source.scope)
         _source(binding)
@@ -214,6 +297,9 @@ async def _transaction(binding):
             metadata,
         )
         _source(binding)
+        if held is not None:
+            await held.recheck_catalog()
+            _source(binding)
 
 
 async def _target_locked(binding, source, repository, session, scope_row, metadata):
@@ -1611,8 +1697,9 @@ async def record_native_close_preflight_v1(binding):
 async def _require_close_intent_schema_v55(binding, session):
     from app.domain import native_close_intent_schema_v55 as schema
 
-    metadata = await verify_actual_issuer_catalog_v2(session)
-    _source(binding)
+    metadata = await _checked_postsubmit_catalog(binding, session)
+    if metadata is None:
+        return
     need(
         type(metadata) is dict
         and metadata.get("native_baseline_admission") is True
@@ -2452,8 +2539,9 @@ async def record_native_closed_trade_readback_v1(binding):
 async def _require_filled_flat_schema_v55(binding, session):
     from app.domain import native_filled_flat_closure_schema_v55 as schema
 
-    actual = await verify_actual_issuer_catalog_v2(session)
-    _source(binding)
+    actual = await _checked_postsubmit_catalog(binding, session)
+    if actual is None:
+        return
     need(
         type(actual) is dict
         and actual.get("native_baseline_admission") is True
