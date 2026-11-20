@@ -222,7 +222,6 @@ async def _owner_identity(
     profile=profiles.DB0056,
 ):
     from app.core import native_role_preflight_0056_full_diagnostic_v1 as roles56
-    from scripts import native_owner_postgrant_readback_0056_v1 as postgrant
     from scripts import native_owner_route_preflight_0056_v1 as route
     from scripts import native_owner_upgrade_0056_v1 as upgrade
 
@@ -249,7 +248,7 @@ async def _owner_identity(
         profiles.head(profile),
         read_only=read_only,
     )
-    _need(postgrant._owner_server_sha256(identity) == server_incarnation_sha256)
+    _need(_owner_incarnation_sha256(identity, profile) == server_incarnation_sha256)
     xid, pid, synchronous_commit, timezone, in_recovery = (
         await session.execute(_IDENTITY)
     ).one()
@@ -259,6 +258,18 @@ async def _owner_identity(
         and pid > 0
     )
     return identity, xid, pid
+
+
+def _owner_incarnation_sha256(identity, profile):
+    """Keep frozen56 bytes; higher actual profiles retain their real schema."""
+    profiles.checked(profile)
+    if profile is profiles.DB0056:
+        from scripts.native_owner_postgrant_readback_0056_v1 import _owner_server_sha256
+
+        return _owner_server_sha256(identity)
+    from scripts.native_owner_upgrade_0057_v1 import _server_sha
+
+    return _server_sha(identity, profile)
 
 
 def _owner_engine(factory, pins):
