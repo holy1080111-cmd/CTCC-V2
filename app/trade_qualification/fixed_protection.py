@@ -50,6 +50,7 @@ from app.strategies.structural_protection import (
     select_structural_protection,
     select_sweep_structural_protection,
 )
+from app.trade_qualification import executable_quote_live_v1 as _live_quote_v1
 from app.trade_qualification import executable_quote_v2 as _owned_quote_v2
 from app.trade_qualification import (
     native_original_bracket_policy_v1 as _owned_family_policy_v2,
@@ -1020,6 +1021,11 @@ def _evaluate_fixed_protection(
         return finish()
 
 
+class _OwnedQuoteProfile(Enum):
+    DEMO = "demo_v2"
+    LIVE = "live_v1"
+
+
 def evaluate_owned_fixed_protection_v2(
     original_market: MarketSnapshot,
     original_analysis: MultiTimeframeAnalysis,
@@ -1037,6 +1043,53 @@ def evaluate_owned_fixed_protection_v2(
     quote: _owned_quote_v2.ExecutableQuoteV2,
     observed_at: datetime,
 ) -> FixedProtectionResult:
+    """Existing exact Demo quote path; receipt bytes retain their old meaning."""
+    return _evaluate_owned_fixed_protection_profile(
+        **locals(), _quote_profile=_OwnedQuoteProfile.DEMO
+    )
+
+
+def evaluate_live_owned_fixed_protection_v1(
+    original_market: MarketSnapshot,
+    original_analysis: MultiTimeframeAnalysis,
+    current_market: MarketSnapshot,
+    current_analysis: MultiTimeframeAnalysis,
+    *,
+    detection: TriggerDetection,
+    original_selection_audit_json: str,
+    stop_loss: Decimal,
+    take_profit: Decimal,
+    entry: Decimal,
+    policy: ProtectionPolicy,
+    tick_size: Decimal,
+    data_policy: DataQualificationPolicy,
+    quote: _live_quote_v1.LiveExecutableQuoteV1,
+    observed_at: datetime,
+) -> FixedProtectionResult:
+    """Same fixed-price math, with the original exact Live quote and inspector."""
+    return _evaluate_owned_fixed_protection_profile(
+        **locals(), _quote_profile=_OwnedQuoteProfile.LIVE
+    )
+
+
+def _evaluate_owned_fixed_protection_profile(
+    original_market: MarketSnapshot,
+    original_analysis: MultiTimeframeAnalysis,
+    current_market: MarketSnapshot,
+    current_analysis: MultiTimeframeAnalysis,
+    *,
+    detection: TriggerDetection,
+    original_selection_audit_json: str,
+    stop_loss: Decimal,
+    take_profit: Decimal,
+    entry: Decimal,
+    policy: ProtectionPolicy,
+    tick_size: Decimal,
+    data_policy: DataQualificationPolicy,
+    quote: _owned_quote_v2.ExecutableQuoteV2,
+    observed_at: datetime,
+    _quote_profile: _OwnedQuoteProfile,
+) -> FixedProtectionResult:
     """Compare original prices only; current-source history continuity is separate.
 
     Noise uses the original stop anchor's timeframe ATR, the original stop
@@ -1045,6 +1098,8 @@ def evaluate_owned_fixed_protection_v2(
     bounded 15m/1H/4H source universe. Equality clears the same buffer boundary
     as the original selector; a target exactly at a barrier is not beyond it.
     """
+    if type(_quote_profile) is not _OwnedQuoteProfile:
+        raise FixedProtectionError("fixed_owned_quote_profile_invalid")
     try:
         event = _copy(detection, TriggerDetection)
         _reversal = event.strategy == "structure_reversal"
@@ -1244,11 +1299,18 @@ def evaluate_owned_fixed_protection_v2(
             },
         )
         try:
-            if type(quote) is not _owned_quote_v2.ExecutableQuoteV2:
-                raise FixedProtectionError("fixed_v2_exact_quote_required")
-            inspected = _owned_quote_v2.inspect_executable_quote_v2(
-                quote, current_time=now
-            )
+            if _quote_profile is _OwnedQuoteProfile.DEMO:
+                if type(quote) is not _owned_quote_v2.ExecutableQuoteV2:
+                    raise FixedProtectionError("fixed_v2_exact_quote_required")
+                inspected = _owned_quote_v2.inspect_executable_quote_v2(
+                    quote, current_time=now
+                )
+            else:
+                if type(quote) is not _live_quote_v1.LiveExecutableQuoteV1:
+                    raise FixedProtectionError("fixed_live_exact_quote_required")
+                inspected = _live_quote_v1.inspect_live_executable_quote_v1(
+                    quote, current_time=now
+                )
             observation = _owned_decode_v2(inspected.receipt_json, 1024 * 1024)
             if observation["profile_satisfied"] is not True or (
                 quote.report_id,
