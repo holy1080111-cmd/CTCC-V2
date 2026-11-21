@@ -1073,7 +1073,11 @@ def _normalize_bootstrap(value, ref, bootstrap_owner):
     return normalized
 
 
-def _normalize(document):
+def _normalize(document, *, read_only="on"):
+    # Public DATA replay remains READ ONLY. The owner-maintenance procedure
+    # supplies its actually observed write-transaction mode explicitly; it
+    # must never change/relabel the captured profile to reuse the reader.
+    _need(type(read_only) is str and read_only in ("on", "off"))
     _need(
         type(document) is dict
         and set(document)
@@ -1120,7 +1124,7 @@ def _normalize(document):
     _need(
         profile["session_owner"] == owner
         and profile["role"] == "none"
-        and profile["read_only"] == "on"
+        and profile["read_only"] == read_only
         and profile["search_path"] == "pg_catalog"
         and profile["timezone"] == "UTC"
         and profile["tls"] is True

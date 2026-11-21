@@ -1,4 +1,4 @@
-"""Actual fresh bootstrap DATA, distinct purpose, original v1 unchanged."""
+"""Actual bootstrap DATA; public V1 purpose/literal stay unchanged."""
 
 import hashlib
 import json
@@ -106,7 +106,7 @@ def test_membership_digest_cannot_be_a_nonempty_population_with_zero_claimed_cou
         subject.require_bootstrap_catalog17_v2(value)
 
 
-def test_unmodified_v1_and_new_bootstrap_purposes_do_not_cross_admit():
+def test_public_readonly_v1_and_new_bootstrap_purposes_do_not_cross_admit():
     old_path = (
         ROOT
         / "tests/fixtures/retained0017_official_reference_v1/retained0017-reference-a-raw.json"
@@ -120,8 +120,32 @@ def test_unmodified_v1_and_new_bootstrap_purposes_do_not_cross_admit():
         subject.require_bootstrap_catalog17_v2(old)
     with pytest.raises(original.Retained0017CatalogRefused):
         original.require_sealed_catalog17_v1(_raw())
+    changed_mode = json.loads(json.dumps(old))
+    changed_mode["profile"]["read_only"] = "off"
+    with pytest.raises(original.Retained0017CatalogRefused):
+        original.normalize_catalog17_v1(changed_mode)
+    # The owner integration adds only its reviewed PRIVATE explicit-mode
+    # parameter. Pin the current reviewed file separately; reconstructing the
+    # historical bytes below is provenance only, never a current source or
+    # admission claim. The public reader's actual mode remains unchanged.
+    source = Path(original.__file__).read_bytes()
     assert (
-        hashlib.sha256(Path(original.__file__).read_bytes()).hexdigest()
+        hashlib.sha256(source).hexdigest()
+        == "58b17530c407984da10a9672aedcf7b3b61ab2b00f7310d0639da2a1fe9a84c2"
+    )
+    private_hunk = b"""def _normalize(document, *, read_only="on"):
+    # Public DATA replay remains READ ONLY. The owner-maintenance procedure
+    # supplies its actually observed write-transaction mode explicitly; it
+    # must never change/relabel the captured profile to reuse the reader.
+    _need(type(read_only) is str and read_only in ("on", "off"))
+"""
+    predicate = b'and profile["read_only"] == read_only'
+    assert source.count(private_hunk) == source.count(predicate) == 1
+    prior = source.replace(private_hunk, b"def _normalize(document):\n").replace(
+        predicate, b'and profile["read_only"] == "on"'
+    )
+    assert (
+        hashlib.sha256(prior).hexdigest()
         == "d0ea6a246f204429e212a389c80bc96c84e3429d55d0aa85eb0749032fe69478"
     )
 
