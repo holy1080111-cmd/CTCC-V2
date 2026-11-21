@@ -132,12 +132,27 @@ async def test_actual0017_fresh_independent_catalog_reference_is_complete(
  (SELECT c.oid::pg_catalog.int8 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
   WHERE n.nspname='public' AND c.relname='alembic_version'),
  pg_catalog.current_setting('server_version_num'),
- EXISTS(SELECT 1 FROM pg_catalog.pg_stat_ssl WHERE pid=pg_catalog.pg_backend_pid() AND ssl)
+ EXISTS(SELECT 1 FROM pg_catalog.pg_stat_ssl WHERE pid=pg_catalog.pg_backend_pid() AND ssl),
+ EXISTS(SELECT 1 FROM pg_catalog.pg_class parent
+ JOIN pg_catalog.pg_namespace pn ON pn.oid=parent.relnamespace
+ JOIN pg_catalog.pg_class toast ON toast.oid=parent.reltoastrelid
+ JOIN pg_catalog.pg_namespace tn ON tn.oid=toast.relnamespace
+ JOIN pg_catalog.pg_index ti ON ti.indrelid=toast.oid
+ JOIN pg_catalog.pg_class ix ON ix.oid=ti.indexrelid
+ WHERE pn.nspname='public' AND parent.relkind='r'
+ AND tn.nspname='pg_toast' AND toast.relkind='t' AND toast.relam=2
+ AND ix.relkind='i' AND ix.relam=403
+ AND EXISTS(SELECT 1 FROM pg_catalog.pg_attribute a
+ WHERE a.attrelid=parent.oid AND a.attnum>0 AND NOT a.attisdropped
+ AND a.atttypid IN (25,114,3802)))
  FROM pg_catalog.pg_database d JOIN pg_catalog.pg_roles r ON r.rolname=current_user
  WHERE d.datname=pg_catalog.current_database()""")
             )
         ).one()
         assert row[4] is True
+        # Exercise allocated native TOAST heap/index handling for real source
+        # TEXT/JSON columns, rather than a reference schema without TOAST.
+        assert row[16] is True
         physical = {
             "database": row[0],
             "database_oid": row[1],
