@@ -131,6 +131,10 @@ OWNER0057_NULL_CASES = tuple(
 OWNER_STORAGE_CANONICAL_CASES = (
     (
         "tests.integration.test_native_owner_upgrade_0058_pg",
+        "test_actual0057_storage_predicate_parses_and_collation_is_an_independent_fence",
+    ),
+    (
+        "tests.integration.test_native_owner_upgrade_0058_pg",
         "test_actual0057_unused_custom_default_am_refuses_before_head_or_upgrade",
     ),
     (
