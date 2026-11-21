@@ -91,6 +91,29 @@ def test_all_version_and_shared_row_reads_bind_one_source_closed_index_predicate
     assert not text(expected)._bindparams
 
 
+def test_fixed_catalog_query_is_lexically_balanced_outside_sql_literals():
+    # Supporting construction regression only. The actual-PG TRUE/FALSE
+    # collation case is the grammar and grouping acceptance test.
+    sql = subject.NATIVE_BTREE_CATALOG_PREDICATE_V1
+    stack = []
+    quoted = False
+    index = 0
+    while index < len(sql):
+        value = sql[index]
+        if value == "'":
+            if quoted and index + 1 < len(sql) and sql[index + 1] == "'":
+                index += 2
+                continue
+            quoted = not quoted
+        elif not quoted and value == "(":
+            stack.append(index)
+        elif not quoted and value == ")":
+            assert stack
+            stack.pop()
+        index += 1
+    assert not quoted and not stack
+
+
 @pytest.mark.parametrize("tamper", ["bytes", "link_count", "reparse"])
 def test_source_fact_file_drift_or_external_alias_is_refused_before_parsing(
     monkeypatch, tamper

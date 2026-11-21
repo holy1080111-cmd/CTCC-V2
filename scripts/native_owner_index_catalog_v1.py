@@ -215,7 +215,7 @@ def _build_source_predicate():
  ':(varcollid|constcollid|opcollid|inputcollid|resultcollid|array_collid) ([0-9]+)','g') m(parts)
  WHERE m.parts[2]::pg_catalog.int8 NOT IN (0,100))
  OR i.indpred::pg_catalog.text ~ ':(hashfuncid|negfuncid|varlevelsup) [1-9]'
- )))
+ ))))
  AND EXISTS(SELECT 1 FROM pg_catalog.pg_collation c WHERE c.oid=100 AND c.collnamespace=11
  AND c.collowner=10 AND c.collname='default' AND c.collprovider='d' AND c.collisdeterministic
  AND c.collencoding=-1 AND c.collcollate IS NULL AND c.collctype IS NULL

@@ -400,6 +400,8 @@ async def test_actual0057_native_btree_closure_refuses_before_any_index_callback
     method = "ctcc_declared_btree_" + nonce
     opclass = "ctcc_declared_text_ops_" + nonce
     canary = "ctcc_declared_compare_" + nonce
+    fault_index_oid = None
+    fault_method_oid = None
     async with owner.begin() as connection:
         assert (
             await connection.scalar(text("SELECT count(*) FROM public.audit_logs")) == 0
@@ -427,7 +429,28 @@ async def test_actual0057_native_btree_closure_refuses_before_any_index_callback
                 await connection.exec_driver_sql("SELECT " + comparator + "('a','b')")
             assert called.value.orig.sqlstate == "P0001"
             await savepoint.rollback()
-        if foreign == "predicate":
+        if foreign == "index_am":
+            # bthandler refuses non-btree identities during CREATE INDEX.
+            # Build a valid native index; inject only the catalog fault below.
+            await connection.exec_driver_sql(
+                'CREATE INDEX "ctcc_declared_index_'
+                + nonce
+                + '" ON public.audit_logs(actor)'
+            )
+            fault_index_oid = await connection.scalar(
+                text(
+                    "SELECT oid::pg_catalog.int8 FROM pg_catalog.pg_class WHERE relname=:name"
+                ),
+                {"name": "ctcc_declared_index_" + nonce},
+            )
+            fault_method_oid = await connection.scalar(
+                text(
+                    "SELECT oid::pg_catalog.int8 FROM pg_catalog.pg_am WHERE amname=:name"
+                ),
+                {"name": method},
+            )
+            assert type(fault_index_oid) is int and type(fault_method_oid) is int
+        elif foreign == "predicate":
             await connection.exec_driver_sql(
                 'CREATE INDEX "ctcc_declared_index_'
                 + nonce
@@ -477,6 +500,15 @@ async def test_actual0057_native_btree_closure_refuses_before_any_index_callback
 
     event.listen(owner.sync_engine, "before_cursor_execute", watch)
     try:
+        if fault_index_oid is not None:
+            async with owner.begin() as connection:
+                changed = await connection.execute(
+                    text(
+                        "UPDATE pg_catalog.pg_class SET relam=CAST(:am AS pg_catalog.oid) WHERE oid=CAST(:index AS pg_catalog.oid) AND relam=403"
+                    ),
+                    {"am": fault_method_oid, "index": fault_index_oid},
+                )
+                assert changed.rowcount == 1
         with pytest.raises(subject.retained_rows.heap_am.NativeOwnerStorageRefused):
             await subject._inventory(owner, pins)
         # Direct shared codec does not depend on an owner wrapper for safety.
@@ -497,6 +529,15 @@ async def test_actual0057_native_btree_closure_refuses_before_any_index_callback
                 )
     finally:
         event.remove(owner.sync_engine, "before_cursor_execute", watch)
+        if fault_index_oid is not None:
+            async with owner.begin() as connection:
+                restored = await connection.execute(
+                    text(
+                        "UPDATE pg_catalog.pg_class SET relam=403 WHERE oid=CAST(:index AS pg_catalog.oid) AND relam=CAST(:am AS pg_catalog.oid)"
+                    ),
+                    {"am": fault_method_oid, "index": fault_index_oid},
+                )
+                assert restored.rowcount == 1
     assert opened == []
 
 
@@ -557,3 +598,23 @@ async def test_actual0057_unused_custom_default_am_refuses_before_head_or_upgrad
         opened == []
         and before["snapshot"]["row_encoding"] == subject.retained_rows.ROW_ENCODING
     )
+
+
+async def test_actual0057_storage_predicate_parses_and_collation_is_an_independent_fence(
+    _actual57_owner_profile_lab,
+):
+    """Execute the original query; catalog fault is rolled back exactly."""
+    owner, _selected, _pins, _script = _actual57_owner_profile_lab
+    sql = text(subject.retained_rows.heap_am.NATIVE_MARKER_AND_HEAP_SQL_V1)
+    async with owner.begin() as connection:
+        assert await connection.scalar(sql) is True
+        savepoint = await connection.begin_nested()
+        changed = await connection.execute(
+            text(
+                "UPDATE pg_catalog.pg_collation SET collisdeterministic=false WHERE oid=100 AND collisdeterministic"
+            )
+        )
+        assert changed.rowcount == 1
+        assert await connection.scalar(sql) is False
+        await savepoint.rollback()
+        assert await connection.scalar(sql) is True
