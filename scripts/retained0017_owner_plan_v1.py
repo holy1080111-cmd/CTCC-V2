@@ -8,7 +8,6 @@ DDL. Raw account rows, credentials and connection routes never reach stdout.
 from __future__ import annotations
 
 import argparse
-import ast
 import asyncio
 import hashlib
 import io
@@ -32,6 +31,7 @@ from app.domain import native_database_profile_v1 as profiles
 from scripts import native_owner_retained_rows_v2 as retained_rows
 from scripts import native_owner_route_preflight_0056_v1 as route
 from scripts import native_owner_upgrade_0056_v1 as archive
+from scripts import retained0017_source_contract_v1 as source_contract
 from scripts.evidence_json import read_evidence_json
 from scripts.native_owner_target_plan_0056_v1 import _require_private_file
 
@@ -202,65 +202,6 @@ def _checked_pins(pins):
     return pins
 
 
-def _column_expressions(arguments, module_ast):
-    result = []
-    for column in arguments:
-        if isinstance(column, ast.Starred):
-            call = column.value
-            _need(
-                isinstance(call, ast.Call)
-                and isinstance(call.func, ast.Name)
-                and call.func.id == "_timestamps"
-                and not call.args
-                and not call.keywords
-            )
-            helpers = [
-                node
-                for node in module_ast.body
-                if isinstance(node, ast.FunctionDef) and node.name == "_timestamps"
-            ]
-            _need(len(helpers) == 1 and len(helpers[0].body) == 1)
-            returned = helpers[0].body[0]
-            _need(
-                isinstance(returned, ast.Return)
-                and isinstance(returned.value, ast.List)
-            )
-            result.extend(returned.value.elts)
-        else:
-            result.append(column)
-    return result
-
-
-def _original_operations(statements, bindings=None):
-    """Expand only source-literal loops, in DDL order, without executing code."""
-    bound = {} if bindings is None else bindings
-    for statement in statements:
-        if isinstance(statement, ast.For):
-            _need(
-                isinstance(statement.target, ast.Name)
-                and isinstance(statement.iter, (ast.List, ast.Tuple))
-                and not statement.orelse
-            )
-            for item in statement.iter.elts:
-                _need(isinstance(item, ast.Constant) and type(item.value) is str)
-                yield from _original_operations(
-                    statement.body, bound | {statement.target.id: item.value}
-                )
-        elif isinstance(statement, ast.Expr):
-            node = statement.value
-            if (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and isinstance(node.func.value, ast.Name)
-                and node.func.value.id == "op"
-            ):
-                yield node, bound
-            else:
-                _need(isinstance(node, ast.Constant) and type(node.value) is str)
-        else:
-            _need(isinstance(statement, ast.Pass))
-
-
 def _source_plan(root=ROOT):
     """Read the actual58 graph/bytes; AST shape is only a minimum17 contract."""
     config = Config(str(root / "alembic.ini"))
@@ -270,7 +211,7 @@ def _source_plan(root=ROOT):
     _need(tuple(graph.get_heads()) == ("0058",))
     chain = tuple(reversed(tuple(graph.iterate_revisions("0055", "base"))))
     _need(tuple(r.revision for r in chain) == tuple(f"{i:04d}" for i in range(1, 56)))
-    shape = {"alembic_version": ["version_num"]}
+    prefix_sources = []
     files = []
     for revision in chain:
         path = Path(revision.path)
@@ -279,60 +220,11 @@ def _source_plan(root=ROOT):
         files.append([revision.revision, path.relative_to(root).as_posix(), _sha(raw)])
         if revision.revision > "0017":
             continue
-        tree = ast.parse(raw.decode("utf-8"))
-        bodies = [
-            n
-            for n in tree.body
-            if isinstance(n, ast.FunctionDef) and n.name == "upgrade"
-        ]
-        _need(len(bodies) == 1)
-        for node, bindings in _original_operations(bodies[0].body):
-            if node.func.attr not in {"create_table", "add_column"}:
-                _need(
-                    node.func.attr not in {"drop_column", "drop_table", "rename_table"}
-                )
-                continue
-            _need(
-                node.args
-                and isinstance(node.args[0], ast.Constant)
-                and type(node.args[0].value) is str
-            )
-            name = node.args[0].value
-            if node.func.attr == "create_table":
-                _need(name not in shape)
-                shape[name] = []
-            _need(name in shape)
-            for column in _column_expressions(node.args[1:], tree):
-                if (
-                    isinstance(column, ast.Call)
-                    and isinstance(column.func, ast.Attribute)
-                    and column.func.attr == "Column"
-                ):
-                    _need(
-                        column.args
-                        and (
-                            isinstance(column.args[0], ast.Constant)
-                            and type(column.args[0].value) is str
-                            or isinstance(column.args[0], ast.Name)
-                            and column.args[0].id in bindings
-                        )
-                    )
-                    key = (
-                        column.args[0].value
-                        if isinstance(column.args[0], ast.Constant)
-                        else bindings[column.args[0].id]
-                    )
-                    _need(key not in shape[name])
-                    shape[name].append(key)
-    _need(
-        all(
-            _NAME.fullmatch(name)
-            and values
-            and len(values) == len(set(values))
-            and all(_NAME.fullmatch(c) for c in values)
-            for name, values in shape.items()
-        )
-    )
+        prefix_sources.append((revision.revision, raw))
+    try:
+        shape = source_contract.minimum_columns17_v1(prefix_sources)
+    except source_contract.Retained0017SourceContractRefused:
+        _need(False)
     return {
         "source_head": "0058",
         "database_head_required": "0017",

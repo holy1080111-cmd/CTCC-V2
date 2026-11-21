@@ -432,24 +432,9 @@ async def capture_catalog17_v1(connection):
 
 
 def source17_contract_v1():
-    from scripts import native_owner_upgrade_0056_v1 as archive
-    from scripts import retained0017_owner_plan_v1 as plan
+    from scripts.retained0017_source_contract_v1 import source17_contract_from_root_v1
 
-    value = plan._source_plan(ROOT)
-    prefix = [
-        [
-            revision,
-            name,
-            archive._canonical_source_sha(name, (ROOT / name).read_bytes()),
-        ]
-        for revision, name, _ in value["migrations"]
-        if revision <= "0017"
-    ]
-    _need(len(prefix) == 17)
-    return {
-        "columns": value["minimum17_columns"],
-        "source17_prefix_sha256": sha(canonical(prefix)),
-    }
+    return source17_contract_from_root_v1(ROOT)
 
 
 def _acl(value, owner):
