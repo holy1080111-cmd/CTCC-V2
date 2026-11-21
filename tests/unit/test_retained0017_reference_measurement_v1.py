@@ -152,6 +152,64 @@ def test_complete_independent_pair_remains_data_and_never_installs_a_reference(
     )
 
 
+def test_real_bind_mount_writer_exports_all_six_files_for_original_pair_reader(
+    synthetic_pair, tmp_path, monkeypatch
+):
+    _old_root, values = synthetic_pair
+    artifact_root = tmp_path / "new-export"
+    mounted_root = artifact_root / "test-results"
+    mounted_root.mkdir(parents=True)
+    original_writer = subject._write_reference_files
+    original_read = Path.read_bytes
+    observed_roots = []
+
+    def mounted_writer(root, label, payloads):
+        observed_roots.append(root)
+        assert root == Path("/validation-results")
+        original_writer(mounted_root, label, payloads)
+
+    def declared_source_inputs(path):
+        if path.as_posix() in ("/ctcc-run-identity.json", "/ctcc-source-files.json"):
+            return b"{}"
+        return original_read(path)
+
+    # Only the existing explicitly synthetic codec source/comparator inputs
+    # and container mount mapping are inert seams; all six writes, fsyncs,
+    # independent byte readbacks and the original pair reader use real files.
+    monkeypatch.setenv(subject.ENV, "/validation-results")
+    monkeypatch.setattr(subject, "source_identity", lambda *_args: SOURCE)
+    monkeypatch.setattr(subject, "_write_reference_files", mounted_writer)
+    monkeypatch.setattr(Path, "read_bytes", declared_source_inputs)
+    for label, (raw, _normal, receipt) in zip(subject.LABELS, values, strict=True):
+        subject.record_reference_if_requested(
+            label=label, document=raw, physical=receipt["physical"]
+        )
+    assert observed_roots == [Path("/validation-results")] * 2
+    assert not (mounted_root / "test-results").exists()
+    assert {path.name for path in mounted_root.iterdir()} == {
+        Path(name).name for name in subject.REPORTS
+    }
+    pair = subject.verify_reference_pair(artifact_root, source=SOURCE)
+    assert len(pair["references"]) == 2 and pair["reference_seal_installed"] is False
+
+
+def test_bind_mount_writer_never_clobbers_an_existing_leaf_or_accepts_unknown_label(
+    synthetic_pair, tmp_path
+):
+    _old_root, values = synthetic_pair
+    root = tmp_path / "new-mounted-root"
+    root.mkdir()
+    raw, normal, receipt = values[0]
+    payloads = tuple(subject.canonical(value) for value in (raw, normal, receipt))
+    subject._write_reference_files(root, subject.LABELS[0], payloads)
+    before = {path.name: path.read_bytes() for path in root.iterdir()}
+    with pytest.raises(FileExistsError):
+        subject._write_reference_files(root, subject.LABELS[0], payloads)
+    with pytest.raises(ValueError, match="retained0017_reference_evidence_invalid"):
+        subject._write_reference_files(root, "../unreviewed", payloads)
+    assert {path.name: path.read_bytes() for path in root.iterdir()} == before
+
+
 @pytest.mark.parametrize("missing", subject.REPORTS)
 def test_pair_gate_refuses_each_missing_raw_normalized_or_receipt_artifact(
     synthetic_pair, missing

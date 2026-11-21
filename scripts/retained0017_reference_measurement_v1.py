@@ -430,9 +430,15 @@ def record_reference_if_requested(*, label, document, physical):
         }
     )
     verify_measurement(raw, normalized, receipt, source=source, label=label)
+    _write_reference_files(root, label, (raw, normalized, receipt))
+
+
+def _write_reference_files(root, label, payloads):
     _need(root.is_dir() and not root.is_symlink())
-    for name, data in zip(paths(label), (raw, normalized, receipt), strict=True):
-        path = root / name
+    for name, data in zip(paths(label), payloads, strict=True):
+        # The container root is already the host's test-results bind mount.
+        # Artifact readers retain their test-results/ relative paths.
+        path = root / Path(name).name
         _need(path.parent.is_dir() and not path.parent.is_symlink())
         with path.open("xb") as stream:
             stream.write(data)
