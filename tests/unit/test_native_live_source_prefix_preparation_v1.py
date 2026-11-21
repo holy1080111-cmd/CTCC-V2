@@ -133,6 +133,8 @@ def test_unknown_prepared_shapes_never_become_source_evidence(invalid):
 
 def test_empty_complete_bank_and_old_capacity_limits_still_deny():
     with pytest.raises(subject.LiveSourceBridgeError):
+        subject._bank_sha(())
+    with pytest.raises(subject.LiveSourceBridgeError):
         subject._complete_prepared_bank_sha_v1(subject._prepare_bank_prefix_v1(()), ())
     prepared = subject._prepare_bank_prefix_v1((_page(),) * 1024)
     with pytest.raises(subject.LiveSourceBridgeError):
