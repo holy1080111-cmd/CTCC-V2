@@ -56,7 +56,8 @@ HEAP_RELATION_PREDICATE_V1 = """(c.relam=2 AND EXISTS(
  AND native_handler.proacl IS NULL))"""
 
 ALL_PUBLIC_TABLES_HEAP_V1 = (
-    """NOT EXISTS(
+    """pg_catalog.current_setting('default_table_access_method')='heap'
+ AND NOT EXISTS(
  SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
  WHERE n.nspname='public' AND c.relkind IN ('r','p','m','f','v') AND (
  c.relkind<>'r' OR c.relpersistence<>'p' OR c.relhasrules OR c.relrowsecurity

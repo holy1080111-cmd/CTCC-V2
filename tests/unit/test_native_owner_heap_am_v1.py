@@ -19,6 +19,11 @@ def test_all_row_and_marker_readers_bind_the_same_closed_builtin_heap_predicate(
     assert predicate in subject.NATIVE_MARKER_AND_HEAP_SQL_V1
     assert "parent.reltoastrelid" in subject.ALL_PUBLIC_TABLES_HEAP_V1
     assert "c.relkind<>'t'" in subject.ALL_PUBLIC_TABLES_HEAP_V1
+    assert (
+        "pg_catalog.current_setting('default_table_access_method')='heap'"
+        in subject.ALL_PUBLIC_TABLES_HEAP_V1
+    )
+    assert not re.search(r"\bSET\b", subject.ALL_PUBLIC_TABLES_HEAP_V1)
     assert not re.search(r"\bheap_tableam_handler\s*\(", predicate)
     assert "native_am.oid=2" in predicate and "native_handler.oid=3" in predicate
     assert (

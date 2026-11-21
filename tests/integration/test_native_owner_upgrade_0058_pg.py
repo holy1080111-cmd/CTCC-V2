@@ -498,3 +498,62 @@ async def test_actual0057_native_btree_closure_refuses_before_any_index_callback
     finally:
         event.remove(owner.sync_engine, "before_cursor_execute", watch)
     assert opened == []
+
+
+async def test_actual0057_unused_custom_default_am_refuses_before_head_or_upgrade(
+    _actual57_owner_profile_lab,
+):
+    """Existing relations stay native; only the future-DDL default drifts."""
+    import re
+
+    from sqlalchemy import event
+
+    owner, _selected, pins, _script = _actual57_owner_profile_lab
+    before = await subject._inventory(owner, pins)
+    name = "ctcc_unused_heap_" + uuid4().hex[:12]
+    async with owner.begin() as connection:
+        await connection.exec_driver_sql(
+            'CREATE ACCESS METHOD "'
+            + name
+            + '" TYPE TABLE HANDLER pg_catalog.heap_tableam_handler'
+        )
+        await connection.exec_driver_sql(
+            'ALTER DATABASE "'
+            + owner.url.database
+            + '" SET default_table_access_method TO "'
+            + name
+            + '"'
+        )
+    async with owner.connect() as connection:
+        assert (
+            await connection.scalar(
+                text("SELECT pg_catalog.current_setting('default_table_access_method')")
+            )
+            == name
+        )
+        assert (
+            await connection.scalar(
+                text("""SELECT NOT EXISTS(SELECT 1 FROM pg_catalog.pg_class c
+ JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public'
+ AND c.relkind='r' AND c.relam<>2)""")
+            )
+            is True
+        )
+    opened = []
+
+    def watch(conn, cursor, statement, parameters, context, executemany):
+        if re.search(
+            r"\bFROM\s+public\.", statement, re.IGNORECASE
+        ) or statement.lstrip().upper().startswith(("CREATE TABLE", "ALTER TABLE")):
+            opened.append(True)
+
+    event.listen(owner.sync_engine, "before_cursor_execute", watch)
+    try:
+        with pytest.raises(subject.retained_rows.heap_am.NativeOwnerStorageRefused):
+            await subject._inventory(owner, pins)
+    finally:
+        event.remove(owner.sync_engine, "before_cursor_execute", watch)
+    assert (
+        opened == []
+        and before["snapshot"]["row_encoding"] == subject.retained_rows.ROW_ENCODING
+    )
