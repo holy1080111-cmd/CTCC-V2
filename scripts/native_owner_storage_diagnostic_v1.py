@@ -58,7 +58,7 @@ def _need(value):
 def _scan(source, word="AND"):
     """Lex only source SQL; retain every byte and never inspect observed SQL."""
     _need(type(source) is str and len(source) <= 200000)
-    _need(word in ("AND", "OR"))
+    _need(word in ("AND", "OR", "WHERE"))
     width = len(word)
     depth, quote, position = 0, None, 0
     cuts, outer_closes = [], []
@@ -192,6 +192,16 @@ def _index_rejection_parts_v2():
     return prefix, parts, partial, predicates
 
 
+def _and_outer_where_v3(source, condition):
+    """Conjoin the entire original outer filter, retaining its exact bytes."""
+    cuts, _ = _scan(source, "WHERE")
+    _need(len(cuts) == 1)
+    cut = cuts[0] + len("WHERE")
+    prefix, rejected = source[:cut], source[cut:]
+    _need(rejected.strip() != "" and prefix + rejected == source)
+    return prefix + " (" + rejected + ") AND (" + condition + ")"
+
+
 def detail_queries_v2():
     """Extract the original rejected CONST IDs and index OR categories.
 
@@ -234,8 +244,11 @@ def detail_queries_v2():
             "predicate_rejected_arraycoerceexpr",
             partial[0]
             + " AND EXISTS("
-            + _parenthesized(predicates[0], "EXISTS(")
-            + " AND m.parts[1]='ARRAYCOERCEEXPR')",
+            + _and_outer_where_v3(
+                _parenthesized(predicates[0], "EXISTS("),
+                "m.parts[1]='ARRAYCOERCEEXPR'",
+            )
+            + ")",
         ),
     )
     # The same source FROM/JOIN/WHERE scope is retained for every category.

@@ -2,8 +2,9 @@
 
 The fixed `work/db0058-native-storage-diagnostic` workflow reuses the existing
 exact-source archive/TLS probe runner with `--native-storage-diagnostic`. It runs
-only two original disposable owner-lab cases: a genuine native55 schema and a
-genuine native57 schema. It has no caller-selected node, SQL or module argument,
+two original disposable owner-lab Boolean cases, for genuine native55 and
+native57 schemas, plus the separate canonical55 full-catalog DATA capture. It
+has no caller-selected node, SQL or module argument,
 does not open an installed database, and cannot issue a venue request.
 
 The diagnostic evaluates the unchanged original combined storage predicate and
@@ -37,3 +38,12 @@ official node independently observed in the frozen17 diagnostic; it neither
 accepts that tag nor emits an observed private name. These narrower source
 queries must agree with the same original aggregate groups. Unknown data still
 fails, and all observations remain DATA without schema or execution authority.
+
+The tag-specific category groups the entire original outer `WHERE` filter
+before adding its tag conjunction. The CASETESTEXPR shape branch introduced an
+outer `OR`; an ungrouped suffix could therefore mislabel a different unknown
+tag as rejected ARRAYCOERCEEXPR. This correction changes only diagnostic
+classification. The authoritative storage predicate and every byte of its
+rejection filter remain unchanged. Source reconstruction and SQL differential
+checks cover unknown FUNCEXPR, rejected ARRAY, invalid/valid CASETESTEXPR and an
+accepted VAR; synthetic SQLite checks do not count as PostgreSQL admission.

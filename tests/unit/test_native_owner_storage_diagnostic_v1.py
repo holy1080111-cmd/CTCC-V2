@@ -2,6 +2,7 @@
 
 import ast
 import json
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -63,6 +64,66 @@ def test_secondary_source_queries_have_no_accidental_sqlalchemy_bind_parameters(
     ):
         diagnostic._scan(statement)
         assert not text(statement)._bindparams
+
+
+def test_specific_tag_category_groups_the_complete_original_filter():
+    _, _, partial, predicates = diagnostic._index_rejection_parts_v2()
+    original = diagnostic._parenthesized(predicates[0], "EXISTS(")
+    cuts, _ = diagnostic._scan(original, "WHERE")
+    assert len(cuts) == 1  # CASETESTEXPR contains a nested WHERE as well.
+    cut = cuts[0] + len("WHERE")
+    grouped = (
+        original[:cut] + " (" + original[cut:] + ") AND (m.parts[1]='ARRAYCOERCEEXPR')"
+    )
+    actual = dict(diagnostic.detail_queries_v2()[1])[
+        "predicate_rejected_arraycoerceexpr"
+    ]
+    assert partial[0] + " AND EXISTS(" + grouped + ")" in actual
+    # Every byte of the primary filter survives; no policy predicate is edited.
+    assert (
+        diagnostic._and_outer_where_v3(original, "m.parts[1]='ARRAYCOERCEEXPR'")
+        == grouped
+    )
+
+
+@pytest.mark.parametrize(
+    "tag,invalid,rejected,array_rejected",
+    [
+        ("FUNCEXPR", 0, True, False),
+        ("ARRAYCOERCEEXPR", 0, True, True),
+        ("CASETESTEXPR", 1, True, False),
+        ("CASETESTEXPR", 0, False, False),
+        ("VAR", 0, False, False),
+    ],
+)
+def test_tag_category_differential_executes_grouped_or_filter(
+    tag, invalid, rejected, array_rejected
+):
+    # Synthetic SQL DATA exercises operator precedence in a real SQL engine.
+    # It is not a PostgreSQL catalog, admission proof or observed expression.
+    source = (
+        "SELECT 1 FROM (SELECT ? AS tag, ? AS invalid, 'WHERE' AS quoted) m "
+        "WHERE m.tag NOT IN ('VAR','CASETESTEXPR') "
+        "OR (m.tag='CASETESTEXPR' AND EXISTS(SELECT 1 WHERE m.invalid=1))"
+    )
+    qualified = diagnostic._and_outer_where_v3(source, "m.tag='ARRAYCOERCEEXPR'")
+    with sqlite3.connect(":memory:") as connection:
+        assert bool(connection.execute(source, (tag, invalid)).fetchone()) is rejected
+        assert (
+            bool(connection.execute(qualified, (tag, invalid)).fetchone())
+            is array_rejected
+        )
+        if tag == "FUNCEXPR":
+            # The old ungrouped suffix misclassified this unknown tag as ARRAY.
+            assert connection.execute(
+                source + " AND m.tag='ARRAYCOERCEEXPR'", (tag, invalid)
+            ).fetchone() == (1,)
+
+
+@pytest.mark.parametrize("source", ["SELECT 1", "SELECT 1 WHERE true WHERE false"])
+def test_category_refuses_missing_or_multiple_outer_where_filters(source):
+    with pytest.raises(ValueError, match="native_storage_diagnostic_refused"):
+        diagnostic._and_outer_where_v3(source, "true")
 
 
 def test_rejected_tag_inventory_reuses_exact_original_scope_and_denial_filter():
