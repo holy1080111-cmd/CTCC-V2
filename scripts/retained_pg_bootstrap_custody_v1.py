@@ -755,10 +755,41 @@ def _guest_link(path, target, *, hard):
     return result
 
 
+def _image_relative(value):
+    """POSIX image inventory DATA: Debian multiarch names can contain colon.
+
+    This is never used for source archives or cold cluster paths. Its callers
+    first admit the exact source-pinned full image inventory, then open every
+    component with native directory/O_NOFOLLOW descriptors and hash all bytes.
+    """
+    _need(type(value) is str and 0 < len(value) <= 1024 and "\\" not in value)
+    _need(not any(ord(char) < 32 or ord(char) == 127 for char in value))
+    path = PurePosixPath(value)
+    _need(
+        not path.is_absolute()
+        and path.as_posix() == value
+        and all(part not in ("", ".", "..") for part in path.parts)
+    )
+    return path
+
+
+def _image_guest_link(path, target, *, hard):
+    _need(type(target) is str and 0 < len(target) <= 1024 and "\\" not in target)
+    _need(not any(ord(char) < 32 or ord(char) == 127 for char in target))
+    candidate = (
+        target.lstrip("/")
+        if target.startswith("/") or hard
+        else posixpath.join(path.parent.as_posix(), target)
+    )
+    result = posixpath.normpath(candidate)
+    _image_relative(result)
+    return result
+
+
 def _image_signature(row, expected):
     _need(type(row) is dict)
     result = {name: row[name] for name in ("path", "kind", "mode", "uid", "gid")}
-    _relative(row["path"])
+    _image_relative(row["path"])
     _need(row["kind"] in ("directory", "file", "hardlink", "symlink"))
     _need(
         all(
@@ -767,7 +798,11 @@ def _image_signature(row, expected):
     )
     if row["kind"] in ("file", "hardlink"):
         source = (
-            expected[_guest_link(_relative(row["path"]), row["link_target"], hard=True)]
+            expected[
+                _image_guest_link(
+                    _image_relative(row["path"]), row["link_target"], hard=True
+                )
+            ]
             if row["kind"] == "hardlink"
             else row
         )
@@ -782,8 +817,10 @@ def _image_signature(row, expected):
         )
         result.update(size=source["size"], sha256=source["sha256"])
     if row["kind"] in ("symlink", "hardlink"):
-        _guest_link(
-            _relative(row["path"]), row["link_target"], hard=row["kind"] == "hardlink"
+        _image_guest_link(
+            _image_relative(row["path"]),
+            row["link_target"],
+            hard=row["kind"] == "hardlink",
         )
         result["link_target"] = row["link_target"]
     return result
@@ -807,7 +844,7 @@ def _verify_image(root, inventory_file, *, python=False):
         )
         children = {}
         for name in rows:
-            path = _relative(name)
+            path = _image_relative(name)
             children.setdefault(path.parent.as_posix(), set()).add(path.name)
         for name in (
             ".",
@@ -816,7 +853,7 @@ def _verify_image(root, inventory_file, *, python=False):
             if name == ".":
                 descriptor = os.dup(root_fd)
             else:
-                path = _relative(name)
+                path = _image_relative(name)
                 parent = _parent_fd(root_fd, path)
                 try:
                     descriptor = os.open(
@@ -833,7 +870,7 @@ def _verify_image(root, inventory_file, *, python=False):
         actual = []
         for row in inventory:
             signature = _image_signature(row, rows)
-            path = _relative(row["path"])
+            path = _image_relative(row["path"])
             parent = _parent_fd(root_fd, path)
             try:
                 before = os.stat(path.name, dir_fd=parent, follow_symlinks=False)

@@ -13,6 +13,33 @@ import pytest
 from scripts import retained_pg_bootstrap_custody_v1 as subject
 
 
+def test_image_posix_multiarch_colon_does_not_expand_source_or_cold_paths():
+    name = "var/lib/dpkg/info/libc6:amd64.list"
+    assert subject._image_relative(name).as_posix() == name
+    assert (
+        subject._image_guest_link(
+            subject._image_relative("var/lib/dpkg/info/alias"),
+            "libc6:amd64.list",
+            hard=False,
+        )
+        == name
+    )
+    with pytest.raises(subject.RetainedBootstrapRefused):
+        subject._relative(name)
+    with pytest.raises(subject.RetainedBootstrapRefused):
+        subject._guest_link(
+            subject._relative("var/lib/dpkg/info/alias"), "libc6:amd64.list", hard=False
+        )
+
+
+@pytest.mark.parametrize(
+    "name", ("../escape", "/absolute", "a//b", "a/./b", "a\\b", "a\x00b")
+)
+def test_image_paths_still_refuse_escape_ambiguous_or_control_names(name):
+    with pytest.raises(subject.RetainedBootstrapRefused):
+        subject._image_relative(name)
+
+
 def _locator():
     return {
         "schema": "ctcc.private_python.maintenance_vendor_locator.v1",
