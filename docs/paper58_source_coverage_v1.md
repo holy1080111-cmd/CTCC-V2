@@ -59,3 +59,25 @@ Startup must verify actual recovery `last_error=None`, `consistent=True` and
 the existing unknown-commit fence in that same owned context. Awaiting recover
 alone is insufficient. No Paper usability or startup acceptance is claimed by
 this source inventory or its tests.
+# Offline effective-declaration inventory
+
+`paper58_effective_ddl_v1` uses the genuine Alembic PostgreSQL offline context
+with canonical `Base.metadata` naming. It never loads `migrations/env.py`, a URL,
+Settings or an application singleton. Every direct connection request refuses;
+the whole revision's partial output is discarded, with no fabricated row,
+role flag or scalar result. Source bytes are checked again after emission.
+
+The bounded source run found121 latest-known function declarations and139
+trigger declarations. Revisions0045 and0049–0055 require actual catalog input
+and remain explicitly unresolved. Unsupported object changes or overload/drop
+history also remain unresolved. These are latest source declarations, not a
+complete installed object set; the registry cannot admit a schema or startup.
+The genuine canonical55 DATA reference and the separate fresh58 structural
+purpose must close that prefix and PostgreSQL-specific representation gap.
+
+Nine focused checks passed, including an isolated child with no application,
+session, Settings or Paper singleton import; socket connections, subprocesses,
+SQLite connections and environment-file opens were forbidden. Its environment
+retained only Windows `SystemRoot`, required for native Python imports. An
+earlier empty-environment attempt failed at `_overlapped` import before any
+source generation; that failure was not PostgreSQL or runtime acceptance.
