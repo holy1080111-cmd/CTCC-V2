@@ -130,6 +130,10 @@ OWNER0057_NULL_CASES = tuple(
 )
 OWNER_STORAGE_CANONICAL_CASES = (
     (
+        "tests.integration.test_native_owner_upgrade_0058_pg",
+        "test_actual0057_unused_custom_default_am_refuses_before_head_or_upgrade",
+    ),
+    (
         "tests.integration.test_native_owner_upgrade_0056_v2_pg",
         "test_actual0055_v2_and_commonroute_custom_marker_am_refuse_before_head_reads",
     ),
