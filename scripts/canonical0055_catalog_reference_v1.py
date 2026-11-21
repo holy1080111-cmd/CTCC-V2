@@ -171,10 +171,11 @@ def _document(raw, native, receipt):
                 "createrole",
                 "replication",
                 "bypassrls",
-                "membership",
             )
         )
     )
+    # The frozen native55 role SQL reports COUNT(*), not EXISTS.
+    _need(type(role["membership"]) is int and role["membership"] == 0)
     entries = raw["entries"]
     _need(type(entries) is list and 0 < len(entries) <= 40000)
     _need(

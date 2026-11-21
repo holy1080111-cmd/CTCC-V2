@@ -70,7 +70,7 @@ def _synthetic_documents():
             "createrole": False,
             "replication": False,
             "bypassrls": False,
-            "membership": False,
+            "membership": 0,
         },
     }
     receipt = {
@@ -153,6 +153,18 @@ def test_real_filesystem_export_and_archived_readback_preserve_data_only(tmp_pat
     with pytest.raises(FileExistsError):
         reference._write_files_v1(tmp_path / "test-results", tuple(values[:3]))
     assert originals == [(tmp_path / name).read_bytes() for name in reference.FILES]
+
+
+@pytest.mark.parametrize("membership", [False, True, 1, None, 0.0, "0"])
+def test_native55_membership_is_exact_sql_count_not_bool_or_coerced_zero(
+    tmp_path, membership
+):
+    raw, native, receipt, source, files = _synthetic_documents()
+    native["role"]["membership"] = membership
+    receipt["native_owner_sha256"] = reference.digest(reference.canonical(native))
+    _publish(tmp_path, (raw, native, receipt))
+    with pytest.raises(ValueError, match="canonical0055_reference_evidence_invalid"):
+        reference.verify_reference_v1(tmp_path, source, files)
 
 
 @pytest.mark.parametrize(
