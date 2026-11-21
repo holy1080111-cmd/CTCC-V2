@@ -176,6 +176,28 @@ async def test_actual0017_fresh_independent_catalog_reference_is_complete(
         assert raw["profile"]["owner"] == physical["owner"]
         assert raw["profile"]["read_only"] == "on"
         assert raw["profile"]["tls"] is True
+        if (
+            comparator.REFERENCE_STATUS
+            == "SEALED_FROM_TWO_REVIEWED_ACTUAL_PG17_REFERENCES"
+        ):
+            # New actual source captures must still match the compiled
+            # reviewed literal; equality to each other alone is insufficient.
+            match = comparator.require_sealed_catalog17_v1(raw)
+            assert match["catalog_sha256"] == comparator.SEALED_CATALOG_SHA256
+            assert match["schema_upgrade_authorized"] is False
+            assert match["execution_authority"] is False
+        else:
+            # The explicit pre-adoption DATA collection purpose remains
+            # available without installing or substituting a caller baseline.
+            assert (
+                comparator.REFERENCE_STATUS
+                == "PENDING_TWO_INDEPENDENT_ACTUAL_PG17_REFERENCES"
+            )
+            assert (
+                comparator.SEALED_CATALOG_SHA256
+                == comparator.SEALED_SOURCE17_PREFIX_SHA256
+                == ""
+            )
         # No test output mutates or substitutes the comparator's literal seal.
         measurement.record_reference_if_requested(
             label=label, document=raw, physical=physical
