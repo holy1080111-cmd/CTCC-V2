@@ -153,7 +153,17 @@ def require_bootstrap_catalog17_v2(document):
     is DATA; future source-owned maintenance must independently own its real
     connection, current profile, held locks, source custody and safety gates.
     """
+    return _require_bootstrap_catalog17_v2(document, read_only="on")
+
+
+def _require_bootstrap_catalog17_v2(document, *, read_only="on"):
+    """Private observed-mode DATA check; it grants no custody/write authority.
+
+    The maintenance owner validates its live connection and explicitly supplies
+    that actual mode. The published reader always selects READ ONLY above.
+    """
     try:
+        _need(type(read_only) is str and read_only in ("on", "off"))
         _plain_data(document)
         _need(type(document) is dict)
         physical, profile = document.get("actor_physical"), document.get("profile")
@@ -177,7 +187,7 @@ def require_bootstrap_catalog17_v2(document):
             and len(document["shared_dependencies"]) == 0
         )
         _require_primary_pinned_owner_v2()
-        normalized = original.normalize_catalog17_v1(document)
+        normalized = original._normalize(document, read_only=read_only)
         _need(normalized["source17_prefix_sha256"] == SOURCE17_PREFIX_SHA256)
         _need(original.sha(original.canonical(normalized)) == BOOTSTRAP_CATALOG_SHA256)
     except (KeyError, TypeError, ValueError, OSError):

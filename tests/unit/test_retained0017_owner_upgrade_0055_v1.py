@@ -10,6 +10,30 @@ from scripts import retained0017_upgrade_projection_v1 as projection
 from tests.unit import test_native_retained0017_catalog_data_v1 as catalog_data
 
 
+def _declared_retained_pins(*, expected_catalog=None):
+    """Typed inert SQL-unit input, never a verified route/backup/connection."""
+    route = subject.original.RetainedOwnerRoute0017V1(
+        "a" * 64,
+        "b" * 64,
+        "c" * 64,
+        "127.0.0.1",
+        15439,
+        "declared_database",
+        "declared_owner",
+        20,
+        10,
+    )
+    retained = subject.original.RetainedOwnerPins0017V1(
+        "d" * 40,
+        "e" * 40,
+        "f" * 64,
+        "1" * 64,
+        route,
+        expected_catalog_sha256=expected_catalog,
+    )
+    return subject.Retained0017UpgradePinsV1(retained, "a" * 64)
+
+
 def _control():
     return [
         {
@@ -127,7 +151,7 @@ async def test_optional_old_catalog_review_pin_is_an_additional_refusal_only(exp
             return canonical.decode("ascii")
 
     pin = None if expected is None else digest if expected == "matching" else "0" * 64
-    pins = SimpleNamespace(retained=SimpleNamespace(expected_catalog_sha256=pin))
+    pins = _declared_retained_pins(expected_catalog=pin)
     if expected == "wrong":
         with pytest.raises(
             subject.Retained0017UpgradeRefused, match="reviewed_catalog_mismatch"
@@ -537,10 +561,7 @@ async def test_unexpected_effective_ddl_setting_is_rejected_without_normalizatio
                 )
             return True
 
-    pins = SimpleNamespace(
-        retained=SimpleNamespace(route=SimpleNamespace(owner_oid=10, database_oid=20)),
-        maintenance_settings_sha256="a" * 64,
-    )
+    pins = _declared_retained_pins()
     with pytest.raises(
         subject.Retained0017UpgradeRefused, match="session_policy_refused"
     ):
@@ -563,10 +584,7 @@ async def test_reviewed_ddl_policy_requires_actual_primary_not_unknown(recovery)
                 return recovery
             return True
 
-    pins = SimpleNamespace(
-        retained=SimpleNamespace(route=SimpleNamespace(owner_oid=10, database_oid=20)),
-        maintenance_settings_sha256="a" * 64,
-    )
+    pins = _declared_retained_pins()
     if recovery is False:
         await subject._maintenance(Connection(), pins, before_settings=True)
     else:
@@ -592,10 +610,7 @@ async def test_startup_overrides_cannot_promote_unapproved_original_stored_polic
                 "rejected original defaults must stop before later effective-value/hash acceptance"
             )
 
-    pins = SimpleNamespace(
-        retained=SimpleNamespace(route=SimpleNamespace(owner_oid=10, database_oid=20)),
-        maintenance_settings_sha256="a" * 64,
-    )
+    pins = _declared_retained_pins()
     with pytest.raises(
         subject.Retained0017UpgradeRefused, match="stored_maintenance_policy_refused"
     ):
