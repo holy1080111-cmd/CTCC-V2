@@ -308,7 +308,7 @@ def _read_original_page_bank(root, attempt_id, receipt, *, selector=None):
     return tuple(pages)
 
 
-def _bank_sha(pages):
+def _bank_rows_v1(pages):
     _need(
         type(pages) is tuple
         and 1 <= len(pages) <= 1024
@@ -342,7 +342,45 @@ def _bank_sha(pages):
                 [stamp.model_dump() for stamp in page.stamps],
             ]
         )
-    return sha(canonical(rows))
+    return rows
+
+
+def _bank_sha(pages):
+    # Every independent source replay still validates every original page.
+    return sha(canonical(_bank_rows_v1(pages)))
+
+
+def _prepare_bank_prefix_v1(pages):
+    """Invocation-local immutable DATA prepared before the final current GET."""
+    _need(type(pages) is tuple)
+    if not pages:
+        return 0, 0, ()
+    rows = _bank_rows_v1(pages)
+    # The singleton outer list preserves canonical(rows)'s row nesting depth.
+    # Strip only its literal brackets, retaining the exact canonical row bytes.
+    encoded = tuple(canonical([row])[1:-1] for row in rows)
+    return len(pages), sum(len(page.raw_body) for page in pages), encoded
+
+
+def _complete_prepared_bank_sha_v1(prefix, current_pages):
+    _need(
+        type(prefix) is tuple
+        and len(prefix) == 3
+        and type(prefix[0]) is int
+        and type(prefix[1]) is int
+        and 0 <= prefix[0] <= 1024
+        and 0 <= prefix[1] <= 64 * 1024 * 1024
+        and type(prefix[2]) is tuple
+        and len(prefix[2]) == prefix[0]
+        and all(type(row) is bytes for row in prefix[2])
+    )
+    suffix = _prepare_bank_prefix_v1(current_pages)
+    _need(
+        1 <= prefix[0] + suffix[0] <= 1024 and prefix[1] + suffix[1] <= 64 * 1024 * 1024
+    )
+    # No sorting/deduplication. Subsequent original full-bank source replay
+    # must still match this digest before the new DATA owner can be returned.
+    return sha(b"[" + b",".join((*prefix[2], *suffix[2])) + b"]")
 
 
 def _retained_source_identity_v1(owner, *, depth=0):
@@ -645,6 +683,7 @@ async def _capture_with_original_lease_v1(plan, private_root, settings, lease):
             ),
             baseline=baseline_pages,
         )
+    prepared_prefix = _prepare_bank_prefix_v1((*history_pages, *baseline_pages))
     current_attempt, captured, actual, completed, current_pages = await capture_current(
         "current-final"
     )
@@ -686,7 +725,7 @@ async def _capture_with_original_lease_v1(plan, private_root, settings, lease):
     readback = current.read_live_current_account_with_balance_v1(
         private_root, attempt_id=current_attempt, expected_custody_sha256=current_digest
     )
-    bank_sha = _bank_sha((*history_pages, *baseline_pages, *current_pages))
+    bank_sha = _complete_prepared_bank_sha_v1(prepared_prefix, current_pages)
     credential_session = sha(
         canonical(["live", lease.binding_id, uid, main_uid, lease._pin.origin])
     )
@@ -979,10 +1018,6 @@ async def _capture_incremental_with_original_lease_v1(previous_owner, plan):
         fresh_pages,
         previous_cutoff_ms=int(previous_tail["end_ms"]),
     )
-    current_attempt, captured, completed, current_pages = await capture_current(
-        "incremental-current-final"
-    )
-    _need(_balance_tail_anchor_v1(current_pages, cutoff_ms=end_ms) == anchor)
     # Keep original non-financial history and pre-cutover recent overlaps with
     # their original timestamps. New archive/tail/positions chains supplement
     # them; superseded raw bytes remain in the immutable prefix bank below.
@@ -1009,7 +1044,14 @@ async def _capture_incremental_with_original_lease_v1(previous_owner, plan):
         *old["baseline_current_pages"],
         *old["current_pages"],
     )
-    bank_sha = _bank_sha((*retained, *active_pages, *baseline_pages, *current_pages))
+    prepared_prefix = _prepare_bank_prefix_v1(
+        (*retained, *active_pages, *baseline_pages)
+    )
+    current_attempt, captured, completed, current_pages = await capture_current(
+        "incremental-current-final"
+    )
+    _need(_balance_tail_anchor_v1(current_pages, cutoff_ms=end_ms) == anchor)
+    bank_sha = _complete_prepared_bank_sha_v1(prepared_prefix, current_pages)
     tail = canonical(
         {
             "schema": "ctcc.native_live.financial_tail_data.v1",
