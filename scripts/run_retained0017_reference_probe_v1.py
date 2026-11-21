@@ -29,6 +29,7 @@ from scripts.verify_current0058_full_hermetic import admit_archive as admit_full
 RUNNER = measurement.PROBE_RUNNER
 TEST_MODULE = "tests/integration/test_retained0017_catalog_references_v1_pg.py"
 REPORT = "test-results/retained0017-reference-probe.xml"
+PAPER58_TEST_MODULE = "tests/integration/test_paper58_catalog_reference_v1_pg.py"
 canonical, digest = measurement.canonical, measurement.digest
 
 
@@ -36,6 +37,20 @@ def _storage_mode(args):
     value = getattr(args, "native_storage_diagnostic", False)
     need(type(value) is bool)
     return value
+
+
+def _paper58_mode(args):
+    value = getattr(args, "paper58_structural_reference", False)
+    need(type(value) is bool and not (value and _storage_mode(args)))
+    return value
+
+
+def _paper58_contract(args):
+    if not _paper58_mode(args):
+        return None
+    from scripts import paper58_catalog_reference_v1
+
+    return paper58_catalog_reference_v1
 
 
 def need(value):
@@ -51,7 +66,10 @@ def admit_archive(args):
 
 def verify_probe(root, *, args, files):
     diagnostic = _storage_mode(args)
+    paper = _paper58_contract(args)
     state = read_evidence_json((root / "identity.json").read_bytes())
+    if paper is None:
+        need("paper58_reference_pair" not in state)
     raw_map = (root / "source-files.json").read_bytes()
     need(raw_map == canonical(files))
     need(
@@ -59,13 +77,14 @@ def verify_probe(root, *, args, files):
         and state["tree"] == args.tree
         and state["archive_sha256"] == args.archive_sha256
     )
-    if diagnostic:
+    if diagnostic or paper is not None:
+        contract = storage if diagnostic else paper
         need(
-            state["schema"] == storage.SCHEMA
-            and state["runner_contract"] == storage.CONTRACT
-            and state["validation_scope"] == storage.SCOPE
-            and state["suite"] == storage.SUITE
-            and state["database_target"] == "0055_and_0057"
+            state["schema"] == contract.SCHEMA
+            and state["runner_contract"] == contract.CONTRACT
+            and state["validation_scope"] == contract.SCOPE
+            and state["suite"] == contract.SUITE
+            and state["database_target"] == ("0055_and_0057" if diagnostic else "0058")
             and state["source_contract_head"] == "0058"
             and state["source_files_sha256"] == digest(raw_map)
             and state["manifest_sha256"] == files["MANIFEST.sha256"]["sha256"]
@@ -80,18 +99,37 @@ def verify_probe(root, *, args, files):
             and state["external_order_writes"] == 0
             and "pair" not in state
         )
-        source = state
+        if paper is not None:
+            need(
+                "native_storage_components" not in state
+                and "canonical55_reference" not in state
+                and "retained0017_reference_pair" not in state
+            )
+        source = (
+            paper.source_identity(state, files, raw_map) if paper is not None else state
+        )
     else:
         source = measurement.source_identity(state, files, raw_map)
-    cases = (*storage.CASES, canonical55.CASE) if diagnostic else measurement.CASES
+    cases = (
+        paper.CASES
+        if paper is not None
+        else (*storage.CASES, canonical55.CASE)
+        if diagnostic
+        else measurement.CASES
+    )
+    report_name = (
+        paper.REPORT if paper is not None else storage.REPORT if diagnostic else REPORT
+    )
     report = shared.verify_pytest_report(
-        root / (storage.REPORT if diagnostic else REPORT),
+        root / report_name,
         required_cases=cases,
         allow_unrelated_skips=False,
     )
     need(report["tests"] == report["passed"] == len(cases) and report["skipped"] == 0)
     pair = (
-        storage.verify_reports_v1(root, source)
+        paper.verify_reference_pair_v1(root, source, files)
+        if paper is not None
+        else storage.verify_reports_v1(root, source)
         if diagnostic
         else measurement.verify_reference_pair(root, source=source)
     )
@@ -101,7 +139,14 @@ def verify_probe(root, *, args, files):
             == canonical55.verify_reference_v1(root, source, files)
         )
     need(
-        state["native_storage_components" if diagnostic else "pair"] == pair
+        state[
+            "paper58_reference_pair"
+            if paper is not None
+            else "native_storage_components"
+            if diagnostic
+            else "pair"
+        ]
+        == pair
         and state["tests"] == report
         and state["probe"] == state["cleanup"] == "PASS"
     )
@@ -120,6 +165,10 @@ def verify_probe(root, *, args, files):
 
 def run_probe(args, raw, files, root):
     diagnostic = _storage_mode(args)
+    paper = _paper58_contract(args)
+    report_name = (
+        paper.REPORT if paper is not None else storage.REPORT if diagnostic else REPORT
+    )
     results = root / "test-results"
     results.mkdir(mode=0o777)
     results.chmod(0o777)  # Only disposable, credential-free reference artifacts.
@@ -131,19 +180,40 @@ def run_probe(args, raw, files, root):
     network, postgres, redis = (
         prefix + name for name in ("network", "postgres", "redis")
     )
-    image = "ctcc-source17-reference:" + args.commit[:12] + "-" + run_id
+    image = (
+        ("ctcc-paper58-reference:" if paper is not None else "ctcc-source17-reference:")
+        + args.commit[:12]
+        + "-"
+        + run_id
+    )
     label = "org.ctcc.validation.run=" + run_id
     state = {
-        "schema": storage.SCHEMA
+        "schema": paper.SCHEMA
+        if paper is not None
+        else storage.SCHEMA
         if diagnostic
         else "ctcc.retained0017.reference_probe_identity.v1",
-        "runner_contract": storage.CONTRACT
+        "runner_contract": paper.CONTRACT
+        if paper is not None
+        else storage.CONTRACT
         if diagnostic
         else measurement.PROBE_CONTRACT,
-        "validation_scope": storage.SCOPE if diagnostic else measurement.PROBE_SCOPE,
-        "suite": storage.SUITE if diagnostic else "retained0017-reference-probe",
+        "validation_scope": paper.SCOPE
+        if paper is not None
+        else storage.SCOPE
+        if diagnostic
+        else measurement.PROBE_SCOPE,
+        "suite": paper.SUITE
+        if paper is not None
+        else storage.SUITE
+        if diagnostic
+        else "retained0017-reference-probe",
         "source_contract_head": "0058",
-        "database_target": "0055_and_0057" if diagnostic else "0017",
+        "database_target": "0058"
+        if paper is not None
+        else "0055_and_0057"
+        if diagnostic
+        else "0017",
         "commit": args.commit,
         "tree": args.tree,
         "archive_sha256": digest(raw),
@@ -304,12 +374,19 @@ def run_probe(args, raw, files, root):
         # No upgrade of the admin database to58 is implied. Required cases
         # independently create their own disposable canonical-source DBs.
         container(
-            "native-storage-tests" if diagnostic else "reference17-tests",
+            "paper58-reference-tests"
+            if paper is not None
+            else "native-storage-tests"
+            if diagnostic
+            else "reference17-tests",
             *_PYTEST,
             "-q",
-            "--junitxml=/validation-results/"
-            + Path(storage.REPORT if diagnostic else REPORT).name,
-            storage.MODULE if diagnostic else TEST_MODULE,
+            "--junitxml=/validation-results/" + Path(report_name).name,
+            PAPER58_TEST_MODULE
+            if paper is not None
+            else storage.MODULE
+            if diagnostic
+            else TEST_MODULE,
             *((canonical55.MODULE,) if diagnostic else ()),
             mounts=(
                 "--mount",
@@ -321,14 +398,26 @@ def run_probe(args, raw, files, root):
             extra_environment=(
                 *tls.pytest_environment,
                 "-e",
-                (storage.ENV if diagnostic else measurement.ENV)
+                (
+                    paper.ENV
+                    if paper is not None
+                    else storage.ENV
+                    if diagnostic
+                    else measurement.ENV
+                )
                 + "=/validation-results",
             ),
             timeout=900,
         )
-        cases = (*storage.CASES, canonical55.CASE) if diagnostic else measurement.CASES
+        cases = (
+            paper.CASES
+            if paper is not None
+            else (*storage.CASES, canonical55.CASE)
+            if diagnostic
+            else measurement.CASES
+        )
         report = shared.verify_pytest_report(
-            root / (storage.REPORT if diagnostic else REPORT),
+            root / report_name,
             required_cases=cases,
             allow_unrelated_skips=False,
         )
@@ -336,7 +425,11 @@ def run_probe(args, raw, files, root):
             report["tests"] == report["passed"] == len(cases) and report["skipped"] == 0
         )
         state["tests"] = report
-        if diagnostic:
+        if paper is not None:
+            state["paper58_reference_pair"] = paper.verify_reference_pair_v1(
+                root, paper.source_identity(state, files, mapping.read_bytes()), files
+            )
+        elif diagnostic:
             state["native_storage_components"] = storage.verify_reports_v1(root, state)
             state["canonical55_reference"] = canonical55.verify_reference_v1(
                 root, state, files
@@ -373,7 +466,9 @@ def run_probe(args, raw, files, root):
         )
     verify_probe(root, args=args, files=files)
     print(
-        "NATIVE_STORAGE_CATALOG_DIAGNOSTIC=PASS"
+        "PAPER58_FRESH_STRUCTURAL_REFERENCE_PAIR=PASS"
+        if paper is not None
+        else "NATIVE_STORAGE_CATALOG_DIAGNOSTIC=PASS"
         if diagnostic
         else "RETAINED0017_FRESH_REFERENCE_PAIR=PASS",
         flush=True,
@@ -391,7 +486,9 @@ def main():
             type=Path if name in ("archive", "output") else str,
         )
     parser.add_argument("--verify-only", action="store_true")
-    parser.add_argument("--native-storage-diagnostic", action="store_true")
+    purposes = parser.add_mutually_exclusive_group()
+    purposes.add_argument("--native-storage-diagnostic", action="store_true")
+    purposes.add_argument("--paper58-structural-reference", action="store_true")
     args = parser.parse_args()
     for value, pattern in (
         (args.commit, r"[a-f0-9]{40}"),
@@ -403,7 +500,9 @@ def main():
     if args.verify_only:
         verify_probe(args.output, args=args, files=files)
         print(
-            "NATIVE_STORAGE_DIAGNOSTIC_ARCHIVED_READBACK=PASS"
+            "PAPER58_STRUCTURAL_REFERENCE_ARCHIVED_READBACK=PASS"
+            if _paper58_mode(args)
+            else "NATIVE_STORAGE_DIAGNOSTIC_ARCHIVED_READBACK=PASS"
             if _storage_mode(args)
             else "RETAINED0017_REFERENCE_PROBE_ARCHIVED_READBACK=PASS",
             flush=True,

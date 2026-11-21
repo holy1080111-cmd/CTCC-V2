@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from scripts import current0058_full_hermetic_contract_v1 as contract
+from scripts import paper58_catalog_reference_v1 as paper58
 from scripts import versioned_hermetic_engine_v1 as engine
 from scripts import versioned_hermetic_union_v1 as union
 
@@ -135,6 +136,29 @@ def components(tmp_path, monkeypatch):
             }
             for number, label in enumerate(contract.references17.LABELS)
         ]
+        paper_source = {
+            "source_head": "0058",
+            "source58_scope_sha256": "c" * 64,
+            "DECLARED_SYNTHETIC_JOIN_ONLY": True,
+        }
+        paper_values = [
+            {
+                **{
+                    key: value[key]
+                    for key in (
+                        "reference",
+                        "raw_catalog_sha256",
+                        "normalized_catalog_sha256",
+                        "physical",
+                    )
+                },
+                "source": paper_source,
+                "reference": paper58.LABELS[index],
+                "database_head": "0058",
+                "source58_scope_sha256": "c" * 64,
+            }
+            for index, value in enumerate(reference_values)
+        ]
         records[root] = {
             "identity": identity,
             "full_nodeids": full,
@@ -167,6 +191,11 @@ def components(tmp_path, monkeypatch):
                 reference_values, source=reference_source
             )
             if contract.requires_reference_pair17(mode, index)
+            else None,
+            "paper58_reference_pair": paper58.verify_pair_values(
+                paper_values, source=paper_source
+            )
+            if contract.requires_paper58_reference(mode, index)
             else None,
         }
         roots.append(root)
@@ -207,6 +236,9 @@ def test_synthetic_join_counts_its_own_thirteen_reports_without_borrowing56(comp
     assert result["execution_authority"] is result["trading_acceptance"] is False
     assert result["retained0017_reference_pair"]["database_head"] == "0017"
     assert result["retained0017_reference_pair"]["reference_seal_installed"] is False
+    assert result["paper58_reference_pair"]["database_head"] == "0058"
+    assert result["paper58_reference_pair"]["schema_admission"] is False
+    assert result["paper58_reference_pair"]["startup_admission"] is False
 
 
 @pytest.mark.parametrize(
@@ -220,6 +252,8 @@ def test_synthetic_join_counts_its_own_thirteen_reports_without_borrowing56(comp
         "missing_historical57",
         "missing_reference_pair17",
         "different_reference_catalog17",
+        "missing_paper58_pair",
+        "different_paper58_catalog",
         "extra_component",
         "changed_collection",
         "changed_source_map",
@@ -252,6 +286,12 @@ def test_union_denies_missing_mixed_duplicated_or_relabelled_components(
         records[roots[3]]["retained0017_reference_pair"] = None
     elif change == "different_reference_catalog17":
         records[roots[3]]["retained0017_reference_pair"]["references"][1][
+            "normalized_catalog_sha256"
+        ] = "f" * 64
+    elif change == "missing_paper58_pair":
+        records[roots[0]]["paper58_reference_pair"] = None
+    elif change == "different_paper58_catalog":
+        records[roots[0]]["paper58_reference_pair"]["references"][1][
             "normalized_catalog_sha256"
         ] = "f" * 64
     elif change == "changed_collection":

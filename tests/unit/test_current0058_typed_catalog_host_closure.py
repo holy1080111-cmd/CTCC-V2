@@ -13,6 +13,9 @@ HELPER = "scripts/retained0017_catalog_sql_types_v1.py"
 
 def _actual_source_map():
     paths = {ROOT / "scripts" / name for name in contract.HOST_HELPERS}
+    # Archive admission supplies the whole source map, including app/__init__
+    # and modules that a pinned host helper may import after this map is built.
+    paths.update((ROOT / "app").rglob("*.py"))
     for name, module in tuple(sys.modules.items()):
         if name.startswith(("scripts.", "app.")):
             filename = getattr(module, "__file__", None)

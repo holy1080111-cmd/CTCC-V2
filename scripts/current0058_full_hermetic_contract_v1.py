@@ -21,6 +21,19 @@ EXTRA_RESULT_KEYS = (
     "historical0057",
     "actual0058_g12_custody",
     "retained0017_reference_pair",
+    "paper58_reference_pair",
+)
+PAPER58_CASES = tuple(
+    (
+        "tests.integration.test_paper58_catalog_reference_v1_pg",
+        f"test_actual0058_fresh_structural_reference[{label}]",
+    )
+    for label in ("a", "b")
+)
+PAPER58_REPORTS = tuple(
+    f"test-results/paper58-reference-{label}-{kind}.json"
+    for label in ("a", "b")
+    for kind in ("raw", "normalized", "receipt")
 )
 PROFILE_METADATA_KEYS = (
     *base.PROFILE_METADATA_KEYS,
@@ -396,6 +409,7 @@ REQUIRED_CASES = (
     *RETAINED0017_OWNER_CASES,
     *references17.CASES,
     *storage_diagnostic.CASES,
+    *PAPER58_CASES,
     SUCCESSOR_CASES[-1],
 )
 HISTORICAL_REPORTS = base.HISTORICAL_REPORTS
@@ -423,6 +437,9 @@ HOST_HELPERS = (
     "native_owner_pg17_btree_facts_v1.json",
     "native_owner_storage_diagnostic_v1.py",
     "canonical0055_catalog_reference_v1.py",
+    "paper58_catalog_reference_v1.py",
+    "paper58_catalog_normalization_v1.py",
+    "paper58_source_shape_v1.py",
 )
 digest, canonical, _need = g12.digest, g12.canonical, g12._need
 _SHA, _GIT = g12._HEX, g12._GIT
@@ -450,6 +467,11 @@ def requires_g12(mode, index):
 def requires_reference_pair17(mode, index):
     collection._mode(mode, index)
     return mode == "full" or mode == "postgres" and index == 3
+
+
+def requires_paper58_reference(mode, index):
+    collection._mode(mode, index)
+    return mode == "full" or mode == "postgres" and index == 0
 
 
 def component_test_stage(mode, index):
@@ -538,6 +560,8 @@ def component_artifacts(mode, index):
         names.add(g12.CUSTODY_REPORT)
     if requires_reference_pair17(mode, index):
         names.update(references17.REPORTS)
+    if requires_paper58_reference(mode, index):
+        names.update(PAPER58_REPORTS)
     if mode == "postgres":
         names.add("test-results/postgres-progress.log")
     return names
@@ -571,7 +595,15 @@ def extra_observations(root, identity, files):
         if identity.get("suite") == "postgres"
         else identity.get("shard_index")
     )
+    paper_pair = None
+    if requires_paper58_reference(identity["suite"], index):
+        from scripts import paper58_catalog_reference_v1 as paper58
+
+        paper_pair = paper58.verify_reference_pair_v1(
+            root, paper58.source_identity(identity, files, canonical(files)), files
+        )
     return {
+        "paper58_reference_pair": paper_pair,
         "historical0057": verify_historical0057_components(root, identity, files)
         if requires_g12(identity["suite"], index)
         else None,
@@ -594,7 +626,22 @@ def union_extras(verified, mode, index):
     historical = verified["historical0057"]
     custody = verified["actual0058_g12_custody"]
     pair = verified["retained0017_reference_pair"]
+    paper_pair = verified["paper58_reference_pair"]
     extras = {}
+    if requires_paper58_reference(mode, index):
+        from scripts import paper58_catalog_reference_v1 as paper58
+
+        _need(type(paper_pair) is dict and type(paper_pair.get("source")) is dict)
+        _need(paper_pair["source"].get("source_head") == HEAD)
+        _need(
+            paper58.verify_pair_values(
+                paper_pair["references"], source=paper_pair["source"]
+            )
+            == paper_pair
+        )
+        extras["paper58_reference_pair"] = paper_pair
+    else:
+        _need(paper_pair is None)
     if requires_reference_pair17(mode, index):
         _need(
             type(pair) is dict
@@ -639,17 +686,25 @@ def measurement_environment(mode, index):
 
     return (
         (
-            "-e",
-            previous_env + "=/validation-results",
-            "-e",
-            ENV + "=/validation-results",
+            (
+                "-e",
+                previous_env + "=/validation-results",
+                "-e",
+                ENV + "=/validation-results",
+            )
+            if requires_g12(mode, index)
+            else ()
         )
-        if requires_g12(mode, index)
-        else ()
-    ) + (
-        ("-e", references17.ENV + "=/validation-results")
-        if requires_reference_pair17(mode, index)
-        else ()
+        + (
+            ("-e", references17.ENV + "=/validation-results")
+            if requires_reference_pair17(mode, index)
+            else ()
+        )
+        + (
+            ("-e", "CTCC_DEVVAL_PAPER58_REFERENCE_DIR=/validation-results")
+            if requires_paper58_reference(mode, index)
+            else ()
+        )
     )
 
 
