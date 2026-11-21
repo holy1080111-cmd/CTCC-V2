@@ -13,11 +13,11 @@ from scripts import native_owner_heap_am_v1 as heap
 from scripts import native_owner_index_catalog_v1 as index
 from scripts.evidence_json import read_evidence_json
 
-CONTRACT = "ctcc.source58.native_storage_diagnostic.v2"
+CONTRACT = "ctcc.source58.native_storage_diagnostic.v3"
 SCOPE = "two_fresh_native55_57_catalog_boolean_diagnostics_no_admission"
 SUITE = "native-storage-diagnostic"
-SCHEMA = "ctcc.source58.native_storage_diagnostic_identity.v2"
-COMPONENT_SCHEMA = "ctcc.native_storage_catalog_components.v2"
+SCHEMA = "ctcc.source58.native_storage_diagnostic_identity.v3"
+COMPONENT_SCHEMA = "ctcc.native_storage_catalog_components.v3"
 ENV = "CTCC_DEVVAL_NATIVE_STORAGE_DIAGNOSTIC_DIR"
 MODULE = "tests/integration/test_native_owner_storage_diagnostic_0058_pg.py"
 REPORT = "test-results/native-storage-diagnostic.xml"
@@ -170,25 +170,9 @@ def _parenthesized(source, prefix="("):
     return source[len(prefix) : -1]
 
 
-def detail_queries_v2():
-    """Extract the original rejected CONST IDs and index OR categories.
-
-    Only source-owned fragments are used. No observed identifier, type, node,
-    function or SQL is accepted; production predicates remain unchanged.
-    """
+def _index_rejection_parts_v2():
+    """Retain the original index scope and every rejection byte."""
     groups = dict(queries_v1())
-    constants = _parenthesized(
-        groups["expression_constant_type_ids"].removeprefix("SELECT "), "NOT EXISTS("
-    )
-    anchor = "SELECT 1 FROM ("
-    _need(constants.count(anchor) == 1)
-    rejected_ids = (
-        constants.replace(
-            anchor, "SELECT DISTINCT m.parts[1]::pg_catalog.int8 FROM (", 1
-        )
-        + " ORDER BY 1"
-    )
-
     original = _parenthesized(
         groups["public_and_toast_index_metadata_and_predicates"].removeprefix(
             "SELECT "
@@ -205,6 +189,28 @@ def detail_queries_v2():
     _need(len(partial) == 2 and partial[0].strip() == "i.indpred IS NOT NULL")
     predicates = _pieces(_parenthesized(partial[1]), "OR")
     _need(len(predicates) == 6)
+    return prefix, parts, partial, predicates
+
+
+def detail_queries_v2():
+    """Extract the original rejected CONST IDs and index OR categories.
+
+    Only source-owned fragments are used. No observed identifier, type, node,
+    function or SQL is accepted; no diagnostic result grants admission.
+    """
+    groups = dict(queries_v1())
+    constants = _parenthesized(
+        groups["expression_constant_type_ids"].removeprefix("SELECT "), "NOT EXISTS("
+    )
+    anchor = "SELECT 1 FROM ("
+    _need(constants.count(anchor) == 1)
+    rejected_ids = (
+        constants.replace(
+            anchor, "SELECT DISTINCT m.parts[1]::pg_catalog.int8 FROM (", 1
+        )
+        + " ORDER BY 1"
+    )
+    prefix, parts, partial, predicates = _index_rejection_parts_v2()
     named = (
         ("index_layout", "OR".join(parts[:9])),
         ("index_key_operator_class_metadata", parts[9]),
@@ -240,6 +246,29 @@ def detail_queries_v2():
     return rejected_ids, categories
 
 
+def rejected_index_node_tags_query_v3():
+    """Bounded uppercase tags from the same original rejection filter.
+
+    No relation/function/row name or SQL supplied by a caller is exported.
+    The 33rd distinct tag makes the consumer refuse its 32-tag inventory cap.
+    """
+    prefix, _parts, partial, predicates = _index_rejection_parts_v2()
+    rejected = _parenthesized(predicates[0], "EXISTS(").strip()
+    _need(rejected.startswith("SELECT 1 FROM ") and prefix.startswith("SELECT 1 FROM "))
+    tags = rejected.replace("SELECT 1 FROM ", "SELECT m.parts[1] FROM ", 1)
+    projected = prefix.replace(
+        "SELECT 1 FROM ", "SELECT ARRAY(" + tags + ") tags FROM ", 1
+    )
+    return (
+        "SELECT DISTINCT names.tag FROM ("
+        + projected
+        + " AND "
+        + partial[0]
+        + ") rejected CROSS JOIN LATERAL pg_catalog.unnest(rejected.tags) names(tag)"
+        + " ORDER BY names.tag LIMIT 33"
+    )
+
+
 def verify_reports_v1(root, source):
     expected_keys = {
         "schema",
@@ -255,6 +284,7 @@ def verify_reports_v1(root, source):
         "original_combined_predicate_used",
         "component_conjunction_matches_original",
         "rejected_constant_type_ids",
+        "rejected_index_node_tags",
         "index_rejection_categories",
         "detail_matches_original_groups",
     }
@@ -275,6 +305,8 @@ def verify_reports_v1(root, source):
             and report["component_conjunction_matches_original"] is True
             and report["detail_matches_original_groups"] is True
             and report["rejected_constant_type_ids"] == []
+            and type(report["rejected_index_node_tags"]) is list
+            and report["rejected_index_node_tags"] == []
             and type(report["index_rejection_categories"]) is dict
             and set(report["index_rejection_categories"])
             == {name for name, _ in detail_queries_v2()[1]}

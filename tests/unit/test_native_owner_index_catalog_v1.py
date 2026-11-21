@@ -32,6 +32,9 @@ def test_source_facts_have_exact_primary_bootstrap_identity_and_no_observed_cata
         "pg_proc",
         "pg_type",
         "pg_type.h",
+        "pg_collation",
+        "primnodes.h",
+        "pg_config_manual.h",
     }
     assert all(
         re.fullmatch("[0-9a-f]{64}", value)
@@ -39,8 +42,8 @@ def test_source_facts_have_exact_primary_bootstrap_identity_and_no_observed_cata
     )
     assert len(facts["classes"]) == 17 and len(facts["amproc"]) == 77
     assert len(facts["amop"]) == 170 and len(facts["operators"]) == 205
-    assert len(facts["procedures"]) == 380
-    assert len(facts["types"]) == 22
+    assert len(facts["procedures"]) == 389
+    assert len(facts["types"]) == 24
     assert {47, 3805, 3806} <= {row[0] for row in facts["procedures"]}
     handlers = {row[0]: row for row in facts["procedures"] if row[0] in (3, 330)}
     assert handlers[3][1:5] == [
@@ -54,6 +57,110 @@ def test_source_facts_have_exact_primary_bootstrap_identity_and_no_observed_cata
         "from_json",
         "field_name",
     ]
+
+
+def test_source_name_and_unknown_constants_have_exact_type_and_internal_io_profiles():
+    facts = subject._source_facts()
+    types = {row[0]: row for row in facts["types"]}
+    assert types[19] == [19, "name", 18, 34, 35, 2422, 2423, 0, 0, 0, 6180]
+    assert types[705] == [705, "unknown", 0, 109, 110, 2416, 2417, 0, 0, 0, 0]
+    assert facts["constant_only_types"] == [
+        [19, 64, False, "b", "S", False, ",", "c", "p", 950, -1, 0],
+        [705, -2, False, "p", "X", False, ",", "c", "p", 0, -1, 0],
+    ]
+    procedures = {row[0]: row for row in facts["procedures"]}
+    for oid, name, argument, result, volatility in (
+        (34, "namein", "2275", 19, "i"),
+        (35, "nameout", "19", 2275, "i"),
+        (2422, "namerecv", "2281", 19, "s"),
+        (2423, "namesend", "19", 17, "s"),
+        (109, "unknownin", "2275", 705, "i"),
+        (110, "unknownout", "705", 2275, "i"),
+        (2416, "unknownrecv", "2281", 705, "i"),
+        (2417, "unknownsend", "705", 17, "i"),
+        (6180, "raw_array_subscript_handler", "2281", 2281, "i"),
+    ):
+        assert procedures[oid] == [
+            oid,
+            name,
+            argument,
+            result,
+            name,
+            volatility,
+            "s",
+            True,
+            False,
+            False,
+            False,
+            0,
+            0,
+            0,
+            "1",
+            "0",
+            None,
+        ]
+    sql = subject.NATIVE_BTREE_CATALOG_PREDICATE_V1
+    assert "CASE WHEN t.oid=705 THEN 'p' ELSE 'b' END" in sql
+    assert "t.oid IN (19,705)" in sql
+    assert "t.typstorage" in sql and "t.typcollation" in sql
+    # The two source CONST exceptions do not become application row types.
+    assert not ({19, 705} & set(heap.NATIVE_SCALAR_OIDS_V1))
+    assert 2275 not in types and 2281 not in types
+
+
+def test_array_coerce_wrapper_keeps_every_original_child_and_callback_fence():
+    facts = subject._source_facts()
+    assert facts["predicate_node_fields"] == {
+        "ARRAYCOERCEEXPR": [
+            "arg",
+            "elemexpr",
+            "resulttype",
+            "resulttypmod",
+            "resultcollid",
+            "coerceformat",
+            "location",
+        ]
+    }
+    sql = subject.NATIVE_BTREE_CATALOG_PREDICATE_V1
+    assert "'ARRAYCOERCEEXPR'" in sql
+    assert "'CASETESTEXPR'" not in sql and "'FUNCEXPR'" not in sql
+    for original in (
+        "vartype|consttype|opresulttype|resulttype|array_typeid|element_typeid",
+        "[:]opno ([0-9]+)",
+        "[:]opfuncid ([0-9]+)",
+        "varcollid|constcollid|opcollid|inputcollid|resultcollid|array_collid",
+        "hashfuncid|negfuncid|varlevelsup",
+        "pg_catalog.pg_depend",
+    ):
+        assert original in sql
+
+
+def test_changed_or_additional_array_node_field_contract_is_refused(monkeypatch):
+    facts = subject._source_facts()
+    facts["predicate_node_fields"]["ARRAYCOERCEEXPR"].append("callback")
+    monkeypatch.setattr(subject, "_source_facts", lambda: facts)
+    with pytest.raises(ValueError, match="native_owner_btree_source_refused"):
+        subject._build_source_predicate()
+
+
+@pytest.mark.parametrize("field", ["vartype", "resulttype", "array_typeid"])
+@pytest.mark.parametrize("oid", [19, 705])
+def test_const_only_exceptions_remain_rejected_in_original_index_type_fields(
+    field, oid
+):
+    from scripts import native_owner_storage_diagnostic_v1 as diagnostic
+
+    _prefix, _parts, _partial, predicates = diagnostic._index_rejection_parts_v2()
+    # Extract the actual original partial-index field regex and its independent
+    # fixed limit. The facts-derived general CONST set is never used here.
+    original_type_fence = predicates[1]
+    pattern = re.search(r"'(\:\(vartype[^']+)'", original_type_fence).group(1)
+    limits = re.search(r"NOT IN \(([0-9,]+)\)", original_type_fence).group(1)
+    allowed = {int(value) for value in limits.split(",")}
+    assert allowed == set(heap.NATIVE_SCALAR_OIDS_V1) | {1009, 1015}
+    match = re.search(pattern, ":" + field + " " + str(oid))
+    assert match is not None and match.group(1) == field
+    assert int(match.group(2)) not in allowed
 
 
 def test_all_version_and_shared_row_reads_bind_one_source_closed_index_predicate():

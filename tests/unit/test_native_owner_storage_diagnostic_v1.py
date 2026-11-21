@@ -56,9 +56,25 @@ def test_secondary_queries_preserve_source_rejection_filters_and_catalog_scope()
 
 def test_secondary_source_queries_have_no_accidental_sqlalchemy_bind_parameters():
     number_sql, categories = diagnostic.detail_queries_v2()
-    for statement in (number_sql, *(sql for _, sql in categories)):
+    for statement in (
+        number_sql,
+        *(sql for _, sql in categories),
+        diagnostic.rejected_index_node_tags_query_v3(),
+    ):
         diagnostic._scan(statement)
         assert not text(statement)._bindparams
+
+
+def test_rejected_tag_inventory_reuses_exact_original_scope_and_denial_filter():
+    prefix, _parts, partial, predicates = diagnostic._index_rejection_parts_v2()
+    original = diagnostic._parenthesized(predicates[0], "EXISTS(").strip()
+    statement = diagnostic.rejected_index_node_tags_query_v3()
+    assert original.replace("SELECT 1 FROM ", "SELECT m.parts[1] FROM ", 1) in statement
+    assert prefix.removeprefix("SELECT 1 FROM ") in statement
+    assert partial[0] in statement and statement.endswith(
+        " ORDER BY names.tag LIMIT 33"
+    )
+    assert "FROM public." not in statement
 
 
 @pytest.mark.parametrize(
@@ -89,6 +105,7 @@ def _write_reports(root, change=None):
             "original_combined_predicate_used": True,
             "component_conjunction_matches_original": True,
             "rejected_constant_type_ids": [],
+            "rejected_index_node_tags": [],
             "index_rejection_categories": {
                 name: False for name, _ in diagnostic.detail_queries_v2()[1]
             },
@@ -136,6 +153,8 @@ def test_original_false_unknown_or_coerced_value_never_passes_even_with_other_gr
         ("detail_matches_original_groups", False),
         ("rejected_constant_type_ids", [1007]),
         ("rejected_constant_type_ids", ["1007"]),
+        ("rejected_index_node_tags", ["CASETESTEXPR"]),
+        ("rejected_index_node_tags", {}),
     ],
 )
 def test_rehashed_wrong_source_or_admission_claim_is_refused(tmp_path, field, value):

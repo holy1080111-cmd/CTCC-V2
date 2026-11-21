@@ -618,3 +618,25 @@ async def test_actual0057_storage_predicate_parses_and_collation_is_an_independe
         assert await connection.scalar(sql) is False
         await savepoint.rollback()
         assert await connection.scalar(sql) is True
+        # CONST-only name/unknown admission retains exact native callbacks
+        # and only unknown(705)'s source-proven pseudo-type exception.
+        for oid, field, value in (
+            (19, "typinput", "42::pg_catalog.regproc"),
+            (705, "typinput", "42::pg_catalog.regproc"),
+            (705, "typtype", "'b'"),
+        ):
+            savepoint = await connection.begin_nested()
+            changed = await connection.execute(
+                text(
+                    "UPDATE pg_catalog.pg_type SET "
+                    + field
+                    + "="
+                    + value
+                    + " WHERE oid="
+                    + str(oid)
+                )
+            )
+            assert changed.rowcount == 1
+            assert await connection.scalar(sql) is False
+            await savepoint.rollback()
+            assert await connection.scalar(sql) is True

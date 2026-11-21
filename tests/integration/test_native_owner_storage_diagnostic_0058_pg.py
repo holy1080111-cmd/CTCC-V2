@@ -6,6 +6,7 @@ operator configuration, venue, owner upgrade, or execution authority is used.
 
 import json
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -49,6 +50,18 @@ async def _capture(owner, target):
             value = await connection.scalar(text(statement))
             assert value is None or type(value) is bool
             categories[name] = value
+        rejected_tags = list(
+            (
+                await connection.execute(
+                    text(diagnostic.rejected_index_node_tags_query_v3())
+                )
+            ).scalars()
+        )
+        assert len(rejected_tags) <= 32 and all(
+            type(value) is str and re.fullmatch(r"[A-Z][A-Z0-9_]{0,47}", value)
+            for value in rejected_tags
+        )
+        assert rejected_tags == sorted(set(rejected_tags))
     report = {
         "schema": diagnostic.COMPONENT_SCHEMA,
         "target": target,
@@ -59,12 +72,14 @@ async def _capture(owner, target):
         "schema_admission": False,
         "original_combined_predicate_used": True,
         "rejected_constant_type_ids": rejected_ids,
+        "rejected_index_node_tags": rejected_tags,
         "index_rejection_categories": categories,
         "detail_matches_original_groups": (
             groups["expression_constant_type_ids"] is (not bool(rejected_ids))
             and all(type(value) is bool for value in categories.values())
             and groups["public_and_toast_index_metadata_and_predicates"]
             is (not any(categories.values()))
+            and categories["predicate_node_tags"] is bool(rejected_tags)
         ),
     }
     leaves = [

@@ -1,8 +1,8 @@
 """Source-pinned PG17 btree admission using catalog rows only.
 
 No application row, index, type output, operator, support function or AM
-handler is invoked. The bootstrap facts were parsed from the seven exact
-REL_17_11 primary catalog files whose SHA256 identities are retained in the
+handler is invoked. The bootstrap facts were parsed from exact
+REL_17_11 primary catalog/header files whose SHA256 identities are retained in the
 fixed source artifact. This is physical read safety, never schema acceptance.
 """
 
@@ -14,7 +14,7 @@ import os
 import stat
 from pathlib import Path
 
-_FACTS_SHA256 = "54a2bd07dc7d905ff3844c0f49b9035daa2997a5271c8a6670f57f53a2d3de41"
+_FACTS_SHA256 = "7a8155a9a8b5e6c1def8c2c3577a21b56c4c232ccb3eb870a44edbc0b21b593f"
 
 
 def _source_facts():
@@ -89,7 +89,23 @@ def _build_source_predicate():
     amproc = _literal(facts["amproc"])
     amop = _literal(facts["amop"])
     types = _literal(facts["types"])
+    constant_only_types = _literal(facts["constant_only_types"])
     constant_type_ids = _integer_set([row[0] for row in facts["types"]])
+    # These are source-node fields, not observed/caller AST declarations.
+    # Every nested node still passes the original closed tag/type/callback
+    # checks below; admitting the wrapper never admits an unknown child.
+    if facts["predicate_node_fields"] != {
+        "ARRAYCOERCEEXPR": [
+            "arg",
+            "elemexpr",
+            "resulttype",
+            "resulttypmod",
+            "resultcollid",
+            "coerceformat",
+            "location",
+        ]
+    }:
+        raise ValueError("native_owner_btree_source_refused") from None
     # All these pg_catalog columns have fixed native types. No deparser or
     # observed function is called while constructing the comparison rows.
     return f"""(
@@ -115,9 +131,16 @@ def _build_source_predicate():
  AND NOT EXISTS(
  SELECT 1 FROM pg_catalog.jsonb_array_elements({types}) expected(value)
  LEFT JOIN pg_catalog.pg_type t ON t.oid=(expected.value->>0)::pg_catalog.oid
- WHERE t.oid IS NULL OR t.typnamespace<>11 OR t.typowner<>10 OR t.typtype<>'b'
+ WHERE t.oid IS NULL OR t.typnamespace<>11 OR t.typowner<>10
+ OR t.typtype<>(CASE WHEN t.oid=705 THEN 'p' ELSE 'b' END)::pg_catalog."char"
  OR NOT t.typisdefined OR t.typrelid<>0 OR t.typbasetype<>0 OR t.typnotnull
  OR t.typdefault IS NOT NULL OR t.typdefaultbin IS NOT NULL
+ OR (t.oid IN (19,705) AND NOT EXISTS(
+ SELECT 1 FROM pg_catalog.jsonb_array_elements({constant_only_types}) expected_constant(value)
+ WHERE expected_constant.value=pg_catalog.jsonb_build_array(t.oid::pg_catalog.int8,
+ t.typlen,t.typbyval,t.typtype::pg_catalog.text,t.typcategory::pg_catalog.text,
+ t.typispreferred,t.typdelim::pg_catalog.text,t.typalign::pg_catalog.text,
+ t.typstorage::pg_catalog.text,t.typcollation::pg_catalog.int8,t.typtypmod,t.typndims)))
  OR pg_catalog.jsonb_build_array(t.oid::pg_catalog.int8,t.typname::pg_catalog.text,t.typelem::pg_catalog.int8,
  t.typinput::pg_catalog.oid::pg_catalog.int8,t.typoutput::pg_catalog.oid::pg_catalog.int8,
  t.typreceive::pg_catalog.oid::pg_catalog.int8,t.typsend::pg_catalog.oid::pg_catalog.int8,
@@ -203,7 +226,7 @@ def _build_source_predicate():
  AND d.refobjid IN (16,17,20,21,23,25,26,114,700,701,869,1042,1043,1082,1114,1184,1700,2950,3802,1009,1015)))))
  OR (i.indpred IS NOT NULL AND (
  EXISTS(SELECT 1 FROM pg_catalog.regexp_matches(i.indpred::pg_catalog.text,'\\{{([A-Z][A-Z0-9_]*)','g') m(parts)
- WHERE m.parts[1] NOT IN ('VAR','CONST','OPEXPR','BOOLEXPR','RELABELTYPE','SCALARARRAYOPEXPR','ARRAYEXPR','COERCEVIAIO','NULLTEST','BOOLEANTEST'))
+ WHERE m.parts[1] NOT IN ('VAR','CONST','OPEXPR','BOOLEXPR','RELABELTYPE','SCALARARRAYOPEXPR','ARRAYEXPR','COERCEVIAIO','NULLTEST','BOOLEANTEST','ARRAYCOERCEEXPR'))
  OR EXISTS(SELECT 1 FROM pg_catalog.regexp_matches(i.indpred::pg_catalog.text,
  ':(vartype|consttype|opresulttype|resulttype|array_typeid|element_typeid) ([0-9]+)','g') m(parts)
  WHERE m.parts[2]::pg_catalog.int8 NOT IN (16,17,20,21,23,25,26,114,700,701,869,1042,1043,1082,1114,1184,1700,2950,3802,1009,1015))
