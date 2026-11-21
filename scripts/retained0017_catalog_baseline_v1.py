@@ -332,6 +332,11 @@ _SOURCE_TOAST_ALLOCATION_PREDICATE = """n.nspname='pg_toast' AND (
  JOIN pg_catalog.pg_namespace pn ON pn.oid=p.relnamespace
  WHERE pn.nspname='public' AND p.relkind='r' AND tn.nspname='pg_toast'
  AND t.relkind='t' AND i.indexrelid=o.oid)))"""
+_RELATION_NAMES_SQL = """SELECT c.relname::pg_catalog.text
+ FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+ WHERE n.nspname='public' AND c.relkind IN ('r','S')
+ ORDER BY c.relname COLLATE pg_catalog."C"
+"""
 
 
 def _unknown_nonpublic_objects_predicate():
@@ -438,15 +443,7 @@ async def capture_catalog17_v1(connection):
     await _require_raw_catalog_admission_v1(connection, raw_admission, components)
     # The marker and all row/index/type-output paths have already been proved.
     # Keep every source relation stable against DDL through all catalog reads.
-    relations = tuple(
-        (
-            await connection.execute(
-                text("""SELECT c.relname::pg_catalog.text
- FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
- WHERE n.nspname='public' AND c.relkind IN ('r','S') ORDER BY c.relname COLLATE pg_catalog."C""")
-            )
-        ).scalars()
-    )
+    relations = tuple((await connection.execute(text(_RELATION_NAMES_SQL))).scalars())
     _need(
         0 < len(relations) <= 512
         and all(type(name) is str and _NAME.fullmatch(name) for name in relations)
