@@ -543,6 +543,7 @@ _NODE_FIELDS = {
     "BOOLEANTEST": "arg booltesttype location",
     "SCALARARRAYOPEXPR": "opno opfuncid hashfuncid negfuncid useOr inputcollid args location",
     "ARRAYEXPR": "array_typeid array_collid element_typeid elements multidims location",
+    "ARRAYCOERCEEXPR": "arg elemexpr resulttype resulttypmod resultcollid coerceformat location",
     "RELABELTYPE": "arg resulttype resulttypmod resultcollid relabelformat location",
     "COERCEVIAIO": "arg resulttype resultcollid coerceformat location",
     "COALESCEEXPR": "coalescetype coalescecollid args location",
@@ -706,6 +707,17 @@ def normalize_node_tree17_v1(raw, *, sequence_oid=None, sequence_identity=None):
             _need(position < len(tokens) and tokens[position] == "}")
             position += 1
             mapping = {name: values for name, values in fields}
+            if tag == "ARRAYCOERCEEXPR":
+                _need(set(mapping) == set(_NODE_FIELDS[tag].split()))
+                _need(mapping["resulttype"] in ([1009], [1015]))
+                _need(
+                    all(
+                        len(mapping[name]) == 1
+                        and type(mapping[name][0]) is list
+                        and mapping[name][0][:1] == ["NODE"]
+                        for name in ("arg", "elemexpr")
+                    )
+                )
             if tag == "CONST":
                 _need(set(mapping) == set(_NODE_FIELDS["CONST"].split()))
                 value = mapping["constvalue"]
