@@ -1,4 +1,4 @@
-"""Complete source17 catalog comparison DATA; pending genuine reference seal.
+"""Complete source17 catalog DATA comparison against reviewed actual references.
 
 No DTO, equal pair, expected digest or saved report enables a schema upgrade.
 Only explicitly enumerated structural references/allocation fields normalize.
@@ -17,9 +17,13 @@ from pathlib import Path
 from scripts import retained0017_catalog_sql_types_v1 as catalog_types
 
 SCHEMA = "ctcc.retained0017.normalized_catalog.v1"
-REFERENCE_STATUS = "PENDING_TWO_INDEPENDENT_ACTUAL_PG17_REFERENCES"
-SEALED_CATALOG_SHA256 = ""
-SEALED_SOURCE17_PREFIX_SHA256 = ""
+REFERENCE_STATUS = "SEALED_FROM_TWO_REVIEWED_ACTUAL_PG17_REFERENCES"
+SEALED_CATALOG_SHA256 = (
+    "42c73fa8af380f446fabfdf7bf0b4479dc4f26a1a44bbf6e195e9b612e70375e"
+)
+SEALED_SOURCE17_PREFIX_SHA256 = (
+    "7a998b64b61f5bb30d65c405a995f3d00ffc12d15344b7cbda309f1c58b17cd2"
+)
 ROOT = Path(__file__).resolve().parents[1]
 _NAME = re.compile(r"[a-z_][a-z0-9_]{0,62}\Z", re.ASCII)
 _HEX = re.compile(r"[0-9a-f]{64}\Z", re.ASCII)

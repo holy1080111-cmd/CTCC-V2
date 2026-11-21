@@ -195,6 +195,11 @@ def test_source17_functions_are_inert_literals_and_all_queries_have_no_observed_
 def test_pending_reference_never_replays_caller_document_or_enables_upgrade(
     monkeypatch,
 ):
+    monkeypatch.setattr(
+        subject, "REFERENCE_STATUS", "PENDING_TWO_INDEPENDENT_ACTUAL_PG17_REFERENCES"
+    )
+    monkeypatch.setattr(subject, "SEALED_CATALOG_SHA256", "")
+    monkeypatch.setattr(subject, "SEALED_SOURCE17_PREFIX_SHA256", "")
     called = []
     monkeypatch.setattr(
         subject, "normalize_catalog17_v1", lambda document: called.append(True)

@@ -562,7 +562,7 @@ def test_distinct_physical_allocations_and_actor_names_normalize_only_structural
         second
     )
     assert before == (subject.canonical(first), subject.canonical(second))
-    assert subject.REFERENCE_STATUS == "PENDING_TWO_INDEPENDENT_ACTUAL_PG17_REFERENCES"
+    assert subject.REFERENCE_STATUS == "SEALED_FROM_TWO_REVIEWED_ACTUAL_PG17_REFERENCES"
     with pytest.raises(subject.Retained0017CatalogRefused):
         subject.require_sealed_catalog17_v1(first)
 
