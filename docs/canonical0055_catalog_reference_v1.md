@@ -16,6 +16,11 @@ the existing `collector_current_0055_catalog_v1.verify_actual_owner_catalog`
 against its sealed native55 definitions. That observer retains its required
 READ COMMITTED and `pg_catalog, public, pg_temp` context. The complete typed
 metadata capture then records its actual catalog-first, UTC, read-only profile.
+The new55 raw safety wrapper changes only source17's blanket partial-index
+refusal into an expression-key refusal. Its original bytes reconstruct exactly;
+source17 remains unchanged. The first native storage/index/AST/dependency gate
+still proves every partial predicate, and the capture requires a genuinely
+nonempty partial-index inventory before export.
 
 The complete public and attached-TOAST catalog includes columns/default node
 trees, constraints, indexes, triggers, full function bodies/metadata, types,

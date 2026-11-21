@@ -51,6 +51,28 @@ def catalog_query_v1():
     return CATALOG_SQL.replace(old, "'" + SCHEMA + "'")
 
 
+def raw_predicates_v1():
+    """Closed55 safety context after the unchanged native index/AST gate.
+
+    Source17 has no partial indexes. Canonical55 has reviewed partial btree
+    predicates, whose metadata, nodes, operators and dependencies are already
+    proved by require_native_owner_storage_v1 before these clauses run.
+    Expression-key indexes remain forbidden; every other safety byte stays.
+    """
+    from scripts import retained0017_catalog_baseline_v1 as source
+
+    old = "(i.indexprs IS NOT NULL OR i.indpred IS NOT NULL)"
+    new = "(i.indexprs IS NOT NULL)"
+    _need(source.SAFE_CATALOG_SQL.count(old) == 1)
+    fixed = source.SAFE_CATALOG_SQL.replace(old, new)
+    _need(fixed.count(new) == 1 and fixed.replace(new, old) == source.SAFE_CATALOG_SQL)
+    return (
+        fixed,
+        "SELECT " + source._LANGUAGE_ADMISSION_SQL,
+        "SELECT " + source._unknown_nonpublic_objects_predicate(),
+    )
+
+
 def native_baseline_v1():
     # Host archived replay is stdlib-only. This reads the exact source-owned
     # literal; the real owner observer is called inside the actual SQL case.
@@ -170,6 +192,7 @@ def _document(raw, native, receipt):
         if row[0] == "relation" and row[1]["relkind"] == "r"
     ]
     constraints = [row[1] for row in entries if row[0] == "constraint"]
+    indexes = [row[1] for row in entries if row[0] == "index"]
     _need(
         "alembic_version" in public_tables
         and len(public_tables) == len(set(public_tables))
@@ -182,6 +205,8 @@ def _document(raw, native, receipt):
             for row in constraints
         )
     )
+    _need(any(row["indpred"] is not None for row in indexes))
+    _need(all(row["indexprs"] is None for row in indexes))
     _need(receipt["public_table_names"] == sorted(public_tables))
     observation = receipt["native55_observation"]
     _need(

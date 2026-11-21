@@ -45,7 +45,17 @@ def _synthetic_documents():
             ["relation", {"relname": name, "relkind": "r"}, {}]
             for name in ("alembic_version", "audit_logs")
         ]
-        + [["constraint", {"conname": "pk_audit_logs", "contype": "p"}, {}]],
+        + [
+            ["constraint", {"conname": "pk_audit_logs", "contype": "p"}, {}],
+            [
+                "index",
+                {
+                    "indpred": "declared synthetic partial predicate DATA",
+                    "indexprs": None,
+                },
+                {},
+            ],
+        ],
     }
     native = {
         "schema": "ctcc.collector_current0055.actual_catalog.v1",
@@ -159,6 +169,7 @@ def test_real_filesystem_export_and_archived_readback_preserve_data_only(tmp_pat
         "paper",
         "saved_receipt",
         "source",
+        "no_partial",
     ],
 )
 def test_rehashed_wrong_purpose_identity_source_or_authority_refuses(tmp_path, changed):
@@ -178,11 +189,15 @@ def test_rehashed_wrong_purpose_identity_source_or_authority_refuses(tmp_path, c
     elif changed == "query":
         receipt["full_typed_catalog_query_sha256"] = "f" * 64
     elif changed == "naming":
-        raw["entries"][-1][1]["conname"] = "audit_logs_pkey"
+        next(row[1] for row in raw["entries"] if row[0] == "constraint")["conname"] = (
+            "audit_logs_pkey"
+        )
     elif changed == "paper":
         receipt["paper_admission"] = True
     elif changed == "saved_receipt":
         receipt["saved_reference_is_authority"] = True
+    elif changed == "no_partial":
+        raw["entries"][-1][1]["indpred"] = None
     else:
         receipt["source_tree"] = "f" * 40
     receipt["raw_sha256"] = reference.digest(reference.canonical(raw))
@@ -243,6 +258,38 @@ def test_capture_query_keeps_actual_head_and_complete_typed_data_without_source1
         name in query
         for name in ("pg_get_expr(", "pg_get_functiondef(", "pg_get_constraintdef(")
     )
+
+
+def test_source55_partial_wrapper_retains_all_other_source17_safety_bytes():
+    from scripts import retained0017_catalog_baseline_v1 as source
+
+    original = source.SAFE_CATALOG_SQL
+    old = "(i.indexprs IS NOT NULL OR i.indpred IS NOT NULL)"
+    new = "(i.indexprs IS NOT NULL)"
+    clauses = reference.raw_predicates_v1()
+    assert original.count(old) == 1 and clauses[0].count(new) == 1
+    assert clauses[0].replace(new, old) == original == source.SAFE_CATALOG_SQL
+    assert clauses[1:] == (
+        "SELECT " + source._LANGUAGE_ADMISSION_SQL,
+        "SELECT " + source._unknown_nonpublic_objects_predicate(),
+    )
+
+
+@pytest.mark.parametrize("duplicate", [False, True])
+def test_changed_or_duplicated_source17_anchor_refuses_instead_of_broad_replacement(
+    monkeypatch, duplicate
+):
+    from scripts import retained0017_catalog_baseline_v1 as source
+
+    old = "(i.indexprs IS NOT NULL OR i.indpred IS NOT NULL)"
+    changed = (
+        source.SAFE_CATALOG_SQL + " AND " + old
+        if duplicate
+        else source.SAFE_CATALOG_SQL.replace(old, "(changed_source_clause)")
+    )
+    monkeypatch.setattr(source, "SAFE_CATALOG_SQL", changed)
+    with pytest.raises(ValueError, match="canonical0055_reference_evidence_invalid"):
+        reference.raw_predicates_v1()
 
 
 def test_codec_requires_exact_canonical_json_bytes(tmp_path):

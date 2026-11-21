@@ -134,11 +134,7 @@ async def test_actual0055_canonical_full_catalog_reference_has_native_source_and
     from scripts import retained0017_catalog_baseline_v1 as catalog_sql
 
     owner, cluster_sha256 = _canonical_fresh55
-    raw_predicates = (
-        catalog_sql.SAFE_CATALOG_SQL,
-        "SELECT " + catalog_sql._LANGUAGE_ADMISSION_SQL,
-        "SELECT " + catalog_sql._unknown_nonpublic_objects_predicate(),
-    )
+    raw_predicates = reference.raw_predicates_v1()
     async with owner.connect() as connection, connection.begin():
         for statement in (
             "SET TRANSACTION ISOLATION LEVEL READ COMMITTED READ ONLY",
