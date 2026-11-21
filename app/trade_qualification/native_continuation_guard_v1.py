@@ -280,6 +280,91 @@ def _check_function(pin):
                 raise NativeSourceClosureError("native_continuation_source_changed")
 
 
+def _same_identity_items_v3(first, second):
+    """Compare source snapshots without invoking a value's equality method."""
+    if type(first) is not tuple or type(second) is not tuple:
+        return False
+    if len(first) != len(second):
+        return False
+    previous = None
+    for left, right in zip(first, second, strict=True):
+        if (
+            type(left) is not tuple
+            or type(right) is not tuple
+            or len(left) != 2
+            or len(right) != 2
+            or type(left[0]) is not str
+            or type(right[0]) is not str
+            or left[0] != right[0]
+            or (previous is not None and left[0] <= previous)
+            or left[1] is not right[1]
+        ):
+            return False
+        previous = left[0]
+    return True
+
+
+def _require_same_function_pin_v3(first, second):
+    """Prove equal obligations; nonstandard validators are always retained."""
+    if (
+        any(first[index] is not second[index] for index in (0, 1, 2, 3, 4, 5, 7))
+        or not _same_identity_items_v3(first[6], second[6])
+        or type(first[8]) is not tuple
+        or type(second[8]) is not tuple
+        or len(first[8]) != len(second[8])
+        or any(
+            left is not right for left, right in zip(first[8], second[8], strict=True)
+        )
+    ):
+        raise NativeSourceClosureError("native_continuation_duplicate_pin_inconsistent")
+    original, current = first[9], second[9]
+    if original is None or current is None:
+        if original is not current:
+            raise NativeSourceClosureError(
+                "native_continuation_duplicate_pin_inconsistent"
+            )
+        return True
+    original_ordinary = type(original) is tuple and len(original) == 3
+    current_ordinary = type(current) is tuple and len(current) == 3
+    if original_ordinary is not current_ordinary:
+        raise NativeSourceClosureError("native_continuation_duplicate_pin_inconsistent")
+    if not original_ordinary:
+        # Factory/nonstandard payloads retain every original validator call.
+        # No factory proof, callback, payload comparison or PASS is reused.
+        return False
+    if (
+        type(original[0]) is not dict
+        or type(original[1]) is not dict
+        or original[0] is not current[0]
+        or original[1] is not current[1]
+        or not _same_identity_items_v3(original[2], current[2])
+    ):
+        raise NativeSourceClosureError("native_continuation_duplicate_pin_inconsistent")
+    return True
+
+
+def _unique_static_function_pins_v3(pins):
+    """Import-time metadata only; every retained pin is checked on every guard."""
+    if type(pins) not in (list, tuple):
+        raise NativeSourceClosureError("native_continuation_duplicate_pin_inconsistent")
+    first_by_identity, result = {}, []
+    for pin in pins:
+        if type(pin) is not tuple or len(pin) != 10 or type(pin[0]) is not FunctionType:
+            raise NativeSourceClosureError(
+                "native_continuation_duplicate_pin_inconsistent"
+            )
+        identity = id(pin[0])
+        first = first_by_identity.get(identity)
+        if first is None:
+            # Both containers retain the actual function strongly: ids cannot
+            # be recycled while this static source assembly is in progress.
+            first_by_identity[identity] = pin
+            result.append(pin)
+        elif not _require_same_function_pin_v3(first, pin):
+            result.append(pin)
+    return tuple(result)
+
+
 def _namespace_pins(module, excluded, files):
     records, functions, class_shapes = [], [], []
     path = Path(module.__file__).resolve()
@@ -771,7 +856,13 @@ def install_native_guards_v1(module, exports, *, dependencies=(), bindings=()):
         records.append((owner, attribute, actual))
         if function is not None:
             functions.append(_function_pin(function, files))
-    records, functions, shapes = tuple(records), tuple(functions), tuple(shapes)
+    # Alias/class/file obligations are untouched. Only proven identical
+    # same-function metadata predicates are represented once, in original order.
+    records, functions, shapes = (
+        tuple(records),
+        _unique_static_function_pins_v3(functions),
+        tuple(shapes),
+    )
     checker, checker_code = _check_function, _check_function.__code__
     path_type, reader, reader_code = Path, Path.read_bytes, Path.read_bytes.__code__
     path_mro = Path.__mro__
