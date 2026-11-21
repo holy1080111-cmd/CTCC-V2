@@ -374,6 +374,29 @@ def _unknown_nonpublic_objects_predicate():
     return " AND ".join(parts)
 
 
+async def _require_raw_catalog_admission_v1(connection, combined, components):
+    """A failed combined proof remains denied; diagnostics never read a head."""
+    from sqlalchemy import text
+
+    if await connection.scalar(text(combined)) is True:
+        return
+    # These are the same four fixed catalog-only clauses, evaluated only after
+    # native storage/marker admission. No observed identity/value is returned.
+    for name, predicate in components:
+        try:
+            passed = await connection.scalar(text("SELECT " + predicate))
+        except Exception:  # noqa: BLE001 -- failed diagnostics cannot expose driver details.
+            raise Retained0017CatalogRefused(
+                "retained0017_raw_admission_diagnostic_unavailable"
+            ) from None
+        if passed is not True:
+            raise Retained0017CatalogRefused(
+                "retained0017_raw_admission_" + name + "_refused"
+            ) from None
+    # A changed result or SQL NULL cannot turn a failed first proof into a pass.
+    raise Retained0017CatalogRefused("retained0017_raw_admission_changed") from None
+
+
 async def capture_catalog17_v1(connection):
     """Fresh read-only TLS catalog DATA; does not enable the pending reference.
 
@@ -405,16 +428,14 @@ async def capture_catalog17_v1(connection):
  WHERE d.datname=pg_catalog.current_database() AND r.rolname=current_user AND r.rolcanlogin)"""
     _need(await connection.scalar(text(admission)) is True)
     await storage.lock_native_owner_marker_v1(connection)
-    raw_admission = (
-        SAFE_CATALOG_SQL
-        + " AND "
-        + _source_functions_predicate()
-        + " AND "
-        + _LANGUAGE_ADMISSION_SQL
-        + " AND "
-        + _unknown_nonpublic_objects_predicate()
+    components = (
+        ("scope", SAFE_CATALOG_SQL.removeprefix("\nSELECT ")),
+        ("functions", _source_functions_predicate()),
+        ("language", _LANGUAGE_ADMISSION_SQL),
+        ("nonpublic", _unknown_nonpublic_objects_predicate()),
     )
-    _need(await connection.scalar(text(raw_admission)) is True)
+    raw_admission = "SELECT " + " AND ".join(part for _, part in components)
+    await _require_raw_catalog_admission_v1(connection, raw_admission, components)
     # The marker and all row/index/type-output paths have already been proved.
     # Keep every source relation stable against DDL through all catalog reads.
     relations = tuple(
@@ -441,7 +462,7 @@ async def capture_catalog17_v1(connection):
         )
     )
     await storage.require_native_owner_storage_v1(connection)
-    _need(await connection.scalar(text(raw_admission)) is True)
+    await _require_raw_catalog_admission_v1(connection, raw_admission, components)
     document = await connection.scalar(text(CATALOG_SQL))
     _need(type(document) is dict)
     normalize_catalog17_v1(document)
