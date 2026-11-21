@@ -413,6 +413,7 @@ HOST_HELPERS = (
     "retained0017_reference_measurement_v1.py",
     "retained0017_catalog_baseline_v1.py",
     "retained0017_source_contract_v1.py",
+    "retained0017_catalog_sql_types_v1.py",
     "native_owner_heap_am_v1.py",
     "native_owner_index_catalog_v1.py",
     "native_owner_pg17_btree_facts_v1.json",
