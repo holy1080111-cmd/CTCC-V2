@@ -13,10 +13,10 @@ from scripts import native_owner_heap_am_v1 as heap
 from scripts import native_owner_index_catalog_v1 as index
 from scripts.evidence_json import read_evidence_json
 
-CONTRACT = "ctcc.source58.native_storage_diagnostic.v3"
-SCOPE = "two_fresh_native55_57_catalog_boolean_diagnostics_no_admission"
+CONTRACT = "ctcc.source58.native_storage_diagnostic.v4"
+SCOPE = "two_native55_57_boolean_diagnostics_and_one_canonical55_full_catalog_data_no_admission"
 SUITE = "native-storage-diagnostic"
-SCHEMA = "ctcc.source58.native_storage_diagnostic_identity.v3"
+SCHEMA = "ctcc.source58.native_storage_diagnostic_identity.v4"
 COMPONENT_SCHEMA = "ctcc.native_storage_catalog_components.v3"
 ENV = "CTCC_DEVVAL_NATIVE_STORAGE_DIAGNOSTIC_DIR"
 MODULE = "tests/integration/test_native_owner_storage_diagnostic_0058_pg.py"

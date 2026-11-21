@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from scripts import canonical0055_catalog_reference_v1 as canonical55_reference
 from scripts import current0057_full_hermetic_contract_v1 as base
 from scripts import current0057_hermetic_contract as historical57
 from scripts import current0058_collection_v1 as collection
@@ -135,6 +136,7 @@ OWNER0057_NULL_CASES = tuple(
     for changed in ("False", "True")
 )
 OWNER_STORAGE_CANONICAL_CASES = (
+    canonical55_reference.CASE,
     (
         "tests.integration.test_native_owner_upgrade_0058_pg",
         "test_actual0057_storage_predicate_parses_and_collation_is_an_independent_fence",
@@ -420,6 +422,7 @@ HOST_HELPERS = (
     "native_owner_index_catalog_v1.py",
     "native_owner_pg17_btree_facts_v1.json",
     "native_owner_storage_diagnostic_v1.py",
+    "canonical0055_catalog_reference_v1.py",
 )
 digest, canonical, _need = g12.digest, g12.canonical, g12._need
 _SHA, _GIT = g12._HEX, g12._GIT

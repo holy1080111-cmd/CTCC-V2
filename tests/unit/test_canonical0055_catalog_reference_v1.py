@@ -1,0 +1,254 @@
+"""Declared synthetic artifact-codec tests, never actual SQL/catalog proof."""
+
+import copy
+import json
+from pathlib import Path
+
+import pytest
+
+from scripts import canonical0055_catalog_reference_v1 as reference
+from scripts import current0058_collection_v1 as collection
+from scripts import current0058_full_hermetic_contract_v1 as full
+from scripts import native_owner_storage_diagnostic_v1 as diagnostic
+from scripts import verify_final_hermetic as reports
+from scripts import verify_windows_regression as windows
+
+
+def _synthetic_documents():
+    owner, database, oid = (
+        "ctcc_ref55_owner_" + "a" * 16,
+        "ctcc_ref55_database_" + "b" * 16,
+        12345,
+    )
+    flags = [True, False, False, False, True, False, False]
+    raw = {
+        "schema": reference.SCHEMA,
+        "head": ["0055"],
+        "profile": {
+            "owner": owner,
+            "session_owner": owner,
+            "database": database,
+            "role": "none",
+            "read_only": "on",
+            "search_path": "pg_catalog",
+            "timezone": "UTC",
+            "tls": True,
+            "datum_abi": "pg17.amd64.little.datum8.signedchar",
+            "server_version": "170011",
+        },
+        "actor_physical": {
+            "database_oid": 23456,
+            "owner": [oid, owner, *flags],
+            "membership_count": 0,
+        },
+        "entries": [
+            ["relation", {"relname": name, "relkind": "r"}, {}]
+            for name in ("alembic_version", "audit_logs")
+        ]
+        + [["constraint", {"conname": "pk_audit_logs", "contype": "p"}, {}]],
+    }
+    native = {
+        "schema": "ctcc.collector_current0055.actual_catalog.v1",
+        "role": {
+            "oid": oid,
+            "name": owner,
+            "current_user": owner,
+            "session_user": owner,
+            "login": True,
+            "superuser": True,
+            "createdb": False,
+            "createrole": False,
+            "replication": False,
+            "bypassrls": False,
+            "membership": False,
+        },
+    }
+    receipt = {
+        "schema": reference.RECEIPT_SCHEMA,
+        "database_target": "0055",
+        "canonical_naming_convention": True,
+        "raw_sha256": reference.digest(reference.canonical(raw)),
+        "native_owner_sha256": reference.digest(reference.canonical(native)),
+        "full_typed_catalog_query_sha256": reference.digest(
+            reference.catalog_query_v1().encode()
+        ),
+        "native_owner_query_sha256": "e" * 64,
+        "native55_observation": {
+            "schema": "ctcc.collector_current0055.owner_installation.v1",
+            "database_head": "0055",
+            "role_oid": oid,
+            "native_definitions_sha256": reference.native_baseline_v1(),
+            "native_baseline_admission": True,
+            "execution_authority": False,
+            "account_complete": False,
+        },
+        "public_table_names": ["alembic_version", "audit_logs"],
+        "physical": {
+            "database": database,
+            "database_oid": 23456,
+            "owner": owner,
+            "owner_oid": oid,
+            "owner_is_database_owner": True,
+            "marker_relation_oid": 34567,
+            "server_version_num": "170011",
+            "actual_tls": True,
+            "owner_flags": flags,
+            "owner_memberships": 0,
+            "cluster_system_identifier_sha256": "d" * 64,
+        },
+        **dict.fromkeys(
+            (
+                "schema_admission",
+                "startup_admission",
+                "paper_admission",
+                "execution_authority",
+                "saved_reference_is_authority",
+            ),
+            False,
+        ),
+    }
+    source = {"commit": "1" * 40, "tree": "2" * 40, "manifest_sha256": "3" * 64}
+    files = {
+        reference._PRODUCER: {"sha256": "4" * 64},
+        reference._NATIVE_MODULE: {
+            "sha256": reference.digest(
+                (reference.ROOT / reference._NATIVE_MODULE).read_bytes()
+            )
+        },
+    }
+    receipt.update(
+        source_commit=source["commit"],
+        source_tree=source["tree"],
+        source_manifest_sha256=source["manifest_sha256"],
+        producer_sha256=files[reference._PRODUCER]["sha256"],
+        native_source_sha256=files[reference._NATIVE_MODULE]["sha256"],
+    )
+    return raw, native, receipt, source, files
+
+
+def _publish(root, values):
+    folder = root / "test-results"
+    folder.mkdir()
+    reference._write_files_v1(folder, tuple(values[:3]))
+
+
+def test_real_filesystem_export_and_archived_readback_preserve_data_only(tmp_path):
+    values = _synthetic_documents()
+    _publish(tmp_path, values)
+    result = reference.verify_reference_v1(tmp_path, values[3], values[4])
+    assert result["admission"] == "DENY" and result["database_target"] == "0055"
+    assert all((tmp_path / name).is_file() for name in reference.FILES)
+    assert not (tmp_path / "test-results/test-results").exists()
+    originals = [(tmp_path / name).read_bytes() for name in reference.FILES]
+    with pytest.raises(FileExistsError):
+        reference._write_files_v1(tmp_path / "test-results", tuple(values[:3]))
+    assert originals == [(tmp_path / name).read_bytes() for name in reference.FILES]
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        "source17",
+        "source58",
+        "native_baseline",
+        "bootstrap_oid",
+        "owner_flags",
+        "tls",
+        "query",
+        "naming",
+        "paper",
+        "saved_receipt",
+        "source",
+    ],
+)
+def test_rehashed_wrong_purpose_identity_source_or_authority_refuses(tmp_path, changed):
+    raw, native, receipt, source, files = copy.deepcopy(_synthetic_documents())
+    if changed == "source17":
+        raw["schema"], raw["head"] = "ctcc.retained0017.raw_catalog.v1", ["0017"]
+    elif changed == "source58":
+        raw["head"] = ["0058"]
+    elif changed == "native_baseline":
+        receipt["native55_observation"]["native_definitions_sha256"] = "f" * 64
+    elif changed == "bootstrap_oid":
+        receipt["physical"]["owner_oid"] = 10
+    elif changed == "owner_flags":
+        raw["actor_physical"]["owner"][-1] = True
+    elif changed == "tls":
+        receipt["physical"]["actual_tls"] = False
+    elif changed == "query":
+        receipt["full_typed_catalog_query_sha256"] = "f" * 64
+    elif changed == "naming":
+        raw["entries"][-1][1]["conname"] = "audit_logs_pkey"
+    elif changed == "paper":
+        receipt["paper_admission"] = True
+    elif changed == "saved_receipt":
+        receipt["saved_reference_is_authority"] = True
+    else:
+        receipt["source_tree"] = "f" * 40
+    receipt["raw_sha256"] = reference.digest(reference.canonical(raw))
+    receipt["native_owner_sha256"] = reference.digest(reference.canonical(native))
+    _publish(tmp_path, (raw, native, receipt))
+    with pytest.raises(ValueError, match="canonical0055_reference_evidence_invalid"):
+        reference.verify_reference_v1(tmp_path, source, files)
+
+
+def test_canonical55_case_is_required_once_only_on_current58_owner3():
+    assert reference.MODULE in collection.postgres_paths(3)
+    assert Path(reference.MODULE).name in windows.POSTGRES_INTEGRATION
+    assert full.REQUIRED_CASES.count(reference.CASE) == 1
+    assert full.required_cases("postgres", 3).count(reference.CASE) == 1
+    assert all(
+        reference.CASE not in full.required_cases("postgres", index)
+        for index in (0, 1, 2, 4)
+    )
+    assert len(diagnostic.CASES) == 2 and reference.CASE not in diagnostic.CASES
+
+
+def test_missing_canonical55_case_cannot_pass_three_case_diagnostic(tmp_path):
+    xml = tmp_path / "only-old-diagnostics.xml"
+    xml.write_text(
+        '<testsuites><testsuite tests="2" failures="0" errors="0" skipped="0">'
+        + "".join(
+            '<testcase classname="' + module + '" name="' + name + '"/>'
+            for module, name in diagnostic.CASES
+        )
+        + "</testsuite></testsuites>",
+        encoding="ascii",
+    )
+    with pytest.raises(ValueError, match="pytest_required_execution_not_verified"):
+        reports.verify_pytest_report(
+            xml,
+            required_cases=(*diagnostic.CASES, reference.CASE),
+            allow_unrelated_skips=False,
+        )
+
+
+def test_capture_query_keeps_actual_head_and_complete_typed_data_without_source17_tag():
+    query = reference.catalog_query_v1()
+    assert "'schema','" + reference.SCHEMA + "'" in query
+    assert "ctcc.retained0017.raw_catalog.v1" not in query
+    assert "FROM public.alembic_version" in query
+    assert "'0055'" not in query  # Head is always an actual SQL observation.
+    assert all(
+        "'" + key + "'" in query
+        for key in (
+            "dependencies",
+            "shared_dependencies",
+            "bootstrap",
+            "actor_physical",
+            "entries",
+        )
+    )
+    assert not any(
+        name in query
+        for name in ("pg_get_expr(", "pg_get_functiondef(", "pg_get_constraintdef(")
+    )
+
+
+def test_codec_requires_exact_canonical_json_bytes(tmp_path):
+    values = _synthetic_documents()
+    _publish(tmp_path, values)
+    path = tmp_path / reference.FILES[0]
+    path.write_text(json.dumps(values[0], indent=2), encoding="ascii")
+    with pytest.raises(ValueError):
+        reference.verify_reference_v1(tmp_path, values[3], values[4])

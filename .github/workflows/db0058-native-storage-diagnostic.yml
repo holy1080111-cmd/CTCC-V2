@@ -11,7 +11,7 @@ permissions:
 jobs:
   native-storage:
     if: github.ref == 'refs/heads/work/db0058-native-storage-diagnostic'
-    name: Exact source native55 and native57 catalog components
+    name: Native55 and native57 components plus canonical55 full catalog DATA
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
@@ -19,7 +19,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Diagnose original catalog predicates on two fresh schemas
+      - name: Diagnose original predicates and capture canonical55 catalog DATA
         shell: bash
         run: |
           set -euo pipefail

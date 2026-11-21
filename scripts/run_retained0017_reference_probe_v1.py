@@ -8,6 +8,7 @@ from contextlib import ExitStack
 from pathlib import Path
 from uuid import uuid4
 
+from scripts import canonical0055_catalog_reference_v1 as canonical55
 from scripts import native_owner_storage_diagnostic_v1 as storage
 from scripts import retained0017_reference_measurement_v1 as measurement
 from scripts import verify_final_hermetic as shared
@@ -82,17 +83,23 @@ def verify_probe(root, *, args, files):
         source = state
     else:
         source = measurement.source_identity(state, files, raw_map)
+    cases = (*storage.CASES, canonical55.CASE) if diagnostic else measurement.CASES
     report = shared.verify_pytest_report(
         root / (storage.REPORT if diagnostic else REPORT),
-        required_cases=storage.CASES if diagnostic else measurement.CASES,
+        required_cases=cases,
         allow_unrelated_skips=False,
     )
-    need(report["tests"] == report["passed"] == 2 and report["skipped"] == 0)
+    need(report["tests"] == report["passed"] == len(cases) and report["skipped"] == 0)
     pair = (
         storage.verify_reports_v1(root, source)
         if diagnostic
         else measurement.verify_reference_pair(root, source=source)
     )
+    if diagnostic:
+        need(
+            state["canonical55_reference"]
+            == canonical55.verify_reference_v1(root, source, files)
+        )
     need(
         state["native_storage_components" if diagnostic else "pair"] == pair
         and state["tests"] == report
@@ -303,6 +310,7 @@ def run_probe(args, raw, files, root):
             "--junitxml=/validation-results/"
             + Path(storage.REPORT if diagnostic else REPORT).name,
             storage.MODULE if diagnostic else TEST_MODULE,
+            *((canonical55.MODULE,) if diagnostic else ()),
             mounts=(
                 "--mount",
                 f"type=bind,src={results},dst=/validation-results",
@@ -318,15 +326,21 @@ def run_probe(args, raw, files, root):
             ),
             timeout=900,
         )
+        cases = (*storage.CASES, canonical55.CASE) if diagnostic else measurement.CASES
         report = shared.verify_pytest_report(
             root / (storage.REPORT if diagnostic else REPORT),
-            required_cases=storage.CASES if diagnostic else measurement.CASES,
+            required_cases=cases,
             allow_unrelated_skips=False,
         )
-        need(report["tests"] == report["passed"] == 2 and report["skipped"] == 0)
+        need(
+            report["tests"] == report["passed"] == len(cases) and report["skipped"] == 0
+        )
         state["tests"] = report
         if diagnostic:
             state["native_storage_components"] = storage.verify_reports_v1(root, state)
+            state["canonical55_reference"] = canonical55.verify_reference_v1(
+                root, state, files
+            )
         else:
             state["pair"] = measurement.verify_reference_pair(
                 root,

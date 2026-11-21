@@ -48,6 +48,7 @@ CANONICAL_OWNER_PATHS = frozenset(
         "tests/integration/test_native_owner_upgrade_0057_pg.py",
         "tests/integration/test_native_owner_upgrade_0058_pg.py",
         "tests/integration/test_native_owner_storage_diagnostic_0058_pg.py",
+        "tests/integration/test_canonical0055_catalog_reference_v1_pg.py",
     }
 )
 OWNER_PATHS = RETAINED0017_OWNER_PATHS | CANONICAL_OWNER_PATHS
