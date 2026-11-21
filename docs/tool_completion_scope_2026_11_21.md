@@ -77,10 +77,27 @@ Docker daemon, legacy API, SQL or migration was started by these observations.
 An additional private Linux working copy has separately verified every file.
 The independently verified CI-pinned official PG17.11 image also runs its three
 fixed version commands as UID/GID70 with zero capabilities in a read-only
-chroot and private network/mount/IPC namespaces. This preparation does not
-start the retained clone or establish its Alembic head. Raw private files are
-excluded from Git, reports and release bundles. Preservation is not logical
-restore, schema or flat-account acceptance.
+chroot and private network/mount/IPC namespaces. A later one-shot observation
+actually started only that working copy, proved metadata before and after
+locking the marker, and read head0017 with48 public tables/3 functions. The
+single read-only connection verified cluster/database/user hashes; the owned
+server completed fast shutdown and genuine control reads reported shut down
+before and after. Receipt SHA256:
+`2c35a43447cd431b262c5d7790c345f449881143c7b823ecb4dfa7c902f27421`.
+The original services stayed stopped. The Windows launcher read only three
+previously sealed private metadata documents; no original VM or preserved PG
+data file was opened by the controller. Ordinary server operation and the
+private preservation/replacement of auto.conf changed the working copy, so
+its original staged-file manifest is no longer a current-state identity.
+
+The first preparation attempt stopped before any mutation/server/client because
+the host libc did not expose the requested renameat2 symbol. Its source, failure and
+exclusive journal remain immutable. The separate V2 implementation first
+proved kernel RENAME_NOREPLACE rejection/success with bytes/inodes preserved,
+then reverified the complete working copy before its explicit operation. There
+was no unknown database operation to retry. Raw private files remain excluded
+from Git, reports and release bundles. This observes actual head DATA, not full
+schema, logical restore, flat-account or startup acceptance.
 Preservation receipt SHA256:
 `a8e99ab2e76ab6e5418761723b0c7d0e53ab527c9cf1688f5e7c34c691d5155c`;
 preliminary control observation:
