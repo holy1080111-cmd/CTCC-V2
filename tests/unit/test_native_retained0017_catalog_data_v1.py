@@ -125,7 +125,7 @@ def _document(label, base):
         (2278, "void"),
         (2279, "trigger"),
         (2281, "internal"),
-        (3115, "language_handler"),
+        (2280, "language_handler"),
         (composite, "public.declared_fixture"),
     ):
         add(
@@ -154,7 +154,7 @@ def _document(label, base):
 
     callbacks = []
     callback_specs = (
-        (call, "plpgsql_call_handler", [], 3115, 13),
+        (call, "plpgsql_call_handler", [], 2280, 13),
         (inline, "plpgsql_inline_handler", [2281], 2278, 13),
         (validator, "plpgsql_validator", [26], 2278, 13),
         (2246, "fmgr_internal_validator", [26], 2278, 12),

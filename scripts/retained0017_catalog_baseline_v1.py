@@ -114,7 +114,7 @@ _LANGUAGE_ADMISSION_SQL = """
  AND EXISTS(SELECT 1 FROM pg_catalog.pg_language l WHERE l.lanname='plpgsql'
  AND l.lanowner=10 AND l.lanispl AND l.lanpltrusted AND l.lanacl IS NULL
  AND (SELECT pg_catalog.count(*) FROM (VALUES
-  ('plpgsql_call_handler','',3115,false,l.lanplcallfoid),
+  ('plpgsql_call_handler','',2280,false,l.lanplcallfoid),
   ('plpgsql_inline_handler','2281',2278,true,l.laninline),
   ('plpgsql_validator','26',2278,true,l.lanvalidator)) expected(name,args,returns,strict,oid)
  JOIN pg_catalog.pg_proc p ON p.oid=expected.oid
