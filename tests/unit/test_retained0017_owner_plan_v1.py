@@ -3,12 +3,29 @@
 from __future__ import annotations
 
 import copy
+import os
 from dataclasses import asdict, replace
+from pathlib import Path
 
 import pytest
 
 from scripts import retained0017_owner_plan_v1 as subject
 from tests.native_private_temp_v1 import _private_root_path
+
+
+def _read_published_bytes(path):
+    """Independent file read, including Windows roots beyond MAX_PATH."""
+    if os.name == "nt":
+        text = os.fspath(path)
+        assert path.is_absolute()
+        if not text.startswith("\\\\?\\"):
+            text = (
+                "\\\\?\\UNC\\" + text[2:]
+                if text.startswith("\\\\")
+                else "\\\\?\\" + text
+            )
+        path = Path(text)
+    return path.read_bytes()
 
 
 def _pins():
@@ -236,10 +253,10 @@ def test_private_receipt_uses_native_private_directory_and_no_clobber(tmp_path):
     value = subject._join(_snapshot(), _snapshot(), _pins(), {})
     digest = subject._publish_private_receipt(value, root)
     path = root / ("retained0017-plan-" + digest + ".json")
-    assert path.read_bytes() == subject._canonical(value)
+    assert _read_published_bytes(path) == subject._canonical(value)
     with pytest.raises(subject.Retained0017PlanRefused):
         subject._publish_private_receipt(value, root)
-    assert path.read_bytes() == subject._canonical(value)
+    assert _read_published_bytes(path) == subject._canonical(value)
 
 
 @pytest.mark.parametrize("change", ["none", "hash", "extra", "foreign_head"])
@@ -284,8 +301,11 @@ def test_late_private_receipt_identity_failure_preserves_accepted_bytes(
         subject._publish_private_receipt(value, root)
     raw = subject._canonical(value)
     assert (
-        root / ("retained0017-plan-" + subject._sha(raw) + ".json")
-    ).read_bytes() == raw
+        _read_published_bytes(
+            root / ("retained0017-plan-" + subject._sha(raw) + ".json")
+        )
+        == raw
+    )
 
 
 def test_cli_refusal_redacts_private_exception_and_never_connects(monkeypatch, capsys):
