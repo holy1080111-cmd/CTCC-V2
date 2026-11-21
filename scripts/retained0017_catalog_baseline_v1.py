@@ -321,6 +321,19 @@ def sha(raw):
     return hashlib.sha256(raw).hexdigest()
 
 
+_SOURCE_TOAST_ALLOCATION_PREDICATE = """n.nspname='pg_toast' AND (
+ (o.relkind='t' AND EXISTS(SELECT 1 FROM pg_catalog.pg_class p
+ JOIN pg_catalog.pg_namespace pn ON pn.oid=p.relnamespace
+ WHERE pn.nspname='public' AND p.relkind='r' AND p.reltoastrelid=o.oid))
+ OR (o.relkind='i' AND EXISTS(SELECT 1 FROM pg_catalog.pg_index i
+ JOIN pg_catalog.pg_class t ON t.oid=i.indrelid
+ JOIN pg_catalog.pg_namespace tn ON tn.oid=t.relnamespace
+ JOIN pg_catalog.pg_class p ON p.reltoastrelid=t.oid
+ JOIN pg_catalog.pg_namespace pn ON pn.oid=p.relnamespace
+ WHERE pn.nspname='public' AND p.relkind='r' AND tn.nspname='pg_toast'
+ AND t.relkind='t' AND i.indexrelid=o.oid)))"""
+
+
 def _unknown_nonpublic_objects_predicate():
     # FirstNormalObjectId is the PG17 bootstrap boundary. The only source17
     # extension is the four-object plpgsql extension checked independently.
@@ -340,7 +353,12 @@ def _unknown_nonpublic_objects_predicate():
         ("pg_ts_template", "tmplnamespace"),
     ):
         exception = ""
-        if catalog == "pg_proc":
+        if catalog == "pg_class":
+            # TOAST names and allocation OIDs are not source identities. Admit
+            # only the actual public parent pointer and that TOAST heap's
+            # actual index pointer, after the native storage/index proof.
+            exception = " AND NOT (" + _SOURCE_TOAST_ALLOCATION_PREDICATE + ")"
+        elif catalog == "pg_proc":
             exception = " AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_language l WHERE l.lanname='plpgsql' AND o.oid IN (l.lanplcallfoid,l.laninline,l.lanvalidator))"
         parts.append(
             "NOT EXISTS(SELECT 1 FROM pg_catalog."
