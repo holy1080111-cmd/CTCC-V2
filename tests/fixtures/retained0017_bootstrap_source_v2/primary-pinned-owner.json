@@ -1,0 +1,29 @@
+{
+  "bootstrap_role_oid": 10,
+  "first_unpinned_object_id": 12000,
+  "owner_dependency_kind": "SHARED_DEPENDENCY_OWNER",
+  "schema": "ctcc.pg17.bootstrap_pinned_owner_primary.v2",
+  "source_tag": "REL_17_11",
+  "sources": {
+    "catalog.c": {
+      "bytes": 22770,
+      "sha256": "de16c1288e5696565693196adff14888e969b280e01d73005f36664a86f28cbe",
+      "url": "https://raw.githubusercontent.com/postgres/postgres/REL_17_11/src/backend/catalog/catalog.c"
+    },
+    "pg_authid.dat": {
+      "bytes": 5792,
+      "sha256": "3b8f4d4fd0de242377aa600f76960af97f90028e81eab0ffdee10d9da83b245c",
+      "url": "https://raw.githubusercontent.com/postgres/postgres/REL_17_11/src/include/catalog/pg_authid.dat"
+    },
+    "pg_shdepend.c": {
+      "bytes": 50531,
+      "sha256": "6f2230244777ebab215872901777b1155c5f87cd3f331a239a3dba941c1be305",
+      "url": "https://raw.githubusercontent.com/postgres/postgres/REL_17_11/src/backend/catalog/pg_shdepend.c"
+    },
+    "transam.h": {
+      "bytes": 14271,
+      "sha256": "0dfe9ef6d15f672ec7862e7322c74d4aeb7b8ed44bdbfdba996c8dbf51dc1bdb",
+      "url": "https://raw.githubusercontent.com/postgres/postgres/REL_17_11/src/include/access/transam.h"
+    }
+  }
+}

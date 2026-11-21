@@ -1,0 +1,57 @@
+{
+  "actual_cluster_count": 2,
+  "distinct_actual_cluster_system_identifiers": true,
+  "execution_authority": false,
+  "existing_nonsuper_literal_unchanged": true,
+  "literal_installed": false,
+  "migration_authority": false,
+  "normalized_catalog_sha256": "e1f30e83be81f3d5d45875627215681f09d168cf02f0a1b599b3529b104d48ee",
+  "owner_oids_truthfully_both10": true,
+  "pair": [
+    {
+      "cluster_system_identifier_sha256": "ff00e494a648b08c51f08f6016000b524119c5697abd952f61ed8f9eb817c879",
+      "files": {
+        "reference_a.physical.json": {
+          "bytes": 628,
+          "sha256": "ce3f24405dc4ef7df81bdcc4db86a4ecb55869e871645d8860d45d607cd50d63"
+        },
+        "reference_a.raw.json": {
+          "bytes": 2182714,
+          "sha256": "d9977e6ddee18e0f494df7732019150df48e95ee466696e4ddfa3044cba4a53d"
+        }
+      },
+      "image_tree_sha256": "a4413022a5e18d5c8b4e3221be80bd7d21aa13c85093ae1adb7e01423da78556",
+      "input_sha256": "4239e84c1e15a3f5877fb1a05c296560370206ae235eae0c4065ff5c7e29ab3a",
+      "label": "a",
+      "normalized_sha256": "e1f30e83be81f3d5d45875627215681f09d168cf02f0a1b599b3529b104d48ee",
+      "receipt_sha256": "9826e1f0c8760d97dc349fb0ed37b8f93800223a8c9978fee81120db8ba52b66",
+      "source_head": "b50ce21c7338a48e7c744cb000d095a60cb030e4",
+      "source_tree": "8a81439a81371e33415fccc6b40cb69697e6a7c2"
+    },
+    {
+      "cluster_system_identifier_sha256": "4fce71a14754f0277d1a122cfbd57b2a2983df5ae9d403fa1a6ab109fc2f7aa1",
+      "files": {
+        "reference_b.physical.json": {
+          "bytes": 628,
+          "sha256": "72991240e082c68abf6850526f79c5e1b5e2f9971946dfa610659b102806953d"
+        },
+        "reference_b.raw.json": {
+          "bytes": 2182714,
+          "sha256": "591e27c82773bd91a637a4b3854f2cbb0245a45279730ed7c8024f5c0b1c9ba4"
+        }
+      },
+      "image_tree_sha256": "a4413022a5e18d5c8b4e3221be80bd7d21aa13c85093ae1adb7e01423da78556",
+      "input_sha256": "8e260405d4ae6b86a2eb2bc0b09e0a40631fdfd713c89b129ed4dafef65d3051",
+      "label": "b",
+      "normalized_sha256": "e1f30e83be81f3d5d45875627215681f09d168cf02f0a1b599b3529b104d48ee",
+      "receipt_sha256": "7cb2a2f5a6337e7192ed40d58671f195cfa5a6a03b0c0113c4c0785a4b32a7a3",
+      "source_head": "b50ce21c7338a48e7c744cb000d095a60cb030e4",
+      "source_tree": "8a81439a81371e33415fccc6b40cb69697e6a7c2"
+    }
+  ],
+  "reference_purpose": "PG17_INITDB_BOOTSTRAP_OWNER_OID10",
+  "schema": "ctcc.fresh_bootstrap_source17.actual_pair_data_verification.v1",
+  "shared_dependency_rows_truthfully_zero": true,
+  "source17_prefix_sha256": "7a998b64b61f5bb30d65c405a995f3d00ffc12d15344b7cbda309f1c58b17cd2",
+  "status": "ACTUAL_TWO_INDEPENDENT_CLUSTER_DATA_MATCH"
+}

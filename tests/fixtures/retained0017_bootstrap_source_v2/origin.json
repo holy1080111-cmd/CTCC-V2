@@ -1,0 +1,134 @@
+{
+  "all_non_shared_dependency_fields_equal_to_original": true,
+  "canonical_offline_ddl_sha256": "d1609237db108df6b5ba967930a04aa06a0e425270220fe951c63cf6131ff2b5",
+  "catalog_sha256": "e1f30e83be81f3d5d45875627215681f09d168cf02f0a1b599b3529b104d48ee",
+  "controller_sha256": "89f641c0cf964dacaca87cae8d32d57a1ef4b940dfaa51e04d7cd88b957a0393",
+  "ddl_context_prefix": "SET search_path TO public,pg_catalog,pg_temp;\n",
+  "execution_authority": false,
+  "migration_authority": false,
+  "observed_bootstrap_owner_edges": 0,
+  "observed_documents_modified": false,
+  "original_nonsuper_catalog_sha256": "42c73fa8af380f446fabfdf7bf0b4479dc4f26a1a44bbf6e195e9b612e70375e",
+  "original_owner_edges": 61,
+  "pair_receipt_sha256": "cdccc432db88e68feb564cdd7bc20192c5d9b9298e8507192dacfe25423df09a",
+  "primary_license": {
+    "sha256": "3d6af92ff8a4c2cdf69afb1cf44edea727922f5cd0cf8b5f72b11cdecac8fdfd",
+    "url": "https://raw.githubusercontent.com/postgres/postgres/REL_17_11/COPYRIGHT"
+  },
+  "private_pki_or_input_packets_copied": false,
+  "purpose": "PG17_INITDB_BOOTSTRAP_OWNER_OID10",
+  "references": [
+    {
+      "capture_sql_sha256": "f4265e00095ca16aa1c389979965dbfc97c7cebddd66d0fecefe86b86642b03d",
+      "ddl_sql_sha256": "7ae40e387d54e5880e932ca9cb845f9fa9a54660a479664117e33365392d3f17",
+      "files": {
+        "reference_a.normalized.json": {
+          "bytes": 2316082,
+          "sha256": "e1f30e83be81f3d5d45875627215681f09d168cf02f0a1b599b3529b104d48ee"
+        },
+        "reference_a.physical.json": {
+          "bytes": 628,
+          "sha256": "ce3f24405dc4ef7df81bdcc4db86a4ecb55869e871645d8860d45d607cd50d63"
+        },
+        "reference_a.raw.json": {
+          "bytes": 2182714,
+          "sha256": "d9977e6ddee18e0f494df7732019150df48e95ee466696e4ddfa3044cba4a53d"
+        },
+        "reference_a.receipt.json": {
+          "bytes": 1468,
+          "sha256": "9826e1f0c8760d97dc349fb0ed37b8f93800223a8c9978fee81120db8ba52b66"
+        }
+      },
+      "image_tree_sha256": "a4413022a5e18d5c8b4e3221be80bd7d21aa13c85093ae1adb7e01423da78556",
+      "input_sha256": "4239e84c1e15a3f5877fb1a05c296560370206ae235eae0c4065ff5c7e29ab3a",
+      "label": "a",
+      "manifest_sha256": "eb0aee1c61c840bf39de76f7b7d07dfdb266fcb269c8b974d16a76713e7aa0a2",
+      "physical": {
+        "actual_tls": true,
+        "client_address": "127.0.0.1",
+        "client_stdout_sha256": "2e0ec645f35c33b4abaa75cd30bb8ce93a2ebee9cc08f51f5341b4db01313aad",
+        "cluster_name": "",
+        "data_directory": "/run/data",
+        "database": "ctcc_bootstrap_reference_a_1d2e1d4e6a8e4327b557e2d07e63c3c1",
+        "database_oid": 16384,
+        "marker_relation_oid": 16385,
+        "owner": "ctcc_probe",
+        "owner_is_database_owner": true,
+        "owner_oid": 10,
+        "owner_superuser": true,
+        "schema": "ctcc.fresh_bootstrap_source17.physical_data.v1",
+        "server_address": "127.0.0.1",
+        "server_port": 15439,
+        "server_version_num": "170011",
+        "system_identifier_sha256": "ff00e494a648b08c51f08f6016000b524119c5697abd952f61ed8f9eb817c879"
+      },
+      "source_files": {
+        "scripts/native_owner_heap_am_v1.py": "252bbd2a8885c648b34b366b52ee21e7cf8515baed34eb52e4f4a9ae689c9efe",
+        "scripts/native_owner_index_catalog_v1.py": "c54e204693c65dce64576283ab5b3e32e151f76dc0ead1f26514289624244e0e",
+        "scripts/native_owner_pg17_btree_facts_v1.json": "7a8155a9a8b5e6c1def8c2c3577a21b56c4c232ccb3eb870a44edbc0b21b593f",
+        "scripts/retained0017_catalog_baseline_v1.py": "d0ea6a246f204429e212a389c80bc96c84e3429d55d0aa85eb0749032fe69478",
+        "scripts/retained0017_catalog_sql_types_v1.py": "216017b80ccc38bbff306307804f2bda3fca53e3e7f49d04972036bdf17ccfb6",
+        "scripts/retained0017_source_contract_v1.py": "1c11c43f16e03faad5e4b26e514aaaf6b823999fc596339ad359a19b05c1f95b"
+      }
+    },
+    {
+      "capture_sql_sha256": "f4265e00095ca16aa1c389979965dbfc97c7cebddd66d0fecefe86b86642b03d",
+      "ddl_sql_sha256": "7ae40e387d54e5880e932ca9cb845f9fa9a54660a479664117e33365392d3f17",
+      "files": {
+        "reference_b.normalized.json": {
+          "bytes": 2316082,
+          "sha256": "e1f30e83be81f3d5d45875627215681f09d168cf02f0a1b599b3529b104d48ee"
+        },
+        "reference_b.physical.json": {
+          "bytes": 628,
+          "sha256": "72991240e082c68abf6850526f79c5e1b5e2f9971946dfa610659b102806953d"
+        },
+        "reference_b.raw.json": {
+          "bytes": 2182714,
+          "sha256": "591e27c82773bd91a637a4b3854f2cbb0245a45279730ed7c8024f5c0b1c9ba4"
+        },
+        "reference_b.receipt.json": {
+          "bytes": 1468,
+          "sha256": "7cb2a2f5a6337e7192ed40d58671f195cfa5a6a03b0c0113c4c0785a4b32a7a3"
+        }
+      },
+      "image_tree_sha256": "a4413022a5e18d5c8b4e3221be80bd7d21aa13c85093ae1adb7e01423da78556",
+      "input_sha256": "8e260405d4ae6b86a2eb2bc0b09e0a40631fdfd713c89b129ed4dafef65d3051",
+      "label": "b",
+      "manifest_sha256": "eb0aee1c61c840bf39de76f7b7d07dfdb266fcb269c8b974d16a76713e7aa0a2",
+      "physical": {
+        "actual_tls": true,
+        "client_address": "127.0.0.1",
+        "client_stdout_sha256": "5c81f0c5aa4fb58da066ea2f73009c83fe28483cf6c41d9ea30fa42064415a19",
+        "cluster_name": "",
+        "data_directory": "/run/data",
+        "database": "ctcc_bootstrap_reference_b_449d180594a14e368a267d260189f26e",
+        "database_oid": 16384,
+        "marker_relation_oid": 16385,
+        "owner": "ctcc_probe",
+        "owner_is_database_owner": true,
+        "owner_oid": 10,
+        "owner_superuser": true,
+        "schema": "ctcc.fresh_bootstrap_source17.physical_data.v1",
+        "server_address": "127.0.0.1",
+        "server_port": 15439,
+        "server_version_num": "170011",
+        "system_identifier_sha256": "4fce71a14754f0277d1a122cfbd57b2a2983df5ae9d403fa1a6ab109fc2f7aa1"
+      },
+      "source_files": {
+        "scripts/native_owner_heap_am_v1.py": "252bbd2a8885c648b34b366b52ee21e7cf8515baed34eb52e4f4a9ae689c9efe",
+        "scripts/native_owner_index_catalog_v1.py": "c54e204693c65dce64576283ab5b3e32e151f76dc0ead1f26514289624244e0e",
+        "scripts/native_owner_pg17_btree_facts_v1.json": "7a8155a9a8b5e6c1def8c2c3577a21b56c4c232ccb3eb870a44edbc0b21b593f",
+        "scripts/retained0017_catalog_baseline_v1.py": "d0ea6a246f204429e212a389c80bc96c84e3429d55d0aa85eb0749032fe69478",
+        "scripts/retained0017_catalog_sql_types_v1.py": "216017b80ccc38bbff306307804f2bda3fca53e3e7f49d04972036bdf17ccfb6",
+        "scripts/retained0017_source_contract_v1.py": "1c11c43f16e03faad5e4b26e514aaaf6b823999fc596339ad359a19b05c1f95b"
+      }
+    }
+  ],
+  "schema": "ctcc.retained0017.bootstrap_source_pair_origin.v2",
+  "schema_admission": false,
+  "source_archive_sha256": "8ba9dcfaa6be54c6557fd5d30b3027ba9a333994c9a649495a3a580d1cef9f94",
+  "source_checkpoint_receipt_sha256": "7a144ed87f1bb575325f28d10a63420d404ec13d086432e59a9f2ae1cb4710ea",
+  "source_commit": "b50ce21c7338a48e7c744cb000d095a60cb030e4",
+  "source_tree": "8a81439a81371e33415fccc6b40cb69697e6a7c2"
+}
