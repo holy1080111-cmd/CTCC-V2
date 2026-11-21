@@ -416,7 +416,7 @@ def _document(label, base):
                 {},
             ]
         )
-    return {
+    document = {
         "schema": "ctcc.retained0017.raw_catalog.v1",
         "profile": {
             "owner": owner,
@@ -483,6 +483,56 @@ def _document(label, base):
             "maintenance_settings_sha256": "c" * 64,
         },
     }
+
+    # This is declared synthetic metadata, never a PG output parser/coercion.
+    # Add the producer's complete dimension inventory even where these small
+    # DATA rows omit unrelated real catalog fields.
+    def arrays(catalog, row):
+        dimensions = {}
+        for field in subject.catalog_types.ARRAYS[catalog]:
+            row.setdefault(field, None)
+            value = row[field]
+            dimensions[field] = (
+                None
+                if value is None or value == []
+                else (
+                    "[0:" + str(len(value) - 1) + "]"
+                    if (catalog, field) in subject.catalog_types._VECTORS
+                    else "[1:" + str(len(value)) + "]"
+                )
+            )
+        row[subject.catalog_types.ARRAY_DIMS_FIELD] = dimensions
+
+    for kind, row, _extra in document["entries"]:
+        arrays(
+            {
+                "relation": "pg_class",
+                "attribute": "pg_attribute",
+                "default": "pg_attrdef",
+                "constraint": "pg_constraint",
+                "trigger": "pg_trigger",
+                "index": "pg_index",
+                "function": "pg_proc",
+                "type": "pg_type",
+                "sequence": "pg_sequence",
+                "default_acl": "pg_default_acl",
+                "namespace": "pg_namespace",
+                "database": "pg_database",
+                "initial_acl": "pg_init_privs",
+            }[kind],
+            row,
+        )
+    for name, catalog in (
+        ("languages", "pg_language"),
+        ("language_callbacks", "pg_proc"),
+        ("expression_callbacks", "pg_proc"),
+        ("expression_operators", "pg_operator"),
+        ("collations", "pg_collation"),
+    ):
+        for row in document["bootstrap"][name]:
+            arrays(catalog, row)
+    arrays("pg_extension", document["bootstrap"]["extension"])
+    return document
 
 
 @pytest.fixture

@@ -14,6 +14,8 @@ import json
 import re
 from pathlib import Path
 
+from scripts import retained0017_catalog_sql_types_v1 as catalog_types
+
 SCHEMA = "ctcc.retained0017.normalized_catalog.v1"
 REFERENCE_STATUS = "PENDING_TWO_INDEPENDENT_ACTUAL_PG17_REFERENCES"
 SEALED_CATALOG_SHA256 = ""
@@ -242,28 +244,28 @@ WITH RECURSIVE public_relations AS (
  (d.dbid=(SELECT oid FROM pg_catalog.pg_database WHERE datname=pg_catalog.current_database()) OR d.dbid=0)
  AND EXISTS(SELECT 1 FROM tracked_objects x WHERE x.catalog=d.classid AND x.oid=d.objid)
 ), entries AS (
- SELECT 'relation' AS kind,pg_catalog.to_jsonb(c) AS value,'{}'::pg_catalog.jsonb AS extra FROM relations c
- UNION ALL SELECT 'attribute',pg_catalog.to_jsonb(a),'{}'::pg_catalog.jsonb
+ SELECT 'relation' AS kind,__CLASS_JSON__ AS value,'{}'::pg_catalog.jsonb AS extra FROM relations c
+ UNION ALL SELECT 'attribute',__ATTRIBUTE_JSON__,'{}'::pg_catalog.jsonb
  FROM pg_catalog.pg_attribute a JOIN relations c ON c.oid=a.attrelid WHERE a.attnum>0
- UNION ALL SELECT 'default',pg_catalog.to_jsonb(d),'{}'::pg_catalog.jsonb
+ UNION ALL SELECT 'default',__DEFAULT_JSON__,'{}'::pg_catalog.jsonb
  FROM pg_catalog.pg_attrdef d JOIN relations c ON c.oid=d.adrelid
- UNION ALL SELECT 'constraint',pg_catalog.to_jsonb(k),'{}'::pg_catalog.jsonb
+ UNION ALL SELECT 'constraint',__CONSTRAINT_JSON__,'{}'::pg_catalog.jsonb
  FROM pg_catalog.pg_constraint k JOIN pg_catalog.pg_namespace n ON n.oid=k.connamespace WHERE n.nspname='public'
- UNION ALL SELECT 'trigger',pg_catalog.to_jsonb(t),pg_catalog.jsonb_build_object('constraint_type',k.contype)
+ UNION ALL SELECT 'trigger',__TRIGGER_JSON__,pg_catalog.jsonb_build_object('constraint_type',k.contype)
  FROM pg_catalog.pg_trigger t JOIN relations c ON c.oid=t.tgrelid LEFT JOIN pg_catalog.pg_constraint k ON k.oid=t.tgconstraint
- UNION ALL SELECT 'index',pg_catalog.to_jsonb(i)||pg_catalog.jsonb_build_object('indclass',i.indclass::pg_catalog.oid[],'indcollation',i.indcollation::pg_catalog.oid[]),
+ UNION ALL SELECT 'index',__INDEX_JSON__,
  '{}'::pg_catalog.jsonb
  FROM pg_catalog.pg_index i JOIN relations c ON c.oid=i.indrelid
- UNION ALL SELECT 'function',pg_catalog.to_jsonb(p)||pg_catalog.jsonb_build_object('prosupport',p.prosupport::pg_catalog.int8,'proargtypes',p.proargtypes::pg_catalog.oid[]),
+ UNION ALL SELECT 'function',__PROC_JSON__,
  '{}'::pg_catalog.jsonb
  FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public'
- UNION ALL SELECT 'type',pg_catalog.to_jsonb(t)||pg_catalog.jsonb_build_object('typsubscript',t.typsubscript::pg_catalog.int8,'typinput',t.typinput::pg_catalog.int8,'typoutput',t.typoutput::pg_catalog.int8,'typreceive',t.typreceive::pg_catalog.int8,'typsend',t.typsend::pg_catalog.int8,'typmodin',t.typmodin::pg_catalog.int8,'typmodout',t.typmodout::pg_catalog.int8,'typanalyze',t.typanalyze::pg_catalog.int8),'{}'::pg_catalog.jsonb
+ UNION ALL SELECT 'type',__TYPE_JSON__,'{}'::pg_catalog.jsonb
  FROM pg_catalog.pg_type t JOIN pg_catalog.pg_namespace n ON n.oid=t.typnamespace WHERE n.nspname='public'
- UNION ALL SELECT 'sequence',pg_catalog.to_jsonb(s),'{}'::pg_catalog.jsonb FROM pg_catalog.pg_sequence s JOIN public_relations c ON c.oid=s.seqrelid
- UNION ALL SELECT 'default_acl',pg_catalog.to_jsonb(d),'{}'::pg_catalog.jsonb FROM pg_catalog.pg_default_acl d
- UNION ALL SELECT 'namespace',pg_catalog.to_jsonb(n),'{}'::pg_catalog.jsonb FROM pg_catalog.pg_namespace n WHERE n.nspname='public'
- UNION ALL SELECT 'database',pg_catalog.to_jsonb(d),'{}'::pg_catalog.jsonb FROM pg_catalog.pg_database d WHERE d.datname=pg_catalog.current_database()
- UNION ALL SELECT 'initial_acl',pg_catalog.to_jsonb(p),pg_catalog.jsonb_build_object('catalog',__INITCLASS__)
+ UNION ALL SELECT 'sequence',__SEQUENCE_JSON__,'{}'::pg_catalog.jsonb FROM pg_catalog.pg_sequence s JOIN public_relations c ON c.oid=s.seqrelid
+ UNION ALL SELECT 'default_acl',__DEFAULT_ACL_JSON__,'{}'::pg_catalog.jsonb FROM pg_catalog.pg_default_acl d
+ UNION ALL SELECT 'namespace',__NAMESPACE_JSON__,'{}'::pg_catalog.jsonb FROM pg_catalog.pg_namespace n WHERE n.nspname='public'
+ UNION ALL SELECT 'database',__DATABASE_JSON__,'{}'::pg_catalog.jsonb FROM pg_catalog.pg_database d WHERE d.datname=pg_catalog.current_database()
+ UNION ALL SELECT 'initial_acl',__INITIAL_ACL_JSON__,pg_catalog.jsonb_build_object('catalog',__INITCLASS__)
  FROM pg_catalog.pg_init_privs p WHERE EXISTS(SELECT 1 FROM tracked_objects t WHERE t.catalog=p.classoid AND t.oid=p.objoid)
  OR (p.classoid='pg_catalog.pg_language'::pg_catalog.regclass AND p.objoid=(SELECT oid FROM pg_catalog.pg_language WHERE lanname='plpgsql'))
  OR (p.classoid='pg_catalog.pg_proc'::pg_catalog.regclass AND p.objoid IN
@@ -279,16 +281,16 @@ SELECT pg_catalog.jsonb_build_object('schema','ctcc.retained0017.raw_catalog.v1'
  'tls',EXISTS(SELECT 1 FROM pg_catalog.pg_stat_ssl WHERE pid=pg_catalog.pg_backend_pid() AND ssl)),
  'head',(SELECT pg_catalog.jsonb_agg(version_num ORDER BY version_num) FROM public.alembic_version),
  'references',(SELECT pg_catalog.jsonb_agg(pg_catalog.jsonb_build_array(catalog,oid,address) ORDER BY catalog,oid) FROM object_references),
- 'toast',(SELECT COALESCE(pg_catalog.jsonb_agg(pg_catalog.jsonb_build_array(parent_oid,toast_oid,parent_name) ORDER BY parent_name),'[]'::pg_catalog.jsonb) FROM toast_roots),
+ 'toast',(SELECT COALESCE(pg_catalog.jsonb_agg(pg_catalog.jsonb_build_array(parent_oid::pg_catalog.int8,toast_oid::pg_catalog.int8,parent_name) ORDER BY parent_name),'[]'::pg_catalog.jsonb) FROM toast_roots),
  'dependencies',(SELECT COALESCE(pg_catalog.jsonb_agg(pg_catalog.jsonb_build_array(__CLASS__,d.objid::pg_catalog.int8,d.objsubid,__REFCLASS__,d.refobjid::pg_catalog.int8,d.refobjsubid,d.deptype::pg_catalog.text) ORDER BY d.classid,d.objid,d.objsubid,d.refclassid,d.refobjid,d.refobjsubid,d.deptype),'[]'::pg_catalog.jsonb) FROM retained_dependencies d),
  'shared_dependencies',(SELECT COALESCE(pg_catalog.jsonb_agg(pg_catalog.jsonb_build_array(d.dbid::pg_catalog.int8,__CLASS__,d.objid::pg_catalog.int8,d.objsubid,__REFCLASS__,d.refobjid::pg_catalog.int8,d.deptype::pg_catalog.text) ORDER BY d.dbid,d.classid,d.objid,d.objsubid,d.refclassid,d.refobjid,d.deptype),'[]'::pg_catalog.jsonb) FROM retained_shared_dependencies d),
  'bootstrap',pg_catalog.jsonb_build_object(
-  'languages',(SELECT pg_catalog.jsonb_agg(pg_catalog.to_jsonb(l) ORDER BY l.lanname) FROM pg_catalog.pg_language l),
-  'language_callbacks',(SELECT pg_catalog.jsonb_agg(pg_catalog.to_jsonb(p)||pg_catalog.jsonb_build_object('proargtypes',p.proargtypes::pg_catalog.oid[],'prosupport',p.prosupport::pg_catalog.int8) ORDER BY p.proname) FROM pg_catalog.pg_proc p WHERE EXISTS(SELECT 1 FROM pg_catalog.pg_language l WHERE p.oid IN (l.lanplcallfoid,l.laninline,l.lanvalidator))),
-  'expression_operators',(SELECT COALESCE(pg_catalog.jsonb_agg(pg_catalog.to_jsonb(o)||pg_catalog.jsonb_build_object('oprcode',o.oprcode::pg_catalog.int8,'oprrest',o.oprrest::pg_catalog.int8,'oprjoin',o.oprjoin::pg_catalog.int8) ORDER BY o.oid),'[]'::pg_catalog.jsonb) FROM pg_catalog.pg_operator o JOIN expression_operator_ids used ON used.id=o.oid),
-  'expression_callbacks',(SELECT COALESCE(pg_catalog.jsonb_agg(pg_catalog.to_jsonb(p)||pg_catalog.jsonb_build_object('proargtypes',p.proargtypes::pg_catalog.oid[],'prosupport',p.prosupport::pg_catalog.int8) ORDER BY p.oid),'[]'::pg_catalog.jsonb) FROM pg_catalog.pg_proc p JOIN expression_callback_ids used ON used.id=p.oid),
-  'extension',(SELECT pg_catalog.to_jsonb(e) FROM pg_catalog.pg_extension e WHERE e.extname='plpgsql'),
-  'collations',(SELECT pg_catalog.jsonb_agg(pg_catalog.to_jsonb(c) ORDER BY c.oid) FROM pg_catalog.pg_collation c WHERE c.oid IN (100,950))),
+  'languages',(SELECT pg_catalog.jsonb_agg(__LANGUAGE_JSON__ ORDER BY l.lanname) FROM pg_catalog.pg_language l),
+  'language_callbacks',(SELECT pg_catalog.jsonb_agg(__PROC_JSON__ ORDER BY p.proname) FROM pg_catalog.pg_proc p WHERE EXISTS(SELECT 1 FROM pg_catalog.pg_language l WHERE p.oid IN (l.lanplcallfoid,l.laninline,l.lanvalidator))),
+  'expression_operators',(SELECT COALESCE(pg_catalog.jsonb_agg(__OPERATOR_JSON__ ORDER BY o.oid),'[]'::pg_catalog.jsonb) FROM pg_catalog.pg_operator o JOIN expression_operator_ids used ON used.id=o.oid),
+  'expression_callbacks',(SELECT COALESCE(pg_catalog.jsonb_agg(__PROC_JSON__ ORDER BY p.oid),'[]'::pg_catalog.jsonb) FROM pg_catalog.pg_proc p JOIN expression_callback_ids used ON used.id=p.oid),
+  'extension',(SELECT __EXTENSION_JSON__ FROM pg_catalog.pg_extension e WHERE e.extname='plpgsql'),
+  'collations',(SELECT pg_catalog.jsonb_agg(__COLLATION_JSON__ ORDER BY c.oid) FROM pg_catalog.pg_collation c WHERE c.oid IN (100,950))),
  'actor_physical',pg_catalog.jsonb_build_object(
   'database_oid',(SELECT oid::pg_catalog.int8 FROM pg_catalog.pg_database WHERE datname=pg_catalog.current_database()),
   'owner',(SELECT pg_catalog.jsonb_build_array(oid::pg_catalog.int8,rolname,rolsuper,rolinherit,rolcreaterole,rolcreatedb,rolcanlogin,rolreplication,rolbypassrls) FROM pg_catalog.pg_roles WHERE rolname=current_user),
@@ -300,6 +302,29 @@ SELECT pg_catalog.jsonb_build_object('schema','ctcc.retained0017.raw_catalog.v1'
     .replace("__CLASS__", _CATALOG_CASE.format(field="d.classid"))
     .replace("__INITCLASS__", _CATALOG_CASE.format(field="p.classoid"))
 )
+for _token, _catalog, _alias in (
+    ("CLASS", "pg_class", "c"),
+    ("ATTRIBUTE", "pg_attribute", "a"),
+    ("DEFAULT", "pg_attrdef", "d"),
+    ("CONSTRAINT", "pg_constraint", "k"),
+    ("TRIGGER", "pg_trigger", "t"),
+    ("INDEX", "pg_index", "i"),
+    ("PROC", "pg_proc", "p"),
+    ("TYPE", "pg_type", "t"),
+    ("SEQUENCE", "pg_sequence", "s"),
+    ("DEFAULT_ACL", "pg_default_acl", "d"),
+    ("NAMESPACE", "pg_namespace", "n"),
+    ("DATABASE", "pg_database", "d"),
+    ("INITIAL_ACL", "pg_init_privs", "p"),
+    ("LANGUAGE", "pg_language", "l"),
+    ("OPERATOR", "pg_operator", "o"),
+    ("EXTENSION", "pg_extension", "e"),
+    ("COLLATION", "pg_collation", "c"),
+):
+    CATALOG_SQL = CATALOG_SQL.replace(
+        "__" + _token + "_JSON__", catalog_types.catalog_row_json_v1(_catalog, _alias)
+    )
+del _token, _catalog, _alias
 
 
 class Retained0017CatalogRefused(ValueError):
@@ -844,6 +869,7 @@ def _normalize_bootstrap(value, ref, bootstrap_owner):
         == {"internal", "c", "sql", "plpgsql"}
     )
     for original in value["languages"]:
+        catalog_types.require_catalog_array_metadata_v1("pg_language", original)
         row = copy.deepcopy(original)
         key = ref("pg_language", row.pop("oid"))
         _need(row["lanowner"] == 10)
@@ -865,6 +891,7 @@ def _normalize_bootstrap(value, ref, bootstrap_owner):
         }
     )
     for original in value["language_callbacks"]:
+        catalog_types.require_catalog_array_metadata_v1("pg_proc", original)
         row = copy.deepcopy(original)
         key = ref("pg_proc", row.pop("oid"))
         _need(row["proowner"] == 10)
@@ -886,6 +913,7 @@ def _normalize_bootstrap(value, ref, bootstrap_owner):
         row["proacl"] = _bootstrap_acl(row["proacl"], bootstrap_owner)
         callbacks.append([key, row])
     row = copy.deepcopy(value["extension"])
+    catalog_types.require_catalog_array_metadata_v1("pg_extension", row)
     _need(type(row) is dict and row["extname"] == "plpgsql" and row["extowner"] == 10)
     _need(type(row.pop("oid")) is int)
     row["extowner"] = "$PG_BOOTSTRAP_OWNER_10"
@@ -896,6 +924,7 @@ def _normalize_bootstrap(value, ref, bootstrap_owner):
         and {row["oid"] for row in value["collations"]} == {100, 950}
     )
     for original in value["collations"]:
+        catalog_types.require_catalog_array_metadata_v1("pg_collation", original)
         row = copy.deepcopy(original)
         key = ref("pg_collation", row.pop("oid"))
         _need(row["collowner"] == 10)
@@ -916,6 +945,7 @@ def _normalize_bootstrap(value, ref, bootstrap_owner):
         and len(value["expression_operators"]) <= 1000
     )
     for original in value["expression_callbacks"]:
+        catalog_types.require_catalog_array_metadata_v1("pg_proc", original)
         row = copy.deepcopy(original)
         oid = row.pop("oid")
         key = ref("pg_proc", oid)
@@ -946,6 +976,7 @@ def _normalize_bootstrap(value, ref, bootstrap_owner):
         row["proacl"] = _bootstrap_acl(row["proacl"], bootstrap_owner)
         callbacks.append([key, row])
     for original in value["expression_operators"]:
+        catalog_types.require_catalog_array_metadata_v1("pg_operator", original)
         row = copy.deepcopy(original)
         oid = row.pop("oid")
         key = ref("pg_operator", oid)
@@ -1294,6 +1325,24 @@ def _normalize(document):
     }
     for kind, original, extra in entries:
         _need(kind in mappings and type(original) is dict and type(extra) is dict)
+        catalog_types.require_catalog_array_metadata_v1(
+            {
+                "relation": "pg_class",
+                "attribute": "pg_attribute",
+                "default": "pg_attrdef",
+                "constraint": "pg_constraint",
+                "trigger": "pg_trigger",
+                "index": "pg_index",
+                "function": "pg_proc",
+                "type": "pg_type",
+                "sequence": "pg_sequence",
+                "default_acl": "pg_default_acl",
+                "namespace": "pg_namespace",
+                "database": "pg_database",
+                "initial_acl": "pg_init_privs",
+            }[kind],
+            original,
+        )
         row = copy.deepcopy(original)
         if kind == "initial_acl":
             _need(set(extra) == {"catalog"} and extra["catalog"] in _REF_TABLES)
