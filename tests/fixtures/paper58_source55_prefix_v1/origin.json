@@ -1,0 +1,20 @@
+{
+  "actual_fresh_reference_only": true,
+  "execution_authority": false,
+  "files": {
+    "canonical0055-native-owner.json": "ff0935fe85a4f787109c8341d1772bfa8f978464be4d4d25bebd53d454a6e716",
+    "canonical0055-raw.json": "1756e0ad43a255f76199be126ffd4dfd8197b133ae033efccfa27ab24a004d92",
+    "canonical0055-receipt.json": "d8f4459ea11c14fca09bedeb26d3c0510b811305b96d69d541419514212d13c3"
+  },
+  "independent_original_archived_verifier_receipt_sha256": "6a48508ed6d3dc59e6415f976ee1803cf4adc48696e142690fe9d3b1e747b7ec",
+  "official_artifact_id": 14699195464,
+  "official_run_id": 44883423281,
+  "official_zip_sha256": "798f9208846bbb500ce31dd8c1041f7546e4d5c5a4addbd002b70f1e360666a4",
+  "paper58_schema_admission": false,
+  "paper_actor_admission": false,
+  "schema": "ctcc.paper58.genuine55_prefix_data_origin.v1",
+  "source55_documents_not_retagged": true,
+  "source_archive_sha256": "eefe97c4642b0186c523d724a779aaa67e1f45ae397e29aa2ab1a6b78a7f1062",
+  "source_commit": "f3721491f333b6d3a0316a22cfa00b8e429276e6",
+  "source_tree": "3288c5b87cbd61fc7d87f077281b99f286f929c7"
+}
