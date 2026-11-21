@@ -13,10 +13,11 @@ from scripts import native_owner_heap_am_v1 as heap
 from scripts import native_owner_index_catalog_v1 as index
 from scripts.evidence_json import read_evidence_json
 
-CONTRACT = "ctcc.source58.native_storage_diagnostic.v1"
+CONTRACT = "ctcc.source58.native_storage_diagnostic.v2"
 SCOPE = "two_fresh_native55_57_catalog_boolean_diagnostics_no_admission"
 SUITE = "native-storage-diagnostic"
-SCHEMA = "ctcc.source58.native_storage_diagnostic_identity.v1"
+SCHEMA = "ctcc.source58.native_storage_diagnostic_identity.v2"
+COMPONENT_SCHEMA = "ctcc.native_storage_catalog_components.v2"
 ENV = "CTCC_DEVVAL_NATIVE_STORAGE_DIAGNOSTIC_DIR"
 MODULE = "tests/integration/test_native_owner_storage_diagnostic_0058_pg.py"
 REPORT = "test-results/native-storage-diagnostic.xml"
@@ -54,9 +55,11 @@ def _need(value):
         raise ValueError("native_storage_diagnostic_refused") from None
 
 
-def _scan(source):
+def _scan(source, word="AND"):
     """Lex only source SQL; retain every byte and never inspect observed SQL."""
     _need(type(source) is str and len(source) <= 200000)
+    _need(word in ("AND", "OR"))
+    width = len(word)
     depth, quote, position = 0, None, 0
     cuts, outer_closes = [], []
     while position < len(source):
@@ -80,34 +83,37 @@ def _scan(source):
                 outer_closes.append(position)
         elif (
             depth == 0
-            and source[position : position + 3] == "AND"
+            and source[position : position + width] == word
             and (
                 position == 0
                 or not (source[position - 1].isalnum() or source[position - 1] == "_")
             )
             and (
-                position + 3 == len(source)
-                or not (source[position + 3].isalnum() or source[position + 3] == "_")
+                position + width == len(source)
+                or not (
+                    source[position + width].isalnum()
+                    or source[position + width] == "_"
+                )
             )
         ):
             cuts.append(position)
-            position += 3
+            position += width
             continue
         position += 1
     _need(depth == 0 and quote is None)
     return cuts, outer_closes
 
 
-def _pieces(source):
-    cuts, _ = _scan(source)
+def _pieces(source, word="AND"):
+    cuts, _ = _scan(source, word)
     parts, start = [], 0
     for cut in cuts:
         parts.append(source[start:cut])
-        start = cut + 3
+        start = cut + len(word)
     parts.append(source[start:])
     _need(all(part.strip() != "" for part in parts))
     # Reconstruction is exact, including spaces, quoted bytes and grouping.
-    _need("AND".join(parts) == source)
+    _need(word.join(parts) == source)
     return tuple(parts)
 
 
@@ -153,6 +159,87 @@ def predicate_sha256_v1():
     ).hexdigest()
 
 
+def _parenthesized(source, prefix="("):
+    source = source.strip()
+    _, closes = _scan(source)
+    _need(
+        source.startswith(prefix)
+        and source.endswith(")")
+        and closes == [len(source) - 1]
+    )
+    return source[len(prefix) : -1]
+
+
+def detail_queries_v2():
+    """Extract the original rejected CONST IDs and index OR categories.
+
+    Only source-owned fragments are used. No observed identifier, type, node,
+    function or SQL is accepted; production predicates remain unchanged.
+    """
+    groups = dict(queries_v1())
+    constants = _parenthesized(
+        groups["expression_constant_type_ids"].removeprefix("SELECT "), "NOT EXISTS("
+    )
+    anchor = "SELECT 1 FROM ("
+    _need(constants.count(anchor) == 1)
+    rejected_ids = (
+        constants.replace(
+            anchor, "SELECT DISTINCT m.parts[1]::pg_catalog.int8 FROM (", 1
+        )
+        + " ORDER BY 1"
+    )
+
+    original = _parenthesized(
+        groups["public_and_toast_index_metadata_and_predicates"].removeprefix(
+            "SELECT "
+        ),
+        "NOT EXISTS(",
+    ).strip()
+    anchor = " AND (\n ix.relkind"
+    _need(original.count(anchor) == 1 and original.endswith(")"))
+    prefix, suffix = original.split(anchor)
+    rejected = "\n ix.relkind" + suffix[:-1]
+    parts = _pieces(rejected, "OR")
+    _need(len(parts) == 12)
+    partial = _pieces(_parenthesized(parts[-1]), "AND")
+    _need(len(partial) == 2 and partial[0].strip() == "i.indpred IS NOT NULL")
+    predicates = _pieces(_parenthesized(partial[1]), "OR")
+    _need(len(predicates) == 6)
+    named = (
+        ("index_layout", "OR".join(parts[:9])),
+        ("index_key_operator_class_metadata", parts[9]),
+        ("index_dependencies", parts[10]),
+        *(
+            (name, partial[0] + " AND (" + condition + ")")
+            for name, condition in zip(
+                (
+                    "predicate_node_tags",
+                    "predicate_type_ids",
+                    "predicate_operator_ids",
+                    "predicate_function_ids",
+                    "predicate_collation_ids",
+                    "predicate_hash_neg_outer_variables",
+                ),
+                predicates,
+                strict=True,
+            )
+        ),
+        (
+            "predicate_rejected_arraycoerceexpr",
+            partial[0]
+            + " AND EXISTS("
+            + _parenthesized(predicates[0], "EXISTS(")
+            + " AND m.parts[1]='ARRAYCOERCEEXPR')",
+        ),
+    )
+    # The same source FROM/JOIN/WHERE scope is retained for every category.
+    categories = tuple(
+        (name, "SELECT EXISTS(" + prefix + " AND (" + condition + "))")
+        for name, condition in named
+    )
+    return rejected_ids, categories
+
+
 def verify_reports_v1(root, source):
     expected_keys = {
         "schema",
@@ -167,6 +254,9 @@ def verify_reports_v1(root, source):
         "schema_admission",
         "original_combined_predicate_used",
         "component_conjunction_matches_original",
+        "rejected_constant_type_ids",
+        "index_rejection_categories",
+        "detail_matches_original_groups",
     }
     names = tuple(name for name, _ in queries_v1())
     for target in ("0055", "0057"):
@@ -175,7 +265,7 @@ def verify_reports_v1(root, source):
         report = read_evidence_json(path.read_bytes())
         _need(type(report) is dict and set(report) == expected_keys)
         _need(
-            report["schema"] == "ctcc.native_storage_catalog_components.v1"
+            report["schema"] == COMPONENT_SCHEMA
             and report["target"] == target
             and report["source_commit"] == source["commit"]
             and report["source_tree"] == source["tree"]
@@ -183,6 +273,15 @@ def verify_reports_v1(root, source):
             and report["predicate_sha256"] == predicate_sha256_v1()
             and report["original_combined_predicate_used"] is True
             and report["component_conjunction_matches_original"] is True
+            and report["detail_matches_original_groups"] is True
+            and report["rejected_constant_type_ids"] == []
+            and type(report["index_rejection_categories"]) is dict
+            and set(report["index_rejection_categories"])
+            == {name for name, _ in detail_queries_v2()[1]}
+            and all(
+                value is False
+                for value in report["index_rejection_categories"].values()
+            )
             and report["startup_admission"] is False
             and report["execution_authority"] is False
             and report["schema_admission"] is False

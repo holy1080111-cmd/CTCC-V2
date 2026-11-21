@@ -40,8 +40,17 @@ async def _capture(owner, target):
             value = await connection.scalar(text(statement))
             assert value is None or type(value) is bool
             groups[name] = value
+        number_sql, category_sql = diagnostic.detail_queries_v2()
+        rejected_ids = list((await connection.execute(text(number_sql))).scalars())
+        assert all(type(value) is int and 0 <= value < 2**32 for value in rejected_ids)
+        assert rejected_ids == sorted(set(rejected_ids))
+        categories = {}
+        for name, statement in category_sql:
+            value = await connection.scalar(text(statement))
+            assert value is None or type(value) is bool
+            categories[name] = value
     report = {
-        "schema": "ctcc.native_storage_catalog_components.v1",
+        "schema": diagnostic.COMPONENT_SCHEMA,
         "target": target,
         "predicate_sha256": diagnostic.predicate_sha256_v1(),
         "groups": groups,
@@ -49,6 +58,14 @@ async def _capture(owner, target):
         "execution_authority": False,
         "schema_admission": False,
         "original_combined_predicate_used": True,
+        "rejected_constant_type_ids": rejected_ids,
+        "index_rejection_categories": categories,
+        "detail_matches_original_groups": (
+            groups["expression_constant_type_ids"] is (not bool(rejected_ids))
+            and all(type(value) is bool for value in categories.values())
+            and groups["public_and_toast_index_metadata_and_predicates"]
+            is (not any(categories.values()))
+        ),
     }
     leaves = [
         value
@@ -89,6 +106,7 @@ async def _capture(owner, target):
     # Data is retained first, but an original FALSE/NULL never becomes PASS
     # even if later observations change. No upgrade or fallback is attempted.
     assert report["component_conjunction_matches_original"] is True
+    assert report["detail_matches_original_groups"] is True
     assert groups["combined"] is True and all(
         value is True for value in groups.values()
     ), json.dumps(report, sort_keys=True)

@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 import yaml
+from sqlalchemy import text
 
 from scripts import current0058_collection_v1 as collection
 from scripts import current0058_full_hermetic_contract_v1 as full
@@ -40,6 +41,26 @@ def test_lexer_preserves_quoted_and_nested_and_without_treating_them_as_boundari
     assert "AND".join(parts) == source
 
 
+def test_secondary_queries_preserve_source_rejection_filters_and_catalog_scope():
+    number_sql, categories = diagnostic.detail_queries_v2()
+    assert number_sql.lstrip().startswith("SELECT DISTINCT m.parts[1]::pg_catalog.int8")
+    assert "NOT IN (" in number_sql and number_sql.endswith(" ORDER BY 1")
+    assert len(categories) == 10 and len(dict(categories)) == 10
+    assert all(statement.startswith("SELECT EXISTS(") for _, statement in categories)
+    assert all("FROM public." not in statement for _, statement in categories)
+    source = "a='OR''AND' OR (b OR c) OR ORDERED"
+    parts = diagnostic._pieces(source, "OR")
+    assert parts == ("a='OR''AND' ", " (b OR c) ", " ORDERED")
+    assert "OR".join(parts) == source
+
+
+def test_secondary_source_queries_have_no_accidental_sqlalchemy_bind_parameters():
+    number_sql, categories = diagnostic.detail_queries_v2()
+    for statement in (number_sql, *(sql for _, sql in categories)):
+        diagnostic._scan(statement)
+        assert not text(statement)._bindparams
+
+
 @pytest.mark.parametrize(
     "source",
     ["a AND", "(a AND b", "a AND 'b", "a -- AND b", "a /* x */ AND b", ") AND a"],
@@ -55,7 +76,7 @@ def _write_reports(root, change=None):
     folder.mkdir()
     for target in ("0055", "0057"):
         document = {
-            "schema": "ctcc.native_storage_catalog_components.v1",
+            "schema": diagnostic.COMPONENT_SCHEMA,
             "target": target,
             "source_commit": source["commit"],
             "source_tree": source["tree"],
@@ -67,6 +88,11 @@ def _write_reports(root, change=None):
             "execution_authority": False,
             "original_combined_predicate_used": True,
             "component_conjunction_matches_original": True,
+            "rejected_constant_type_ids": [],
+            "index_rejection_categories": {
+                name: False for name, _ in diagnostic.detail_queries_v2()[1]
+            },
+            "detail_matches_original_groups": True,
         }
         if target == "0055" and change:
             change(document)
@@ -107,6 +133,9 @@ def test_original_false_unknown_or_coerced_value_never_passes_even_with_other_gr
         ("execution_authority", True),
         ("original_combined_predicate_used", False),
         ("component_conjunction_matches_original", False),
+        ("detail_matches_original_groups", False),
+        ("rejected_constant_type_ids", [1007]),
+        ("rejected_constant_type_ids", ["1007"]),
     ],
 )
 def test_rehashed_wrong_source_or_admission_claim_is_refused(tmp_path, field, value):

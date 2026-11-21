@@ -26,3 +26,14 @@ component3 and excluded from Windows execution as PostgreSQL cases. Frozen56/57
 contracts remain unchanged. Pure lexer, identity, omission and routing checks or
 collection-only fixture resolution do not count as actual PostgreSQL execution.
 No production predicate or callback/OID allowlist was changed for this probe.
+
+The second diagnostic version keeps the same two actual nodes and original
+20 booleans. It separately records numeric rejected CONST type IDs and Boolean
+index rejection categories extracted from the original source conditions:
+layout, key/operator-class metadata, dependencies, node/type/operator/function/
+collation predicates and outer/hash fields. One fixed Boolean measures whether
+the source node-rejection condition specifically rejects `ARRAYCOERCEEXPR`, the
+official node independently observed in the frozen17 diagnostic; it neither
+accepts that tag nor emits an observed private name. These narrower source
+queries must agree with the same original aggregate groups. Unknown data still
+fails, and all observations remain DATA without schema or execution authority.
