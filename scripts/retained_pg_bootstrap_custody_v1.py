@@ -2698,6 +2698,42 @@ def _readonly_bind(source, target):
     _need(os.statvfs(target).f_flag & os.ST_RDONLY != 0)
 
 
+def _require_child_runtime_visibility_v1(rootfs, runtime, vendor_manifest):
+    """Actual kernel mount view before exec; never a caller availability flag."""
+    child_run = rootfs / "run"
+    try:
+        executable = _bounded_regular(child_run / "venv/bin/python", 64 * 1024 * 1024)
+        _need(_sha(executable) == PYTHON_ELF_SHA256)
+        for name in (
+            "venv",
+            "resources/source",
+            "resources/pg-rootfs",
+            "resources/python-rootfs",
+        ):
+            original = os.open(
+                runtime / name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+            )
+            try:
+                visible = os.open(
+                    child_run / name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+                )
+                try:
+                    _need(
+                        _directory_identity(os.fstat(original))
+                        == _directory_identity(os.fstat(visible))
+                    )
+                    _need(os.statvfs(child_run / name).f_flag & os.ST_RDONLY != 0)
+                finally:
+                    os.close(visible)
+            finally:
+                os.close(original)
+        _verify_vendor_tree(child_run / "venv", vendor_manifest)
+    except OSError:
+        raise RetainedBootstrapRefused(
+            "retained_pg_child_runtime_not_visible"
+        ) from None
+
+
 def _run_fixed_supervisor_v1(request, files, source, origin):
     """One fixed genuine-runtime launcher, no external proof/listener adapter.
 
@@ -2802,7 +2838,11 @@ def _run_fixed_supervisor_v1(request, files, source, origin):
         inner_request = {**request, "resources": asdict(mapped)}
     _write_private(runtime / "request.json", _canonical(inner_request))
     _readonly_bind(Path(files.python_rootfs), python_mount)
-    _mount(runtime, python_mount / "run", None, 4096)
+    # runtime already contains source/image/vendor bind-submounts. A plain
+    # bind would expose their empty underlying directories inside the chroot.
+    _mount(runtime, python_mount / "run", None, 4096 | 16384)
+    _mount(None, python_mount / "run", None, 16384 | 262144)
+    _require_child_runtime_visibility_v1(python_mount, runtime, vendor_manifest)
     _mount("proc", python_mount / "proc", "proc", 1 | 2 | 4 | 8)
     _mount("tmpfs", python_mount / "dev", "tmpfs", 2 | 8, "mode=0755,size=1m")
     for name, major, minor in (("null", 1, 3), ("random", 1, 8), ("urandom", 1, 9)):

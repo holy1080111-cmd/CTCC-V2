@@ -40,6 +40,26 @@ def test_image_paths_still_refuse_escape_ambiguous_or_control_names(name):
         subject._image_relative(name)
 
 
+def test_missing_child_submount_view_refuses_before_executable_or_pg_can_start(
+    tmp_path, monkeypatch
+):
+    rootfs, runtime = tmp_path / "image", tmp_path / "runtime"
+    rootfs.mkdir()
+    runtime.mkdir()
+    (rootfs / "run").mkdir()
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("a missing native mount view cannot launch any child")
+
+    monkeypatch.setattr(subject.subprocess, "Popen", forbidden)
+    with pytest.raises(
+        subject.RetainedBootstrapRefused, match="child_runtime_not_visible"
+    ):
+        subject._require_child_runtime_visibility_v1(
+            rootfs, runtime, b"unaccepted inventory"
+        )
+
+
 def _locator():
     return {
         "schema": "ctcc.private_python.maintenance_vendor_locator.v1",
