@@ -59,7 +59,7 @@ def _report(tmp_path, cases):
 
 def test_retained0017_all_actual_declared_cases_are_mandatory_once():
     expected = _declared_cases()
-    assert len(expected) == len(set(expected)) == 13
+    assert len(expected) == len(set(expected)) == 14
     assert full.RETAINED0017_OWNER_CASES == expected
     assert all(full.REQUIRED_CASES.count(case) == 1 for case in expected)
     assert set(expected).isdisjoint(full.SUCCESSOR_CASES)
@@ -93,10 +93,10 @@ def test_retained0017_complete_synthetic_required_report_codec(tmp_path):
     report = full.base.shared.verify_pytest_report(
         _report(tmp_path, cases), required_cases=cases
     )
-    assert report["passed"] == 13 and report["skipped"] == 0
+    assert report["passed"] == 14 and report["skipped"] == 0
 
 
-@pytest.mark.parametrize("missing", range(13))
+@pytest.mark.parametrize("missing", range(14))
 def test_retained0017_required_report_refuses_each_single_omitted_case(
     tmp_path, missing
 ):

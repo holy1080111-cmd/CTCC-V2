@@ -41,7 +41,7 @@ def _actual_owner_cases():
                     assert not decorator.keywords
                     values = ast.literal_eval(decorator.args[1])
                     assert type(values) is list and all(
-                        type(value) in (bool, int) for value in values
+                        type(value) in (bool, int, str) for value in values
                     )
             names = (
                 [node.name + "[" + str(value) + "]" for value in values]
@@ -54,7 +54,7 @@ def _actual_owner_cases():
 
 def test_actual_owner_cases_all_run_once_on_source58_component3():
     expected = _actual_owner_cases()
-    assert len(expected) == len(set(expected)) == 21
+    assert len(expected) == len(set(expected)) == 26
     assert set(full.CANONICAL_OWNER_CASES) == set(expected)
     assert len(NEW_CASES) == 6 and set(NEW_CASES) <= set(expected)
     assert set(expected).isdisjoint(full.SUCCESSOR_CASES)
@@ -77,6 +77,43 @@ def test_actual_owner_cases_all_run_once_on_source58_component3():
     ]
     assert full.base.collection.POSTGRES_COMPONENT_COUNT == 3
     assert all(case not in full.base.REQUIRED_CASES for case in NEW_CASES)
+
+
+def test_source58_all_six_storage_callback_cases_are_mandatory_once_on_owner3():
+    cases = full.OWNER_STORAGE_CASES
+    assert len(cases) == len(set(cases)) == 6
+    assert len(full.OWNER_STORAGE_CANONICAL_CASES) == 5
+    for case in cases:
+        assert full.REQUIRED_CASES.count(case) == 1
+        assert case not in full.base.REQUIRED_CASES
+        node = case[0].replace(".", "/") + ".py::" + case[1]
+        assert [
+            index
+            for index in range(5)
+            if full.collection.selected_for("postgres", index, node)
+        ] == [3]
+        assert not any(
+            full.collection.selected_for("shard", index, node) for index in range(8)
+        )
+
+
+@pytest.mark.parametrize("missing", full.OWNER_STORAGE_CASES)
+def test_source58_required_report_refuses_each_storage_callback_case_omission(
+    tmp_path, missing
+):
+    root = ET.Element("testsuites")
+    cases = [case for case in full.OWNER_STORAGE_CASES if case != missing]
+    suite = ET.SubElement(
+        root, "testsuite", tests=str(len(cases)), failures="0", errors="0", skipped="0"
+    )
+    for module, name in cases:
+        ET.SubElement(suite, "testcase", classname=module, name=name)
+    path = tmp_path / "declared-synthetic-owner-storage-required-report.xml"
+    path.write_bytes(ET.tostring(root))
+    with pytest.raises(ValueError, match="pytest_required_execution_not_verified"):
+        full.base.shared.verify_pytest_report(
+            path, required_cases=full.OWNER_STORAGE_CASES
+        )
 
 
 @pytest.mark.parametrize("missing", NEW_CASES)

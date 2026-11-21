@@ -128,7 +128,34 @@ OWNER0057_NULL_CASES = tuple(
     )
     for changed in ("False", "True")
 )
+OWNER_STORAGE_CANONICAL_CASES = (
+    (
+        "tests.integration.test_native_owner_upgrade_0056_v2_pg",
+        "test_actual0055_v2_and_commonroute_custom_marker_am_refuse_before_head_reads",
+    ),
+    (
+        "tests.integration.test_native_owner_upgrade_0058_pg",
+        "test_actual0057_shared_snapshot_rejects_custom_table_am_before_row_or_storage_read",
+    ),
+    *(
+        (
+            "tests.integration.test_native_owner_upgrade_0058_pg",
+            "test_actual0057_native_btree_closure_refuses_before_any_index_callback_or_app_read["
+            + changed
+            + "]",
+        )
+        for changed in ("index_am", "operator_class", "predicate")
+    ),
+)
+OWNER_STORAGE_CASES = (
+    *OWNER_STORAGE_CANONICAL_CASES,
+    (
+        "tests.integration.test_retained0017_owner_plan_v1_pg",
+        "test_actual0017_custom_marker_am_refuses_before_head_row_or_storage_read",
+    ),
+)
 CANONICAL_OWNER_CASES = (
+    *OWNER_STORAGE_CANONICAL_CASES,
     *OWNER0056_V2_CASES,
     *(
         case
@@ -141,6 +168,7 @@ CANONICAL_OWNER_CASES = (
 RETAINED0017_OWNER_CASES = tuple(
     ("tests.integration.test_retained0017_owner_plan_v1_pg", name)
     for name in (
+        "test_actual0017_custom_marker_am_refuses_before_head_row_or_storage_read",
         "test_actual0017_two_readonly_snapshots_preserve_all_rows_oids_sequences_and_unknown_intent",
         "test_actual0017_outer_cli_replays_admitted_source_private_pins_tls_and_receipt",
         "test_actual0017_row_hash_encoding_distinguishes_sql_null_from_json_null",
@@ -341,6 +369,7 @@ REQUIRED_CASES = (
     *ORIGINAL_OCO_CASES,
     *OWNER_UPGRADE_CASES,
     *OWNER0056_V2_CASES,
+    *OWNER_STORAGE_CANONICAL_CASES,
     *OWNER0057_NULL_CASES,
     OWNER0056_EXISTING_CLI_CASE,
     *ORIGINAL_OCO_REPORT_CASES,
