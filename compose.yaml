@@ -6,6 +6,8 @@ services:
     container_name: ${CTCC_API_CONTAINER_NAME:-ctcc-v2-api}
     env_file:
       - ${CTCC_ENV_FILE:-.env}
+    environment:
+      CTCC_CONTAINER_MODE_V1: ${CTCC_CONTAINER_MODE_V1:-}
     ports:
       - "127.0.0.1:${CTCC_API_HOST_PORT:-8100}:8000"
     depends_on:
@@ -13,7 +15,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    restart: unless-stopped
+    restart: "no"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/readiness', timeout=3)"]
       interval: 20s

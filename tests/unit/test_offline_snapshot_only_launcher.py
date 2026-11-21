@@ -134,7 +134,7 @@ def test_launcher_rechecks_private_token_without_printing_it(
         launcher.installation,
         "verify",
         lambda root: {
-            "status": "READY_TO_START_ANALYSIS_ONLY",
+            "status": "CONFIGURATION_VERIFIED_STARTUP_UNACCEPTED",
             "installation_root": str(root),
             "dashboard_url": "http://127.0.0.1:8100/dashboard",
         },

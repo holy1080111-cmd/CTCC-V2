@@ -18,15 +18,16 @@ services:
         DATABASE_URL="$$(cat /run/secrets/analysis_database_url)"
         API_TOKEN="$$(cat /run/secrets/analysis_api_token)"
         export DATABASE_URL API_TOKEN
-        alembic upgrade head
-        exec uvicorn app.main:app --uds /run/ctcc-analysis/api.sock --no-proxy-headers --workers 1
+        exec python -B -m scripts.container_startup_0058_v1
     environment:
+      CTCC_CONTAINER_MODE_V1: persistent_paper
       ENVIRONMENT: production
       TRADING_MODE: analysis_only
       WEB_CONCURRENCY: "1"
       AUTO_TRADE: "false"
       LIVE_TRADING: "false"
       CTCC_NATIVE_ONLY_LIFESPAN_V1: "false"
+      CTCC_NATIVE_DEMO_MANUAL_LIFESPAN_0056_V1: "false"
       CTCC_LOCAL_ANALYSIS_ONLY_V1: "true"
       OKX_WS_ENABLED: "false"
       OKX_DEMO_ENABLED: "false"
@@ -60,7 +61,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    restart: unless-stopped
+    restart: "no"
     security_opt: ["no-new-privileges:true"]
     cpus: "0.75"
     mem_limit: 1g

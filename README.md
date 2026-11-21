@@ -1,4 +1,4 @@
-# CTCC V2 v1.6.9 — Durable OKX Live Recovery
+# CTCC V2 2.0.0 — Manual Tools and Durable Recovery
 
 **V2.0 production acceptance is incomplete.** The final-completion branch is
 undergoing new source-bound validation (2026-11-21 update); [current status and boundaries](docs/final_completion_validation.md)
@@ -25,7 +25,9 @@ not configure an account or supply trading authorization.
 
 The [Windows offline viewer](docs/offline_snapshot_only_windows.md) opens saved
 snapshots without Docker. The [local analysis installation](docs/local_analysis_installation.md)
-adds the persistent manual Paper ledger.
+targets the persistent manual Paper ledger. Its container startup currently
+refuses service activation while complete current58 catalog and Paper actor
+admission are pending; preparation alone is not startup acceptance.
 
 Open `/dashboard` in the local analysis installation, enter its local CTCC
 API token, and select an unmodified MarketSnapshot JSON file. A connected
@@ -225,7 +227,7 @@ establish independently administered WORM or historical availability.
 Migration identities (the stopped local deployment is not silently upgraded):
 
 ```text
-Current final-completion source head: 0046
+Current final-completion source head: 0058
 Last independently restored local deployment: 0017
 ```
 
@@ -471,79 +473,38 @@ Account IDs and raw OKX payloads are excluded from API response models. The
 database mirror stores one-way account fingerprints so a changed account cannot
 silently replace the original mirror.
 
-## Upgrade and test
+## Install, preserve data, and validate
 
-Create the local secret file before the first start. `.env` is intentionally
-not committed:
+Use the [exact-source Windows installer](docs/windows_tool_physical0058_v1.md)
+and its reviewed private profile for the offline viewer or manual Demo/Live
+tools. These native launchers keep their original loopback, account, schema,
+role, recovery and operator-approval checks. Container networking does not
+substitute for those native boundaries.
 
-```powershell
-Copy-Item .env.example .env
-```
+The default Docker command never runs Alembic or starts the generic API. It
+requires an explicit container mode and rejects legacy or execution-enabled
+settings before importing the application or opening a database. Persistent
+Paper is the supported container target, but startup remains refused with
+`container_paper_source_admission_pending` until complete source58 catalog and
+Paper actor admission plus the existing Paper recovery context are integrated
+and independently verified. The [local analysis preparation](docs/local_analysis_installation.md)
+can verify new private configuration without starting services; it does not
+establish schema or startup readiness.
 
-The example file leaves `POSTGRES_PASSWORD` and `DATABASE_URL` blank. Set a
-new local PostgreSQL password in both fields before starting Compose;
-Compose refuses to start without `POSTGRES_PASSWORD`. Percent-encode reserved
-URL characters in `DATABASE_URL`; do not encode the standalone
-`POSTGRES_PASSWORD` value. The application and Alembic source defaults point
-to a non-routable host and cannot authenticate without explicit configuration.
+Preserve the existing database, its original configuration and independently
+verified backups. Do not use Compose startup or a generic `alembic upgrade head`
+as an upgrade procedure for retained data. The actual observed disposable copy
+of the retained database was at `0017`; the current source target is `0058`.
+Neither a matching marker nor a healthy HTTP endpoint proves the complete
+schema, preserved rows, role restrictions or exposure state. Follow the
+reviewed source-bound owner route only after those prerequisites are proven.
+Never remove a retained volume with `docker compose down -v`.
 
-Back up the PostgreSQL volume before stopping or rebuilding services:
-
-```powershell
-cd C:\CTCC-V2
-powershell -ExecutionPolicy Bypass -File .\scripts\backup.ps1
-```
-
-Keep the generated backup outside the container lifecycle and verify that it is
-non-empty before continuing. Then keep the PostgreSQL volume during upgrade:
-
-Before running this regression gate, keep every Paper, Demo, and Live
-write/automation switch disabled. The packaged script enforces that preflight
-and runs pytest under an additional test-only environment override.
-
-```powershell
-cd C:\CTCC-V2
-docker compose down
-docker compose up -d --build
-Invoke-RestMethod http://127.0.0.1:8100/readiness
-docker compose exec -T api alembic heads
-docker compose exec -T api alembic current 2>&1
-docker compose exec -T api alembic check
-docker compose exec -T `
-  -e ENVIRONMENT=test `
-  -e TRADING_MODE=analysis_only `
-  -e AUTO_TRADE=false `
-  -e LIVE_TRADING=false `
-  -e PAPER_AUTO_EXECUTION=false `
-  -e OKX_LIVE_ENABLED=false `
-  -e OKX_LIVE_ALLOW_ORDER_WRITES=false `
-  -e OKX_LIVE_AUTO_RECONCILE_ON_START=false `
-  -e OKX_LIVE_AUTO_EXECUTION=false `
-  -e OKX_DEMO_ALLOW_ORDER_WRITES=false `
-  -e OKX_DEMO_AUTO_EXECUTION=false `
-  -e OKX_DEMO_SOAK_ALLOW_EXECUTE=false `
-  api python -m pytest -q -p no:cacheprovider
-docker compose run --rm --no-deps `
-  --volume "${PWD}:/source:ro" `
-  api python /source/scripts/manifest.py --root /source --check
-```
-
-The same sequence is packaged for Windows PowerShell:
-
-```powershell
-powershell -ExecutionPolicy Bypass `
-  -File .\scripts\verify_v168_live_boundary.ps1
-```
-
-Do not use `docker compose down -v` during an upgrade.
-
-For this final-completion source after a reviewed upgrade, the expected Alembic
-head and current revision are both `0046`. The stopped local deployment has not
-been silently upgraded from its last independently restored `0017`. A healthy
-container alone is not sufficient deployment evidence: `/readiness` and all
-three Alembic commands above must also succeed. See the
-[v1.6.9 Live operator runbook](docs/live_execution_v1.6.9.md) for rollback and
-durable Emergency Stop recovery.
+Fresh hermetic validation owns separate empty databases and invokes migration
+phases and the test API explicitly. Its reviewed source/archive driver remains
+the validation entry point; those commands do not admit an existing deployment
+or migrate it at normal startup. Historical v1.6.9 scripts and the
+[archived runbook](docs/live_execution_v1.6.9.md) retain their original scope.
 
 PowerShell 5.1 may render Alembic INFO lines written to stderr as
 `NativeCommandError` when `$ErrorActionPreference = "Stop"`. Capture the native

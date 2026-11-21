@@ -35,7 +35,7 @@ def test_rendered_compose_is_local_analysis_only(monkeypatch, tmp_path: Path) ->
     _fixture_install(monkeypatch, root)
     result = installer.prepare(host_port=18100)
 
-    assert result["status"] == "READY_TO_START_ANALYSIS_ONLY"
+    assert result["status"] == "CONFIGURATION_VERIFIED_STARTUP_UNACCEPTED"
     assert result["project_name"] == "ctcc-analysis-" + "1" * 32
     assert result["docker_started"] is False
     assert result["trading_enabled"] is False
@@ -50,9 +50,9 @@ def test_rendered_compose_is_local_analysis_only(monkeypatch, tmp_path: Path) ->
         assert "ports" not in services[name]
         assert services[name]["networks"] == ["analysis_internal"]
     assert api["volumes"] == ["analysis_socket:/run/ctcc-analysis"]
-    assert (
-        "uvicorn app.main:app --uds /run/ctcc-analysis/api.sock " in api["command"][0]
-    )
+    assert "exec python -B -m scripts.container_startup_0058_v1" in api["command"][0]
+    assert "alembic" not in api["command"][0]
+    assert api["environment"]["CTCC_CONTAINER_MODE_V1"] == "persistent_paper"
     assert compose["networks"]["analysis_internal"]["internal"] is True
     assert compose["networks"]["analysis_ingress"] == {"driver": "bridge"}
     ingress = services["ingress"]

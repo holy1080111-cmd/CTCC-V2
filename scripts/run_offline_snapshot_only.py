@@ -24,7 +24,7 @@ def verified_launch_inputs(root: Path) -> tuple[bytes, str, int]:
     """Reuse the owned installation identity and read back only its local token."""
     _need(isinstance(root, Path) and root.is_absolute())
     checked = installation.verify(root)
-    _need(checked["status"] == "READY_TO_START_ANALYSIS_ONLY")
+    _need(checked["status"] == "CONFIGURATION_VERIFIED_STARTUP_UNACCEPTED")
     metadata = json.loads(installation._read_regular(root / "installation.json", 4096))
     token = installation._read_regular(root / "api_token", 4096)
     _need(

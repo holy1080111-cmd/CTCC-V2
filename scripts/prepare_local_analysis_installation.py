@@ -243,7 +243,7 @@ def prepare(*, host_port: int = 8100) -> dict[str, object]:
         secret=False,
     )
     checked = verify(root)
-    _need(checked["status"] == "READY_TO_START_ANALYSIS_ONLY")
+    _need(checked["status"] == "CONFIGURATION_VERIFIED_STARTUP_UNACCEPTED")
     return checked
 
 
@@ -320,7 +320,7 @@ def verify(root: Path) -> dict[str, object]:
     )
     return {
         "schema": "ctcc.local_analysis.installation_check.v1",
-        "status": "READY_TO_START_ANALYSIS_ONLY",
+        "status": "CONFIGURATION_VERIFIED_STARTUP_UNACCEPTED",
         "installation_root": str(root),
         "installation_id": metadata["installation_id"],
         "project_name": "ctcc-analysis-" + metadata["installation_id"],

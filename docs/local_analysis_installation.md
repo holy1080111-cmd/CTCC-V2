@@ -1,6 +1,17 @@
 # Local analysis installation
 
-This installation runs the CTCC dashboard and offline analysis API on this PC. It does not connect to OKX or enable Demo or Live trading. The generated Compose file publishes the dashboard on `127.0.0.1` through a dedicated relay. CTCC, PostgreSQL and Redis stay on an internal Docker network. The relay listens on a separate network and can forward only to the API's mounted Unix socket. PostgreSQL and Redis use separate persistent volumes. It never reads the host `.env` or an OKX key.
+Persistent manual Paper remains a supported tool target. Current container
+startup is **unaccepted and refused** while complete source58 catalog and Paper
+actor admission plus the existing recovery context are pending. Preparation and
+configuration checks below do not open the database, run migrations, or start
+the API. They report `CONFIGURATION_VERIFIED_STARTUP_UNACCEPTED`.
+
+The intended installation runs the CTCC dashboard, offline analysis and
+persistent Paper ledger on this PC without OKX, Demo or Live execution. Its
+generated Compose file retains the dedicated loopback relay, internal API/PG/
+Redis network and separate persistent volumes. It never reads the host `.env`
+or an OKX key. The API command now uses the same closed container entry point
+as the canonical Docker image; it never automatically upgrades the database.
 
 Use the [Windows offline viewer](offline_snapshot_only_windows.md) for snapshot
 analysis without Docker or Paper state.
@@ -26,9 +37,13 @@ Both checks must pass. The first check refuses changed files, extra files, a cha
 
 ## Start and use
 
-```powershell
-docker compose --env-file "<installation directory>\compose.env" --project-directory "<installation directory>" -p "ctcc-analysis-<installation ID>" -f "<installation directory>\compose.yaml" up --build -d
-```
+Do not start a newly prepared persistent installation as an accepted tool yet.
+The current explicit `persistent_paper` mode stops before application/provider/
+database imports with `container_paper_source_admission_pending`. A missing or
+unsafe configuration is also refused. Rebuilding does not migrate an existing
+ledger, and changing an environment flag cannot supply missing schema proof.
+The source-owned admission and recovery follow-up must pass before the use and
+recovery procedures below become available for this source.
 
 Open the dashboard address printed during preparation. The default is `http://127.0.0.1:8100/dashboard`; readiness is `http://127.0.0.1:8100/readiness`. The dashboard asks for an API token. Open the private `api_token` file in the installation directory as the same Windows user, copy its contents into that prompt, and keep it out of chat, screenshots, and reports. The local analysis API uses the same token in the `X-CTCC-Token` header.
 
