@@ -9,12 +9,17 @@ from scripts import current0057_full_hermetic_contract_v1 as base
 from scripts import current0057_hermetic_contract as historical57
 from scripts import current0058_collection_v1 as collection
 from scripts import current0058_hermetic_contract_v1 as g12
+from scripts import retained0017_reference_measurement_v1 as references17
 from scripts import run_db0058_migration_probe_v1 as live_cases
 
 HEAD, PARENT = g12.HEAD, g12.PARENT
 RUNNER_CONTRACT, RUNNER_PATH, SCOPE = g12.RUNNER_CONTRACT, g12.RUNNER_PATH, g12.SCOPE
 PROFILE_RESULT_KEY = "actual0058_profiles"
-EXTRA_RESULT_KEYS = ("historical0057", "actual0058_g12_custody")
+EXTRA_RESULT_KEYS = (
+    "historical0057",
+    "actual0058_g12_custody",
+    "retained0017_reference_pair",
+)
 PROFILE_METADATA_KEYS = (
     *base.PROFILE_METADATA_KEYS,
     "native_closure_body_sha256",
@@ -386,6 +391,7 @@ REQUIRED_CASES = (
     *STOPPED_SETUP_CASES,
     *LIVE_CONTROLLED_CLOSE_CASES,
     *RETAINED0017_OWNER_CASES,
+    *references17.CASES,
     SUCCESSOR_CASES[-1],
 )
 HISTORICAL_REPORTS = base.HISTORICAL_REPORTS
@@ -404,6 +410,12 @@ HOST_HELPERS = (
     "historical0056_owner_source_on_0058_v1.py",
     "run_db0058_migration_probe_v1.py",
     "historical0056_owner_reference_dispatch_v1.py",
+    "retained0017_reference_measurement_v1.py",
+    "retained0017_catalog_baseline_v1.py",
+    "retained0017_source_contract_v1.py",
+    "native_owner_heap_am_v1.py",
+    "native_owner_index_catalog_v1.py",
+    "native_owner_pg17_btree_facts_v1.json",
 )
 digest, canonical, _need = g12.digest, g12.canonical, g12._need
 _SHA, _GIT = g12._HEX, g12._GIT
@@ -426,6 +438,11 @@ def requires_historical(mode, index):
 def requires_g12(mode, index):
     collection._mode(mode, index)
     return mode == "full" or mode == "postgres" and index == 2
+
+
+def requires_reference_pair17(mode, index):
+    collection._mode(mode, index)
+    return mode == "full" or mode == "postgres" and index == 3
 
 
 def component_test_stage(mode, index):
@@ -512,6 +529,8 @@ def component_artifacts(mode, index):
     if requires_g12(mode, index):
         names.update((*historical57.REPORTS, *g12.REPORTS))
         names.add(g12.CUSTODY_REPORT)
+    if requires_reference_pair17(mode, index):
+        names.update(references17.REPORTS)
     if mode == "postgres":
         names.add("test-results/postgres-progress.log")
     return names
@@ -549,6 +568,12 @@ def extra_observations(root, identity, files):
         "historical0057": verify_historical0057_components(root, identity, files)
         if requires_g12(identity["suite"], index)
         else None,
+        "retained0017_reference_pair": references17.verify_reference_pair(
+            root,
+            source=references17.source_identity(identity, files, canonical(files)),
+        )
+        if requires_reference_pair17(identity["suite"], index)
+        else None,
         "actual0058_g12_custody": verify_custody_measurement(
             _read(root, g12.CUSTODY_REPORT, 32_768),
             source=g12.source_identity(identity, files, canonical(files)),
@@ -561,9 +586,24 @@ def extra_observations(root, identity, files):
 def union_extras(verified, mode, index):
     historical = verified["historical0057"]
     custody = verified["actual0058_g12_custody"]
+    pair = verified["retained0017_reference_pair"]
+    extras = {}
+    if requires_reference_pair17(mode, index):
+        _need(
+            type(pair) is dict
+            and type(pair.get("source")) is dict
+            and pair["source"].get("source_head") == HEAD
+        )
+        _need(
+            references17.verify_pair_values(pair["references"], source=pair["source"])
+            == pair
+        )
+        extras["retained0017_reference_pair"] = pair
+    else:
+        _need(pair is None)
     if not requires_g12(mode, index):
         _need(historical is None and custody is None)
-        return {}
+        return extras
     _need(
         type(historical) is dict
         and historical.get("source_head") == HEAD
@@ -583,7 +623,7 @@ def union_extras(verified, mode, index):
         and custody.get("execution_authority") is False
         and custody.get("trading_acceptance") is False
     )
-    return {"historical0057": historical, "actual0058_g12_custody": custody}
+    return extras | {"historical0057": historical, "actual0058_g12_custody": custody}
 
 
 def measurement_environment(mode, index):
@@ -598,6 +638,10 @@ def measurement_environment(mode, index):
             ENV + "=/validation-results",
         )
         if requires_g12(mode, index)
+        else ()
+    ) + (
+        ("-e", references17.ENV + "=/validation-results")
+        if requires_reference_pair17(mode, index)
         else ()
     )
 

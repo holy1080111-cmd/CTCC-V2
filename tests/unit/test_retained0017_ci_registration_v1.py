@@ -66,7 +66,10 @@ def test_retained0017_all_actual_declared_cases_are_mandatory_once():
 
 
 def test_retained0017_owner_module_runs_only_in_current58_component3():
-    assert full.collection.RETAINED0017_OWNER_PATHS == {PATH}
+    assert full.collection.RETAINED0017_OWNER_PATHS == {
+        PATH,
+        "tests/integration/test_retained0017_catalog_references_v1_pg.py",
+    }
     assert Path(PATH).name in windows.POSTGRES_INTEGRATION
     assert PATH not in legacy.POSTGRES_TEST_PATHS
     assert len(legacy.POSTGRES_TEST_PATHS) == 108

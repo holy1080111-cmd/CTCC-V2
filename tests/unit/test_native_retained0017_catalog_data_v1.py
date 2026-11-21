@@ -517,6 +517,41 @@ def test_distinct_physical_allocations_and_actor_names_normalize_only_structural
         subject.require_sealed_catalog17_v1(first)
 
 
+def test_bootstrap_language_acl_stays_separate_from_application_owner_acl(data_pair):
+    normalized = []
+    for index, document in enumerate(copy.deepcopy(data_pair)):
+        bootstrap_owner = "declared_bootstrap_owner_" + str(index)
+        for catalog, oid, address in document["references"]:
+            if catalog == "pg_authid" and oid == 10:
+                address["identity"] = bootstrap_owner
+        language = next(
+            row
+            for row in document["bootstrap"]["languages"]
+            if row["lanname"] == "plpgsql"
+        )
+        language["lanacl"] = [
+            bootstrap_owner + "=U/" + bootstrap_owner,
+            "=U/" + bootstrap_owner,
+        ]
+        normalized.append(subject.normalize_catalog17_v1(document))
+    assert normalized[0] == normalized[1]
+    assert b"$PG_BOOTSTRAP_OWNER_10" in subject.canonical(normalized[0])
+    assert b"pg_catalog.pg_database_owner" in subject.canonical(normalized[0])
+
+
+@pytest.mark.parametrize(
+    "grantor", ["declared_bootstrap_owner", "declared_unreviewed_role"]
+)
+def test_public_schema_acl_never_relabels_a_foreign_grantor_as_its_owner(
+    data_pair, grantor
+):
+    document = copy.deepcopy(data_pair[0])
+    namespace = next(row for kind, row, _ in document["entries"] if kind == "namespace")
+    namespace["nspacl"] = ["pg_database_owner=UC/" + grantor, "=U/" + grantor]
+    with pytest.raises(subject.Retained0017CatalogRefused):
+        subject.normalize_catalog17_v1(document)
+
+
 @pytest.mark.parametrize(
     "change",
     [

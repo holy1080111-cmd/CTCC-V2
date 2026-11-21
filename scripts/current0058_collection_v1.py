@@ -37,7 +37,10 @@ SUCCESSOR_PATHS = frozenset(
 # It belongs to the retained-state owner worker, never successor profile proof
 # or an execution-capable unit shard. Frozen56/57 inventories stay unchanged.
 RETAINED0017_OWNER_PATHS = frozenset(
-    {"tests/integration/test_retained0017_owner_plan_v1_pg.py"}
+    {
+        "tests/integration/test_retained0017_owner_plan_v1_pg.py",
+        "tests/integration/test_retained0017_catalog_references_v1_pg.py",
+    }
 )
 CANONICAL_OWNER_PATHS = frozenset(
     {

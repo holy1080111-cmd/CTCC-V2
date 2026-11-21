@@ -114,6 +114,27 @@ def components(tmp_path, monkeypatch):
             "actual_protective_catalog_sha256": "7" * 64,
             "native_submission_body_sha256": "8" * 64,
         }
+        reference_source = {"source_head": "0058", "DECLARED_SYNTHETIC_JOIN_ONLY": True}
+        reference_values = [
+            {
+                "source": reference_source,
+                "reference": label,
+                "database_head": "0017",
+                "normalized_catalog_sha256": "9" * 64,
+                "source17_prefix_sha256": "a" * 64,
+                "raw_catalog_sha256": str(number + 1) * 64,
+                "physical": {
+                    "database": "synthetic_database_" + str(number),
+                    "database_oid": 20000 + number,
+                    "owner": "synthetic_owner_" + str(number),
+                    "owner_oid": 21000 + number,
+                    "marker_relation_oid": 22000 + number,
+                    "server_version_num": "170011",
+                    "cluster_system_identifier_sha256": "b" * 64,
+                },
+            }
+            for number, label in enumerate(contract.references17.LABELS)
+        ]
         records[root] = {
             "identity": identity,
             "full_nodeids": full,
@@ -142,6 +163,11 @@ def components(tmp_path, monkeypatch):
             "actual0058_profiles": [dict(fake_observation)]
             if contract.requires_g12(mode, index)
             else [],
+            "retained0017_reference_pair": contract.references17.verify_pair_values(
+                reference_values, source=reference_source
+            )
+            if contract.requires_reference_pair17(mode, index)
+            else None,
         }
         roots.append(root)
     monkeypatch.setattr(
@@ -179,6 +205,8 @@ def test_synthetic_join_counts_its_own_thirteen_reports_without_borrowing56(comp
     )
     assert result["postgres_component_count"] == 5 and result["shard_count"] == 8
     assert result["execution_authority"] is result["trading_acceptance"] is False
+    assert result["retained0017_reference_pair"]["database_head"] == "0017"
+    assert result["retained0017_reference_pair"]["reference_seal_installed"] is False
 
 
 @pytest.mark.parametrize(
@@ -190,6 +218,8 @@ def test_synthetic_join_counts_its_own_thirteen_reports_without_borrowing56(comp
         "wrong_db_head",
         "missing_actual57",
         "missing_historical57",
+        "missing_reference_pair17",
+        "different_reference_catalog17",
         "extra_component",
         "changed_collection",
         "changed_source_map",
@@ -218,6 +248,12 @@ def test_union_denies_missing_mixed_duplicated_or_relabelled_components(
         record["actual0058_profiles"] = []
     elif change == "missing_historical57":
         record["historical0057"] = None
+    elif change == "missing_reference_pair17":
+        records[roots[3]]["retained0017_reference_pair"] = None
+    elif change == "different_reference_catalog17":
+        records[roots[3]]["retained0017_reference_pair"]["references"][1][
+            "normalized_catalog_sha256"
+        ] = "f" * 64
     elif change == "changed_collection":
         _, name = contract.component_report_paths("postgres", 2)
         raw = json.loads((root / name).read_bytes())
