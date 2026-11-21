@@ -228,10 +228,14 @@ def _build_source_predicate():
  OR (i.indpred IS NOT NULL AND (
  EXISTS(SELECT 1 FROM pg_catalog.regexp_matches(i.indpred::pg_catalog.text,'\\{{([A-Z][A-Z0-9_]*)','g') m(parts)
  WHERE m.parts[1] NOT IN ('VAR','CONST','OPEXPR','BOOLEXPR','RELABELTYPE','SCALARARRAYOPEXPR','ARRAYEXPR','COERCEVIAIO','NULLTEST','BOOLEANTEST','ARRAYCOERCEEXPR','CASETESTEXPR')
- OR (m.parts[1]='CASETESTEXPR' AND
+ OR (m.parts[1]='CASETESTEXPR' AND (
  (SELECT pg_catalog.count(*) FROM pg_catalog.regexp_matches(i.indpred::pg_catalog.text,'\\{{CASETESTEXPR','g'))
  <> (SELECT pg_catalog.count(*) FROM pg_catalog.regexp_matches(i.indpred::pg_catalog.text,
- '\\{{CASETESTEXPR [:]typeId [0-9]+ [:]typeMod -?[0-9]+ [:]collation [0-9]+\\}}','g'))))
+ '\\{{CASETESTEXPR [:]typeId [0-9]+ [:]typeMod -?[0-9]+ [:]collation [0-9]+\\}}','g'))
+ OR EXISTS(SELECT 1 FROM pg_catalog.regexp_matches(i.indpred::pg_catalog.text,'[:]typeMod (-?[0-9]+)','g') tm(parts)
+ WHERE CASE WHEN pg_catalog.length(tm.parts[1])<=11
+ THEN tm.parts[1]::pg_catalog.int8 NOT BETWEEN -2147483648 AND 2147483647
+ ELSE true END))))
  OR EXISTS(SELECT 1 FROM pg_catalog.regexp_matches(i.indpred::pg_catalog.text,
  ':(vartype|consttype|opresulttype|resulttype|array_typeid|element_typeid|typeId) ([0-9]+)','g') m(parts)
  WHERE m.parts[2]::pg_catalog.int8 NOT IN (16,17,20,21,23,25,26,114,700,701,869,1042,1043,1082,1114,1184,1700,2950,3802,1009,1015))

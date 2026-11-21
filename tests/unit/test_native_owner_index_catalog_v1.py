@@ -213,6 +213,44 @@ def test_case_test_collation_uses_original_native_collation_fence():
     assert int(re.search(pattern, ":collation 99999").group(2)) not in allowed
 
 
+@pytest.mark.parametrize(
+    "value, refused",
+    [
+        ("-2147483648", False),
+        ("2147483647", False),
+        ("-1", False),
+        ("0", False),
+        ("-2147483649", True),
+        ("2147483648", True),
+        ("99999999999", True),
+        ("9" * 1000, True),
+        ("-" + "9" * 1000, True),
+    ],
+)
+def test_case_test_typemod_has_source_signed_int32_bounds_before_any_cast(
+    value, refused
+):
+    from scripts import native_owner_storage_diagnostic_v1 as diagnostic
+
+    condition = diagnostic._index_rejection_parts_v2()[-1][0]
+    pattern = re.search(r"'(\[:\]typeMod [^']+)'", condition).group(1)
+    captured = re.search(pattern, ":typeMod " + value).group(1)
+    limit = int(re.search(r"length\(tm.parts\[1\]\)<=([0-9]+)", condition).group(1))
+    lower, upper = map(
+        int, re.search(r"NOT BETWEEN (-?[0-9]+) AND ([0-9]+)", condition).groups()
+    )
+    assert limit == 11 and (lower, upper) == (-2147483648, 2147483647)
+    assert "WHERE CASE WHEN" in condition and "ELSE true END" in condition
+    cast = []
+    if len(captured) <= limit:
+        cast.append(True)
+        actual = not lower <= int(captured) <= upper
+    else:
+        actual = True
+    assert actual is refused
+    assert cast == ([True] if len(value) <= 11 else [])
+
+
 @pytest.mark.parametrize("field", ["vartype", "resulttype", "array_typeid"])
 @pytest.mark.parametrize("oid", [19, 705])
 def test_const_only_exceptions_remain_rejected_in_original_index_type_fields(

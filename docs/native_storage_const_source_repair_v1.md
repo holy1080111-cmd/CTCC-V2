@@ -37,6 +37,10 @@ procedure, operator, support, family or class row was added by this followup.
 The primary executor compiles CASETESTEXPR to EEOP_CASE_TESTVAL; the existing
 ARRAYCOERCEEXPR supplies its element context. These facts do not grant schema
 or execution authority and do not turn either retained failure into a pass.
+The source int32 typeMod also has its exact signed32-bit bounds. A CASE length
+guard refuses long decimal operands before casting; at most11 signed decimal
+characters fit safely in int8, then the narrower int32 range is mandatory.
+This is a representation bound, not a new typemod semantic policy.
 
 Primary sources are the exact PostgreSQL REL_17_11 catalog .dat/.h files,
 pg_config_manual.h and primnodes.h. Their raw SHA256 identities are recorded
