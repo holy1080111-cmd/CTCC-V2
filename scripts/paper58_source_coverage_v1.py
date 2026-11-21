@@ -127,7 +127,7 @@ RELATIONS = (
     "trades",
 )
 
-TABLE_PRIVILEGES = (
+RUNTIME_TABLE_PRIVILEGES = (
     ("paper_account_state", ("SELECT", "INSERT", "UPDATE")),
     ("paper_order_state", ("SELECT", "INSERT", "UPDATE", "DELETE")),
     ("paper_position_state", ("SELECT", "INSERT", "UPDATE", "DELETE")),
@@ -137,6 +137,8 @@ TABLE_PRIVILEGES = (
     ("orchestrator_run_state", ("SELECT",)),
     ("orchestrator_fingerprint_state", ("SELECT",)),
 )
+PREFLIGHT_TABLE_PRIVILEGES = (("alembic_version", ("SELECT",)),)
+TABLE_PRIVILEGES = (*RUNTIME_TABLE_PRIVILEGES, *PREFLIGHT_TABLE_PRIVILEGES)
 
 # These are source pointers for composition review, never interchangeable role
 # witnesses. The frozen owner/native actor observers remain unchanged.
@@ -362,6 +364,45 @@ def _server_default(value, compiler):
     return str(value.compile(dialect=compiler, compile_kwargs={"literal_binds": True}))
 
 
+def _version_marker(compiler):
+    # Use the same Alembic source factory as the canonical migration context.
+    # This context has a dialect only: no URL, connection, transaction or DDL.
+    import inspect
+    from importlib.metadata import version
+
+    from alembic.ddl.impl import DefaultImpl
+    from alembic.migration import MigrationContext
+    from sqlalchemy.schema import AddConstraint, CreateTable
+
+    table = MigrationContext.configure(dialect_name="postgresql")._version
+    _need(table.name == "alembic_version" and table.schema is None)
+    ddl = str(CreateTable(table).compile(dialect=compiler))
+    return {
+        "name": table.name,
+        "source_symbol": "alembic.ddl.impl.DefaultImpl.version_table_impl",
+        "source_definition_sha256": hashlib.sha256(
+            inspect.getsource(DefaultImpl.version_table_impl).encode()
+        ).hexdigest(),
+        "dependency": "alembic",
+        "dependency_version": version("alembic"),
+        "columns": [
+            {
+                "name": column.name,
+                "type": str(column.type.compile(dialect=compiler)),
+                "nullable": column.nullable,
+            }
+            for column in table.columns
+        ],
+        "constraints": sorted(
+            str(AddConstraint(item).compile(dialect=compiler))
+            for item in table.constraints
+        ),
+        "source_create_table": ddl,
+        "orm_model": False,
+        "actual_head_select_required": True,
+    }
+
+
 def source_coverage_v1():
     # Import only the genuine source registry. In particular, neither session,
     # settings, app.main nor the service singleton is part of this audit.
@@ -432,10 +473,16 @@ def source_coverage_v1():
             }
         )
     files = _migration_domain_sources()
+    marker = _version_marker(compiler)
+    from scripts.paper58_local_route_scope_v1 import route_scope_v1
+
+    route_scope = route_scope_v1()
     return {
         "schema": SCHEMA,
         "source_head": HEAD,
         "relations": relations,
+        "version_marker": marker,
+        "public_table_names": tuple(sorted((*RELATIONS, marker["name"]))),
         "column_type_spellings": sorted(
             {column["type"] for relation in relations for column in relation["columns"]}
         ),
@@ -445,7 +492,10 @@ def source_coverage_v1():
         },
         "sql_definition_sites": _ddl_sites(files),
         "table_privileges": TABLE_PRIVILEGES,
-        "table_privilege_count": 20,
+        "runtime_table_privileges": RUNTIME_TABLE_PRIVILEGES,
+        "preflight_table_privileges": PREFLIGHT_TABLE_PRIVILEGES,
+        "table_privilege_count": 21,
+        "local_route_scope": route_scope,
         "schema_usage_required": ("public",),
         "schema_create_allowed": False,
         "sequence_usage_allowed": False,
@@ -455,7 +505,7 @@ def source_coverage_v1():
         "composition_work_remaining": (
             "resolve exact effective migration/SPEC overrides, including dynamic names",
             "compare complete catalog bodies/ACL/types/triggers and reject unknown objects",
-            "prove separate NOSUPER actor's exact20 table rights, no memberships/extra/column/native rights",
+            "prove separate NOSUPER actor's runtime20 plus marker SELECT1 rights, no memberships/extra/column/native rights",
             "closed settings must refuse unsafe inherited OS environment before generic imports",
             "same owned engine/context: recover, last_error=None, consistent=True, unknown-commit fence",
         ),

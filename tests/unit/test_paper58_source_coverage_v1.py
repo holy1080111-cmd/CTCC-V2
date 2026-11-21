@@ -42,7 +42,7 @@ def test_complete_current58_relation_metadata_is_present_without_calling_it_admi
 
 
 def test_exact_twenty_table_cells_preserve_recovery_reads_without_automation_writes():
-    grants = dict(subject.TABLE_PRIVILEGES)
+    grants = dict(subject.RUNTIME_TABLE_PRIVILEGES)
     assert len(grants) == 8 and sum(map(len, grants.values())) == 20
     assert set(grants) <= set(subject.RELATIONS)
     assert (
@@ -52,6 +52,23 @@ def test_exact_twenty_table_cells_preserve_recovery_reads_without_automation_wri
     )
     assert grants["audit_logs"] == grants["system_events"] == ("SELECT", "INSERT")
     assert not any(name.startswith(("native_", "qualification_")) for name in grants)
+    total = dict(subject.TABLE_PRIVILEGES)
+    assert len(total) == 9 and sum(map(len, total.values())) == 21
+    assert total["alembic_version"] == ("SELECT",)
+
+
+def test_unmapped_version_marker_has_real_canonical_source_and_only_preflight_select():
+    value = subject.source_coverage_v1()
+    marker = value["version_marker"]
+    assert (
+        marker["orm_model"] is False and marker["actual_head_select_required"] is True
+    )
+    assert marker["columns"] == [
+        {"name": "version_num", "type": "VARCHAR(32)", "nullable": False}
+    ]
+    assert "alembic_version_pkc" in marker["source_create_table"]
+    assert len(value["public_table_names"]) == len(subject.RELATIONS) + 1 == 105
+    assert value["preflight_table_privileges"] == (("alembic_version", ("SELECT",)),)
 
 
 def test_client_python_defaults_are_distinct_from_server_defaults():

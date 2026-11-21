@@ -5,7 +5,8 @@ installed catalog nor opens a database, provisions a role, imports the service
 singleton, constructs ASGI, or changes the current closed startup gate.
 
 `scripts/paper58_source_coverage_v1.py` freezes the actual current58 relation
-roster and lists each genuine registered model's columns, compiled PostgreSQL
+roster of 104 model tables and separately includes the unmapped canonical
+Alembic version table (105 public tables total). It lists columns, compiled PostgreSQL
 types, server defaults, separate client defaults/on-update markers, all keys,
 CHECK/unique/FK constraints, indexes and CREATE TABLE source. It traverses only
 the fixed linear 0001–0058 migration graph and the domain source modules that
@@ -14,13 +15,27 @@ dynamic-name gaps and historical/effective-override composition requirements.
 ORM structure and a declaration site's existence do not prove installed
 function bodies, trigger bindings, default ACLs or the complete schema.
 
-The exact Paper table plan is 20 privilege cells on eight tables. Only Paper
+The exact Paper runtime plan is 20 privilege cells on eight tables plus one
+SELECT on alembic_version for preflight: 21 cells on nine tables total. Only Paper
 state/checkpoint, audit and system-event rows are writable. Original recovery
 counts additionally need SELECT on both orchestrator history/fingerprint
 tables; they receive no automation write rights. Public schema USAGE is
 separate. The future actor must have no schema CREATE, sequence usage,
 membership/inherited extra/column grants, native execution rights or venue
 credentials. Normal boot must never provision or migrate.
+
+The closed source route audit includes all 16 actual local-analysis endpoints
+and the two static redirects. The allowed analysis endpoint imports and
+describes a supplied snapshot offline; it never calls an analysis repository.
+The live-symbol analysis and dashboard/report snapshot endpoints are excluded,
+so they do not justify extra table grants. Readiness performs SELECT 1 and
+Redis PING. Paper reads use the original in-memory broker; mutations persist
+through the original snapshot repository. Startup additionally calls original
+recovery/status/counts, and shutdown persists the same Paper state. The audit
+pins the exact route/handler and relevant service/repository source bodies,
+their imported bindings, and the original router/service/session construction
+modules. It reconstructs their SQL-model CRUD union: runtime20 plus marker SELECT1. It is
+still source coverage, not an actual route/database/actor acceptance test.
 
 The map points to existing source catalog checks with their real prerequisites.
 Physical heap/index/I/O safety is not schema equality. Existing inherited
