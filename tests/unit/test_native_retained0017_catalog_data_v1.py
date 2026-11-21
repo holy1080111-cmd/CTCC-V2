@@ -681,6 +681,34 @@ def test_actor_privilege_and_maintenance_hashes_remain_separate_without_coercion
     assert "actor_physical" not in original
 
 
+@pytest.mark.parametrize("wrong_column", [False, True])
+def test_serial_cast_uses_actual_catalog_column_type_without_erasing_wrapper(
+    data_pair, wrong_column
+):
+    first, _ = data_pair
+    modified = copy.deepcopy(first)
+    row = _row(modified, "default")
+    row["adbin"] = (
+        "{FUNCEXPR :funcid 480 :funcresulttype 23 :funcretset false :funcvariadic false"
+        " :funcformat 2 :funccollid 0 :inputcollid 0 :args ("
+        + row["adbin"]
+        + ") :location -1}"
+    )
+    if wrong_column:
+        with pytest.raises(subject.Retained0017CatalogRefused):
+            subject.normalize_catalog17_v1(modified)
+        return
+    _row(modified, "attribute")["atttypid"] = 23
+    normalized = subject.normalize_catalog17_v1(modified)
+    defaults = [
+        value
+        for category, _key, value in normalized["entries"]
+        if category == "default"
+    ]
+    assert len(defaults) == 1
+    assert dict(defaults[0]["adbin"][2])["funcid"] == [480]
+
+
 @pytest.mark.parametrize(
     "change",
     [

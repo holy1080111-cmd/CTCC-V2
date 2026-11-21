@@ -627,14 +627,22 @@ _PROC_FIELDS = frozenset({"funcid", "opfuncid", "hashfuncid", "negfuncid"})
 _NODE_TOKEN = re.compile(r'\s*(\{|\}|\(|\)|\[|\]|"(?:\\.|[^"\\])*"|[^\s{}()\[\]]+)')
 
 
-def normalize_node_tree17_v1(raw, *, sequence_oid=None, sequence_identity=None):
+def normalize_node_tree17_v1(
+    raw, *, sequence_oid=None, sequence_identity=None, column_type_oid=None
+):
     """Pure, bounded PG17 node reader. Never evaluate text or call type I/O.
 
     Every semantic field and constant byte is retained. Only the typed parser
     location field and an exact dependency-proven sequence regclass Datum are
     allocation-independent. No arbitrary integer/string replacement exists.
     """
+    _need(
+        column_type_oid is None
+        or (type(column_type_oid) is int and column_type_oid in (20, 23))
+    )
+    _need(column_type_oid is None or sequence_oid is not None)
     if raw is None:
+        _need(sequence_oid is None)
         return None
     _need(type(raw) is str and 0 < len(raw.encode("utf-8")) <= 2 * 1024 * 1024)
     tokens = []
@@ -650,6 +658,35 @@ def normalize_node_tree17_v1(raw, *, sequence_oid=None, sequence_identity=None):
     def integer(value):
         _need(type(value) is int)
         return value
+
+    def single_function_argument(node, oid, result_type, form):
+        # Exact native SERIAL/BIGSERIAL shapes, captured from frozen source17.
+        # Return only for validation; the complete original wrapper remains in
+        # the normalized AST and therefore remains part of schema comparison.
+        _need(type(node) is list and len(node) == 3)
+        _need(node[:2] == ["NODE", "FUNCEXPR"])
+        fields = dict(node[2])
+        _need(set(fields) == set(_NODE_FIELDS["FUNCEXPR"].split()))
+        for name, expected in (
+            ("funcid", oid),
+            ("funcresulttype", result_type),
+            ("funcretset", "false"),
+            ("funcvariadic", "false"),
+            ("funcformat", form),
+            ("funccollid", 0),
+            ("inputcollid", 0),
+        ):
+            _need(fields[name] == [expected])
+        args = fields["args"]
+        _need(
+            len(args) == 1
+            and type(args[0]) is list
+            and len(args[0]) == 2
+            and args[0][0] == "("
+            and type(args[0][1]) is list
+            and len(args[0][1]) == 1
+        )
+        return args[0][1][0]
 
     def parse(depth):
         nonlocal position, regclasses
@@ -826,11 +863,19 @@ def normalize_node_tree17_v1(raw, *, sequence_oid=None, sequence_identity=None):
             or (sequence_oid is not None and regclasses == 1)
         )
         if sequence_oid is not None:
-            _need(result[0:2] == ["NODE", "FUNCEXPR"])
-            original_fields = {name: value for name, value in result[2]}
+            nextval = result
+            if column_type_oid == 23:
+                nextval = single_function_argument(result, 480, 23, 2)
+            leaf = single_function_argument(nextval, 1574, 20, 0)
+            _need(type(leaf) is list and len(leaf) == 3)
+            _need(leaf[:2] == ["NODE", "CONST"])
+            original_fields = dict(leaf[2])
             _need(
-                original_fields.get("funcid") == [1574]
-                and original_fields.get("funcresulttype") == [20]
+                original_fields["consttype"] == [2205]
+                and original_fields["consttypmod"] == [-1]
+                and original_fields["constcollid"] == [0]
+                and original_fields["constvalue"]
+                == ["$SOURCE_SEQUENCE_REGCLASS", sequence_identity]
             )
         return result
     finally:
@@ -1430,10 +1475,19 @@ def _normalize(document):
                 and edge[6] == "n"
             ]
             _need(len(seqs) <= 1)
+            column_types = [
+                attribute["atttypid"]
+                for category, attribute, _ in entries
+                if category == "attribute"
+                and attribute["attrelid"] == original["adrelid"]
+                and attribute["attnum"] == original["adnum"]
+            ]
+            _need(len(column_types) == 1)
             row["adbin"] = normalize_node_tree17_v1(
                 original["adbin"],
                 sequence_oid=seqs[0] if seqs else None,
                 sequence_identity=ref("pg_class", seqs[0]) if seqs else None,
+                column_type_oid=column_types[0] if seqs else None,
             )
         if kind == "constraint":
             row["conbin"] = normalize_node_tree17_v1(original["conbin"])
