@@ -236,6 +236,31 @@ def test_archive_reconstructs_exact_git_tree_and_rejects_rehashed_commit_tree_or
             subject._archive_members(raw, changed)
 
 
+def test_large_admitted_source_archive_has_separate_bound_without_expanding_default_private_writes(
+    monkeypatch,
+):
+    raw, source, _files = _archive()
+    raw += b"\x00" * (32 * 1024 * 1024 + 1 - len(raw))
+    source = source | {"archive": subject._sha(raw)}
+    with pytest.raises(subject.RetainedBootstrapRefused):
+        subject._write_private(object(), raw)
+    called = []
+
+    def private_writer(path, actual, *, _maximum):
+        called.append((path, len(actual), _maximum))
+
+    monkeypatch.setattr(subject, "_write_private", private_writer)
+    # Pure routing evidence only: no simulated native publication is credited.
+    destination = object()
+    with pytest.raises(subject.RetainedBootstrapRefused):
+        subject._write_admitted_source_archive_v1(
+            destination, raw, source | {"archive": "0" * 64}
+        )
+    assert called == []
+    subject._write_admitted_source_archive_v1(destination, raw, source)
+    assert called == [(destination, len(raw), 128 * 1024 * 1024)]
+
+
 def test_unknown_record_cannot_acquire_write_or_resume_from_a_saved_receipt():
     wrapped = object.__new__(subject.OwnedRetainedBootstrapV1)
     with pytest.raises(subject.RetainedBootstrapRefused):

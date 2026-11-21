@@ -336,8 +336,9 @@ def _private_bytes(path, maximum, *, expected=None, owner=0):
     return raw
 
 
-def _write_private(path, raw, *, uid=0, gid=0):
-    _need(type(raw) is bytes and len(raw) <= 32 * 1024 * 1024)
+def _write_private(path, raw, *, uid=0, gid=0, _maximum=32 * 1024 * 1024):
+    _need(type(_maximum) is int and _maximum in (32 * 1024 * 1024, 128 * 1024 * 1024))
+    _need(type(raw) is bytes and len(raw) <= _maximum)
     descriptor = os.open(
         path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600
     )
@@ -1206,6 +1207,13 @@ def _archive_members(raw, source):
     _need(git_tree(tree).hex() == source["tree"])
     _need(_sha(members["MANIFEST.sha256"][0]) == source["manifest"])
     return members
+
+
+def _write_admitted_source_archive_v1(path, raw, source):
+    """Only the source-proven archive uses its existing 128MiB input bound."""
+    _need(type(raw) is bytes and 0 < len(raw) <= 128 * 1024 * 1024)
+    _archive_members(raw, source)
+    _write_private(path, raw, _maximum=128 * 1024 * 1024)
 
 
 def _verify_source(files, source):
@@ -2765,7 +2773,7 @@ def _run_fixed_supervisor_v1(request, files, source, origin):
         _write_private(
             resources / name, _bounded_regular(Path(original), 2 * 1024 * 1024)
         )
-    _write_private(resources / "source.tar", source_raw)
+    _write_admitted_source_archive_v1(resources / "source.tar", source_raw, source)
     if origin is _Origin.PRESERVED:
         _write_private(resources / "cold-manifest.json", manifest_raw)
     for name, raw in zip(("ca.pem", "server.pem", "server.key"), tls, strict=True):
