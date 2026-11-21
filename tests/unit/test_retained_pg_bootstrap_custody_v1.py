@@ -13,6 +13,64 @@ import pytest
 from scripts import retained_pg_bootstrap_custody_v1 as subject
 
 
+def test_safe_chain_recovers_suppressed_context_without_messages_or_values():
+    secret = "PRIVATE_DIAG_CANARY_7a7d492a"
+    try:
+        try:
+            raise ValueError(secret)
+        except ValueError:
+            raise subject.RetainedBootstrapRefused(
+                "retained_pg_bootstrap_refused"
+            ) from None
+    except subject.RetainedBootstrapRefused as error:
+        assert error.__suppress_context__ is True
+        report = subject._safe_exception_chain_v1(error)
+    encoded = subject._canonical(report)
+    assert secret.encode() not in encoded
+    assert {node["type_name"] for node in report["nodes"]} == {
+        "RetainedBootstrapRefused",
+        "ValueError",
+    }
+    assert report["nodes"][0]["literal_safe_code"] == "retained_pg_bootstrap_refused"
+    assert report["nodes"][1]["literal_safe_code"] is None
+    assert all(
+        set(frame) == {"source", "function", "line"}
+        for node in report["nodes"]
+        for frame in node["frames"]
+    )
+
+
+def test_safe_chain_uses_native_exception_slots_without_custom_getters_or_str():
+    called = []
+
+    class Trap(ValueError):
+        @property
+        def args(self):
+            called.append("args")
+            raise AssertionError("not native args")
+
+        @property
+        def __context__(self):
+            called.append("context")
+            raise AssertionError("not native context")
+
+        @property
+        def __traceback__(self):
+            called.append("traceback")
+            raise AssertionError("not native traceback")
+
+        def __str__(self):
+            called.append("str")
+            raise AssertionError("private rendering")
+
+    try:
+        raise Trap("PRIVATE_DIAG_CANARY_736f2b")
+    except Trap as error:
+        encoded = subject._canonical(subject._safe_exception_chain_v1(error))
+    assert called == []
+    assert b"PRIVATE_DIAG_CANARY" not in encoded
+
+
 def test_image_posix_multiarch_colon_does_not_expand_source_or_cold_paths():
     name = "var/lib/dpkg/info/libc6:amd64.list"
     assert subject._image_relative(name).as_posix() == name

@@ -105,6 +105,103 @@ def _canonical(value):
     ).encode("ascii")
 
 
+def _safe_exception_chain_v1(error):
+    """Redacted terminal diagnostics, including contexts hidden by from None.
+
+    Native BaseException slots bypass caller __str__/attribute properties.
+    No message, SQL, parameters, locals or unrecognized filename is emitted.
+    A code is recorded only when the same public literal occurs in a source
+    frame's immutable code constants. This report never authorizes an action.
+    """
+    slots = vars(BaseException)
+    source_root = str(ROOT) + "/"
+    prefixes = (
+        (source_root, "source/"),
+        ("/run/venv/lib/python3.12/site-packages/", "vendor/"),
+        ("/usr/local/lib/python3.12/", "stdlib/"),
+    )
+    pending, seen, nodes = [(error, "root")], set(), []
+    while pending and len(nodes) < 32:
+        current, edge = pending.pop()
+        if not isinstance(current, BaseException) or id(current) in seen:
+            continue
+        seen.add(id(current))
+        kind = type(current)
+        module = type.__getattribute__(kind, "__module__")
+        name = type.__getattribute__(kind, "__name__")
+        known_module = type(module) is str and (
+            module == "builtins"
+            or module.startswith(
+                ("scripts.", "app.", "sqlalchemy.", "asyncpg.", "asyncio.")
+            )
+        )
+        if (
+            not known_module
+            or type(name) is not str
+            or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}", name, re.ASCII) is None
+        ):
+            module = name = "unrecognized"
+        frames, public_codes = [], set()
+        trace = slots["__traceback__"].__get__(current, BaseException)
+        while trace is not None and len(frames) < 128:
+            code = trace.tb_frame.f_code
+            filename, function = code.co_filename, code.co_name
+            relative = "unrecognized"
+            if type(filename) is str:
+                filename = filename.replace("\\", "/")
+                for prefix, label in prefixes:
+                    if filename.startswith(prefix.replace("\\", "/")):
+                        relative = label + filename[len(prefix) :]
+                        break
+            if relative.startswith("source/"):
+                for literal in code.co_consts:
+                    if type(literal) is str and re.fullmatch(
+                        r"(?:retained0017|retained_pg|native_continuation)_[a-z0-9_]{1,110}",
+                        literal,
+                        re.ASCII,
+                    ):
+                        public_codes.add(literal)
+            if (
+                type(function) is not str
+                or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}", function, re.ASCII)
+                is None
+            ):
+                function = "generated"
+            frames.append(
+                {"source": relative, "function": function, "line": trace.tb_lineno}
+            )
+            trace = trace.tb_next
+        arguments = slots["args"].__get__(current, BaseException)
+        code = (
+            arguments[0]
+            if type(arguments) is tuple
+            and len(arguments) == 1
+            and type(arguments[0]) is str
+            and len(arguments[0]) <= 128
+            and arguments[0] in public_codes
+            else None
+        )
+        nodes.append(
+            {
+                "edge": edge,
+                "type_module": module,
+                "type_name": name,
+                "frames": frames,
+                "literal_safe_code": code,
+            }
+        )
+        for slot, label in (("__context__", "context"), ("__cause__", "cause")):
+            linked = slots[slot].__get__(current, BaseException)
+            if linked is not None:
+                pending.append((linked, label))
+    return {
+        "schema": "ctcc.retained_pg.safe_exception_chain.v1",
+        "nodes": nodes,
+        "diagnostic_only": True,
+        "execution_authority": False,
+    }
+
+
 class _Origin(Enum):
     PRESERVED = "preserved_8ef_cold_cluster"
     FRESH_FIXTURE = "fresh_canonical17_cold_fixture"
@@ -2970,10 +3067,14 @@ def _supervisor_fresh_main_v1():
         outcome = asyncio.run(_execute_fresh_acceptance_v1(resources, source))
         print(_canonical(outcome).decode("ascii"))
         return 0
-    except BaseException:  # noqa: BLE001 -- fixed DATA refusal; complete diagnostics remain private.
+    except BaseException as failure:  # noqa: BLE001 -- fixed DATA refusal; complete diagnostics remain private.
         import traceback
 
         try:
+            _write_private(
+                Path("/run/fresh-acceptance-exception-chain.private.json"),
+                _canonical(_safe_exception_chain_v1(failure)),
+            )
             _write_private(
                 Path("/run/fresh-acceptance-failure.private.txt"),
                 traceback.format_exc().encode("utf-8"),
@@ -2999,12 +3100,16 @@ def _supervisor_main_v1():
         outcome = asyncio.run(_execute_owned_request_v1(request, files))
         print(_canonical(outcome).decode("ascii"))
         return 0
-    except BaseException:  # noqa: BLE001 -- fixed private failure journal, no secrets in stdout.
+    except BaseException as failure:  # noqa: BLE001 -- fixed private failure journal, no secrets in stdout.
         # Full diagnostics stay private in the owned runtime. No key, path,
         # database/role name, SQL content or connection data crosses stdout.
         import traceback
 
         try:
+            _write_private(
+                Path("/run/supervisor-exception-chain.private.json"),
+                _canonical(_safe_exception_chain_v1(failure)),
+            )
             _write_private(
                 Path("/run/supervisor-failure.private.txt"),
                 traceback.format_exc().encode("utf-8"),
