@@ -3,6 +3,7 @@
 import pytest
 
 from app.trade_qualification import native_continuation_guard_v1 as subject
+from tests.unit import native_guard_keyword_fixture_v2 as keyword_fixture
 from tests.unit.native_guard_keyword_fixture_v2 import leaf as _leaf
 
 
@@ -109,3 +110,21 @@ def test_removed_or_extra_keyword_names_refuse(source_leaf):
     source_leaf.__kwdefaults__["extra"] = original
     with pytest.raises(subject.NativeSourceClosureError):
         subject._check_function(pin)
+
+
+def test_keyword_helper_code_is_verified_before_export_default_check(
+    monkeypatch, capsys
+):
+    # Keep normally imported source and the same helper object; only its live
+    # code changes after genuine guard assembly. No trade/IO authority exists.
+    original = keyword_fixture.entry
+    monkeypatch.setattr(keyword_fixture, "entry", original)
+    monkeypatch.setattr(keyword_fixture, "_NATIVE_GUARD", None, raising=False)
+    subject.install_native_guards_v1(keyword_fixture, ("entry",))
+    foreign = lambda values, pinned: (print("foreign-keyword-helper"), True)[1]
+    monkeypatch.setattr(
+        subject._keyword_defaults_match_v2, "__code__", foreign.__code__
+    )
+    with pytest.raises(subject.NativeSourceClosureError):
+        keyword_fixture.entry()
+    assert capsys.readouterr().out == ""

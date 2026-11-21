@@ -706,8 +706,10 @@ def _bind_entry(module, name, original, guard, files):
             or coroutine_type.send is not coroutine_send
         ):
             raise NativeSourceClosureError("native_continuation_source_changed")
-        check_function(original_pin)
         checked(guard, snapshot)
+        # Authenticate checker helpers before an export's keyword defaults can
+        # reach them. Both original checks still run before the export body.
+        check_function(original_pin)
         result = original(*args, **kwargs)
         if isinstance(result, Coroutine):
             return coroutine_type(result, guard, snapshot, checked)
