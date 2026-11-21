@@ -14,7 +14,7 @@ import os
 import stat
 from pathlib import Path
 
-_FACTS_SHA256 = "7a8155a9a8b5e6c1def8c2c3577a21b56c4c232ccb3eb870a44edbc0b21b593f"
+_FACTS_SHA256 = "27f7d57c60ef9d494dfcdb1e2e676f65b3bf52f4b99610cdf58ca2f79bc9f8e8"
 
 
 def _source_facts():
@@ -103,7 +103,8 @@ def _build_source_predicate():
             "resultcollid",
             "coerceformat",
             "location",
-        ]
+        ],
+        "CASETESTEXPR": ["typeId", "typeMod", "collation"],
     }:
         raise ValueError("native_owner_btree_source_refused") from None
     # All these pg_catalog columns have fixed native types. No deparser or
@@ -226,16 +227,20 @@ def _build_source_predicate():
  AND d.refobjid IN (16,17,20,21,23,25,26,114,700,701,869,1042,1043,1082,1114,1184,1700,2950,3802,1009,1015)))))
  OR (i.indpred IS NOT NULL AND (
  EXISTS(SELECT 1 FROM pg_catalog.regexp_matches(i.indpred::pg_catalog.text,'\\{{([A-Z][A-Z0-9_]*)','g') m(parts)
- WHERE m.parts[1] NOT IN ('VAR','CONST','OPEXPR','BOOLEXPR','RELABELTYPE','SCALARARRAYOPEXPR','ARRAYEXPR','COERCEVIAIO','NULLTEST','BOOLEANTEST','ARRAYCOERCEEXPR'))
+ WHERE m.parts[1] NOT IN ('VAR','CONST','OPEXPR','BOOLEXPR','RELABELTYPE','SCALARARRAYOPEXPR','ARRAYEXPR','COERCEVIAIO','NULLTEST','BOOLEANTEST','ARRAYCOERCEEXPR','CASETESTEXPR')
+ OR (m.parts[1]='CASETESTEXPR' AND
+ (SELECT pg_catalog.count(*) FROM pg_catalog.regexp_matches(i.indpred::pg_catalog.text,'\\{{CASETESTEXPR','g'))
+ <> (SELECT pg_catalog.count(*) FROM pg_catalog.regexp_matches(i.indpred::pg_catalog.text,
+ '\\{{CASETESTEXPR [:]typeId [0-9]+ [:]typeMod -?[0-9]+ [:]collation [0-9]+\\}}','g'))))
  OR EXISTS(SELECT 1 FROM pg_catalog.regexp_matches(i.indpred::pg_catalog.text,
- ':(vartype|consttype|opresulttype|resulttype|array_typeid|element_typeid) ([0-9]+)','g') m(parts)
+ ':(vartype|consttype|opresulttype|resulttype|array_typeid|element_typeid|typeId) ([0-9]+)','g') m(parts)
  WHERE m.parts[2]::pg_catalog.int8 NOT IN (16,17,20,21,23,25,26,114,700,701,869,1042,1043,1082,1114,1184,1700,2950,3802,1009,1015))
  OR EXISTS(SELECT 1 FROM pg_catalog.regexp_matches(i.indpred::pg_catalog.text,'[:]opno ([0-9]+)','g') m(parts)
  WHERE m.parts[1]::pg_catalog.int8 NOT IN (98,531,3477))
  OR EXISTS(SELECT 1 FROM pg_catalog.regexp_matches(i.indpred::pg_catalog.text,'[:]opfuncid ([0-9]+)','g') m(parts)
  WHERE m.parts[1]::pg_catalog.int8 NOT IN (0,67,157,3214))
  OR EXISTS(SELECT 1 FROM pg_catalog.regexp_matches(i.indpred::pg_catalog.text,
- ':(varcollid|constcollid|opcollid|inputcollid|resultcollid|array_collid) ([0-9]+)','g') m(parts)
+ ':(varcollid|constcollid|opcollid|inputcollid|resultcollid|array_collid|collation) ([0-9]+)','g') m(parts)
  WHERE m.parts[2]::pg_catalog.int8 NOT IN (0,100))
  OR i.indpred::pg_catalog.text ~ ':(hashfuncid|negfuncid|varlevelsup) [1-9]'
  ))))

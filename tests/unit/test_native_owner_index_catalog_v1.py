@@ -35,6 +35,7 @@ def test_source_facts_have_exact_primary_bootstrap_identity_and_no_observed_cata
         "pg_collation",
         "primnodes.h",
         "pg_config_manual.h",
+        "execExpr.c",
     }
     assert all(
         re.fullmatch("[0-9a-f]{64}", value)
@@ -119,11 +120,12 @@ def test_array_coerce_wrapper_keeps_every_original_child_and_callback_fence():
             "resultcollid",
             "coerceformat",
             "location",
-        ]
+        ],
+        "CASETESTEXPR": ["typeId", "typeMod", "collation"],
     }
     sql = subject.NATIVE_BTREE_CATALOG_PREDICATE_V1
     assert "'ARRAYCOERCEEXPR'" in sql
-    assert "'CASETESTEXPR'" not in sql and "'FUNCEXPR'" not in sql
+    assert "'CASETESTEXPR'" in sql and "'FUNCEXPR'" not in sql
     for original in (
         "vartype|consttype|opresulttype|resulttype|array_typeid|element_typeid",
         "[:]opno ([0-9]+)",
@@ -141,6 +143,74 @@ def test_changed_or_additional_array_node_field_contract_is_refused(monkeypatch)
     monkeypatch.setattr(subject, "_source_facts", lambda: facts)
     with pytest.raises(ValueError, match="native_owner_btree_source_refused"):
         subject._build_source_predicate()
+
+
+def test_case_test_context_value_has_only_source_fields_and_no_callback_slot(
+    monkeypatch,
+):
+    facts = subject._source_facts()
+    assert facts["predicate_node_fields"]["CASETESTEXPR"] == [
+        "typeId",
+        "typeMod",
+        "collation",
+    ]
+    assert (
+        facts["primary_sha256"]["execExpr.c"]
+        == "f9cf5e2e83d5c096bd769bbde808bf3322e797ac13a1c89b31ba680600224acd"
+    )
+    facts["predicate_node_fields"]["CASETESTEXPR"].append("callback")
+    monkeypatch.setattr(subject, "_source_facts", lambda: facts)
+    with pytest.raises(ValueError, match="native_owner_btree_source_refused"):
+        subject._build_source_predicate()
+
+
+@pytest.mark.parametrize(
+    "mutation", ["extra", "missing", "child", "duplicate", "wrong_name"]
+)
+def test_case_test_malformed_leaf_cannot_pass_the_actual_source_shape_filter(mutation):
+    from scripts import native_owner_storage_diagnostic_v1 as diagnostic
+
+    condition = diagnostic._index_rejection_parts_v2()[-1][0]
+    pattern = re.search(r"'(\\\{CASETESTEXPR \[:\]typeId[^']+)'", condition).group(1)
+    tag = re.search(r"'(\\\{CASETESTEXPR)'", condition).group(1)
+    original = "{CASETESTEXPR :typeId 1043 :typeMod -1 :collation 100}"
+    assert len(re.findall(tag, original)) == len(re.findall(pattern, original)) == 1
+    changed = {
+        "extra": original[:-1] + " :funcid 99999}",
+        "missing": original.replace(" :typeMod -1", ""),
+        "child": original[:-1] + " :arg {VAR :vartype 25}}",
+        "duplicate": original[:-1] + " :typeId 25}",
+        "wrong_name": original.replace("typeId", "typeid"),
+    }[mutation]
+    assert len(re.findall(tag, changed)) != len(re.findall(pattern, changed))
+
+
+@pytest.mark.parametrize("oid", [19, 705, 99999])
+def test_case_test_type_uses_original_index_fence_not_new_const_exceptions(oid):
+    from scripts import native_owner_storage_diagnostic_v1 as diagnostic
+
+    condition = diagnostic._index_rejection_parts_v2()[-1][1]
+    pattern = re.search(r"'(\:\(vartype[^']+)'", condition).group(1)
+    allowed = {
+        int(value)
+        for value in re.search(r"NOT IN \(([0-9,]+)\)", condition).group(1).split(",")
+    }
+    assert allowed == set(heap.NATIVE_SCALAR_OIDS_V1) | {1009, 1015}
+    value = re.search(pattern, ":typeId " + str(oid))
+    assert value is not None and int(value.group(2)) not in allowed
+
+
+def test_case_test_collation_uses_original_native_collation_fence():
+    from scripts import native_owner_storage_diagnostic_v1 as diagnostic
+
+    condition = diagnostic._index_rejection_parts_v2()[-1][4]
+    pattern = re.search(r"'(\:\(varcollid[^']+)'", condition).group(1)
+    allowed = {
+        int(value)
+        for value in re.search(r"NOT IN \(([0-9,]+)\)", condition).group(1).split(",")
+    }
+    assert allowed == {0, 100}
+    assert int(re.search(pattern, ":collation 99999").group(2)) not in allowed
 
 
 @pytest.mark.parametrize("field", ["vartype", "resulttype", "array_typeid"])
