@@ -1,4 +1,4 @@
-"""Two fresh source17 catalog references, never full regression acceptance."""
+"""Fixed fresh-catalog probes; neither purpose grants full acceptance."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from contextlib import ExitStack
 from pathlib import Path
 from uuid import uuid4
 
+from scripts import native_owner_storage_diagnostic_v1 as storage
 from scripts import retained0017_reference_measurement_v1 as measurement
 from scripts import verify_final_hermetic as shared
 from scripts.devval_hermetic_tls import devval_tls
@@ -30,6 +31,12 @@ REPORT = "test-results/retained0017-reference-probe.xml"
 canonical, digest = measurement.canonical, measurement.digest
 
 
+def _storage_mode(args):
+    value = getattr(args, "native_storage_diagnostic", False)
+    need(type(value) is bool)
+    return value
+
+
 def need(value):
     if value is not True:
         raise ValueError("retained0017_reference_probe_refused") from None
@@ -42,6 +49,7 @@ def admit_archive(args):
 
 
 def verify_probe(root, *, args, files):
+    diagnostic = _storage_mode(args)
     state = read_evidence_json((root / "identity.json").read_bytes())
     raw_map = (root / "source-files.json").read_bytes()
     need(raw_map == canonical(files))
@@ -50,14 +58,43 @@ def verify_probe(root, *, args, files):
         and state["tree"] == args.tree
         and state["archive_sha256"] == args.archive_sha256
     )
-    source = measurement.source_identity(state, files, raw_map)
+    if diagnostic:
+        need(
+            state["schema"] == storage.SCHEMA
+            and state["runner_contract"] == storage.CONTRACT
+            and state["validation_scope"] == storage.SCOPE
+            and state["suite"] == storage.SUITE
+            and state["database_target"] == "0055_and_0057"
+            and state["source_contract_head"] == "0058"
+            and state["source_files_sha256"] == digest(raw_map)
+            and state["manifest_sha256"] == files["MANIFEST.sha256"]["sha256"]
+            and state["runner_sha256"] == files[RUNNER]["sha256"]
+            and state["build_context"] == "admitted_archive_bytes_v1"
+            and state["hermetic_regression"] == "NOT_RUN"
+            and state["full_suite_acceptance"] is False
+            and state["trading_acceptance"] is False
+            and state["host_credentials"] is False
+            and state["host_env"] is False
+            and type(state["external_order_writes"]) is int
+            and state["external_order_writes"] == 0
+            and "pair" not in state
+        )
+        source = state
+    else:
+        source = measurement.source_identity(state, files, raw_map)
     report = shared.verify_pytest_report(
-        root / REPORT, required_cases=measurement.CASES, allow_unrelated_skips=False
+        root / (storage.REPORT if diagnostic else REPORT),
+        required_cases=storage.CASES if diagnostic else measurement.CASES,
+        allow_unrelated_skips=False,
     )
     need(report["tests"] == report["passed"] == 2 and report["skipped"] == 0)
-    pair = measurement.verify_reference_pair(root, source=source)
+    pair = (
+        storage.verify_reports_v1(root, source)
+        if diagnostic
+        else measurement.verify_reference_pair(root, source=source)
+    )
     need(
-        state["pair"] == pair
+        state["native_storage_components" if diagnostic else "pair"] == pair
         and state["tests"] == report
         and state["probe"] == state["cleanup"] == "PASS"
     )
@@ -75,6 +112,7 @@ def verify_probe(root, *, args, files):
 
 
 def run_probe(args, raw, files, root):
+    diagnostic = _storage_mode(args)
     results = root / "test-results"
     results.mkdir(mode=0o777)
     results.chmod(0o777)  # Only disposable, credential-free reference artifacts.
@@ -89,12 +127,16 @@ def run_probe(args, raw, files, root):
     image = "ctcc-source17-reference:" + args.commit[:12] + "-" + run_id
     label = "org.ctcc.validation.run=" + run_id
     state = {
-        "schema": "ctcc.retained0017.reference_probe_identity.v1",
-        "runner_contract": measurement.PROBE_CONTRACT,
-        "validation_scope": measurement.PROBE_SCOPE,
-        "suite": "retained0017-reference-probe",
+        "schema": storage.SCHEMA
+        if diagnostic
+        else "ctcc.retained0017.reference_probe_identity.v1",
+        "runner_contract": storage.CONTRACT
+        if diagnostic
+        else measurement.PROBE_CONTRACT,
+        "validation_scope": storage.SCOPE if diagnostic else measurement.PROBE_SCOPE,
+        "suite": storage.SUITE if diagnostic else "retained0017-reference-probe",
         "source_contract_head": "0058",
-        "database_target": "0017",
+        "database_target": "0055_and_0057" if diagnostic else "0017",
         "commit": args.commit,
         "tree": args.tree,
         "archive_sha256": digest(raw),
@@ -252,14 +294,15 @@ def run_probe(args, raw, files, root):
             "--target",
             "linux",
         )
-        # No upgrade of the admin database to58 is implied. Each required case
-        # independently creates its own template0 DB and genuine0017 prefix.
+        # No upgrade of the admin database to58 is implied. Required cases
+        # independently create their own disposable canonical-source DBs.
         container(
-            "reference17-tests",
+            "native-storage-tests" if diagnostic else "reference17-tests",
             *_PYTEST,
             "-q",
-            "--junitxml=/validation-results/" + Path(REPORT).name,
-            TEST_MODULE,
+            "--junitxml=/validation-results/"
+            + Path(storage.REPORT if diagnostic else REPORT).name,
+            storage.MODULE if diagnostic else TEST_MODULE,
             mounts=(
                 "--mount",
                 f"type=bind,src={results},dst=/validation-results",
@@ -270,18 +313,25 @@ def run_probe(args, raw, files, root):
             extra_environment=(
                 *tls.pytest_environment,
                 "-e",
-                measurement.ENV + "=/validation-results",
+                (storage.ENV if diagnostic else measurement.ENV)
+                + "=/validation-results",
             ),
             timeout=900,
         )
         report = shared.verify_pytest_report(
-            root / REPORT, required_cases=measurement.CASES, allow_unrelated_skips=False
+            root / (storage.REPORT if diagnostic else REPORT),
+            required_cases=storage.CASES if diagnostic else measurement.CASES,
+            allow_unrelated_skips=False,
         )
         need(report["tests"] == report["passed"] == 2 and report["skipped"] == 0)
         state["tests"] = report
-        state["pair"] = measurement.verify_reference_pair(
-            root, source=measurement.source_identity(state, files, mapping.read_bytes())
-        )
+        if diagnostic:
+            state["native_storage_components"] = storage.verify_reports_v1(root, state)
+        else:
+            state["pair"] = measurement.verify_reference_pair(
+                root,
+                source=measurement.source_identity(state, files, mapping.read_bytes()),
+            )
         state["probe"] = "PASS"
     except Exception as error:
         state["failure_type"] = type(error).__name__
@@ -308,7 +358,12 @@ def run_probe(args, raw, files, root):
             },
         )
     verify_probe(root, args=args, files=files)
-    print("RETAINED0017_FRESH_REFERENCE_PAIR=PASS", flush=True)
+    print(
+        "NATIVE_STORAGE_CATALOG_DIAGNOSTIC=PASS"
+        if diagnostic
+        else "RETAINED0017_FRESH_REFERENCE_PAIR=PASS",
+        flush=True,
+    )
     print("HERMETIC_REGRESSION=NOT_RUN", flush=True)
     return 0
 
@@ -322,6 +377,7 @@ def main():
             type=Path if name in ("archive", "output") else str,
         )
     parser.add_argument("--verify-only", action="store_true")
+    parser.add_argument("--native-storage-diagnostic", action="store_true")
     args = parser.parse_args()
     for value, pattern in (
         (args.commit, r"[a-f0-9]{40}"),
@@ -332,7 +388,12 @@ def main():
     raw, files = admit_archive(args)
     if args.verify_only:
         verify_probe(args.output, args=args, files=files)
-        print("RETAINED0017_REFERENCE_PROBE_ARCHIVED_READBACK=PASS", flush=True)
+        print(
+            "NATIVE_STORAGE_DIAGNOSTIC_ARCHIVED_READBACK=PASS"
+            if _storage_mode(args)
+            else "RETAINED0017_REFERENCE_PROBE_ARCHIVED_READBACK=PASS",
+            flush=True,
+        )
         return 0
     args.output.mkdir(parents=True, exist_ok=False)
     root = args.output.resolve(strict=True)
