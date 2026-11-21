@@ -16,19 +16,48 @@ The usable-tool delivery remains incomplete. The installed legacy application
 and original Docker database have not been started or upgraded. Gate3 and actual
 trading acceptance stay deferred, never green checkboxes.
 
-On exact source`4f956520dfb5ea94ffc1af766a6439ae76f8b24b`, the genuine
-CI-matching Sep29 CPython3.12.14 runtime with the unchanged41 locked verifier
-dependencies passed separate Windows groups of121,202 and3 cases, each with
-zero failures/errors/skips. Groups overlap and must not be summed as unique
-regression coverage. Root receipt SHA256:
-`80a6b3e14db9fe1c0ee2f142e21e53f10c968b75a08cd43068c0d0b98bfa29f0`.
-The three physical-path cases use real local TCP/TLS/vendor code but explicitly
-synthetic source, account, credential, configuration and SQL admission. They
-prove one complete synthetic request/ACK and stale-spec refusal, not configured
-Demo/Live acceptance. Their4.33645025-second enqueue observation omits the
-genuine source-guard cost and remains a lower bound. Reducing repeated synchronous
-constructor/getter work remains under review; every actual write retains a
-fresh complete authority check and the original freshness limits.
+The integration checkpoint is`cfdd872a23d41b6f7a6a4921e6cfecef8555afd9`,
+tree`254cee08e649c9b22c1f323fd19d1dad85c0e9be`, before this documentation
+update. Migration head remains0058; the41 locked verifier dependencies are
+unchanged. This is an unpromoted candidate, not the installed runtime or main.
+
+On exact source39adbb8, the genuine CI-matching Sep29 CPython3.12.14 runtime
+ran585 owner/native unit cases:583 passed and2 failed. Both failures were
+test-only generic Windows long-path reads after successful durable publication
+and native independent readback. The test helper now uses an independent
+extended-path read. The entire retained17 module subsequently passed57 cases
+with no skips, including deliberately deep paths. Application publication and
+journals were not changed or deleted. The groups overlap; they are not a final
+Windows union. Scoped receipt SHA256:
+`c0e194b14c10a69167c954578507c86c1bc3a78952ae0200aeaa4c96e3338f18`.
+
+The shared source guard now rejects keyword-default equality callbacks and
+checks its matcher before use. Static duplicate function pins are consolidated
+only when their code/globals/defaults/closure bindings are identical. All alias
+records, class shapes,112 fresh source files and write-check frequency remain.
+The cost-inclusive original callgraph diagnostic still fails its unchanged
+five-second account freshness limit: the first refused balance stamp was5.007
+seconds old. It retained UNKNOWN and accepted zero order bytes/POSTs. The source,
+SQL, credentials and account admission in that timing fixture are synthetic;
+it does not authenticate a configured Demo/Live pipeline. A subsequent pure
+serialization draft showed no measured benefit and was not adopted. Timing
+findings receipt SHA256:
+`1120ba4466dbc7d09ae1d0185db416fa36470215e9b94423ce5385fc03fa3e13`.
+
+The [source3fad7fe owner run](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/44846537802)
+failed:176 passes,37 failures and zero errors/skips. The new metadata-first
+SQL predicate missed one closing parenthesis before its independent collation
+check; an index-AM fixture also attempted a construction PostgreSQL itself
+rejects. Both are repaired without relaxing admission. A new isolated genuine
+PG17.11 cluster reproduced the old42601 error, then verified native admission,
+custom-default refusal, custom-marker refusal, independent collation refusal
+and native admission after rollback. All six expected outcomes passed and the
+owned server completed fast shutdown. No retained CTCC data was opened.
+Diagnostic receipt SHA256:
+`677366f4123525acfd05a58a97b678516a1754c89a0247bf3e002571328dd53f`.
+These are grammar/predicate checks, not complete migration/schema acceptance.
+The [matching cfdd872 owner rerun](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/44852275764)
+is pending; no counts or success are credited to it.
 
 The [original complete b40f7e7 run](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/44822336458)
 finished FAIL. Original archived verification accepts its five PostgreSQL
@@ -45,8 +74,13 @@ and28 directories,136846581 bytes. A later read-only control-file observation
 reported `shut down`, with the file identity/mtime/hash unchanged. Only the
 independent validation WSL metadata tool was started; no PostgreSQL server,
 Docker daemon, legacy API, SQL or migration was started by these observations.
-This is not a logical backup/restore, actual Alembic-head, schema or flat-account
-acceptance. Raw private files are excluded from Git, reports and release bundles.
+An additional private Linux working copy has separately verified every file.
+The independently verified CI-pinned official PG17.11 image also runs its three
+fixed version commands as UID/GID70 with zero capabilities in a read-only
+chroot and private network/mount/IPC namespaces. This preparation does not
+start the retained clone or establish its Alembic head. Raw private files are
+excluded from Git, reports and release bundles. Preservation is not logical
+restore, schema or flat-account acceptance.
 Preservation receipt SHA256:
 `a8e99ab2e76ab6e5418761723b0c7d0e53ab527c9cf1688f5e7c34c691d5155c`;
 preliminary control observation:
@@ -55,10 +89,11 @@ preliminary control observation:
 The canonical55→56 owner command now requires reviewed V2 inputs, three exact
 restricted role identities, real catalog admission, all-old-row/null/layout/OID/
 sequence preservation, savepoint rehearsal/verified rollback and independent
-postcommit readback. Its new actual PostgreSQL cases are authored but their
-matching-source execution is not yet accepted. The complete retained17 schema
-baseline and17→55 continuation are still being implemented; a fresh empty58
-database cannot replace the retained ledger. The genuine desktop picker,
+postcommit readback. Its matching-source PostgreSQL execution is still pending.
+The complete retained17 catalog comparator and two independently created
+canonical references remain unsealed; no observed digest has been adopted as
+the expected baseline. The17→55 continuation is still being implemented; a
+fresh empty58 database cannot replace the retained ledger. The genuine desktop picker,
 reopen/stop acceptance also remains pending while the Windows session is locked.
 
 ## Operator tools
