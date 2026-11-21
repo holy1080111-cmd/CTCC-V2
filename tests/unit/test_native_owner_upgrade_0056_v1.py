@@ -243,6 +243,11 @@ def _fake_commit(monkeypatch, *, fail_at=None):
             assert statement is subject._OWNER_LOCK
             events.append("ADVISORY_LOCK")
 
+        async def scalar(self, statement, *args):
+            assert statement is subject._SAFE_MARKER_V2
+            events.append("NATIVE_HEAP_METADATA")
+            return True
+
         async def run_sync(self, fn, *args):
             events.append("MIGRATE")
             fn(None, *args)

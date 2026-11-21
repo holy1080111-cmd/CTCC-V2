@@ -166,6 +166,7 @@ async def _owner_observation(engine, pins, head):
     async with factory() as session, session.begin():
         for sql in roles._OWNER_SETTINGS:
             await session.execute(text(sql))
+        await retained_rows.heap_am.lock_native_owner_marker_v1(session)
         row = tuple((await session.execute(route._PROFILE_SQL)).one())
         parent._checked_owner(row, pins, head, read_only=True)
         actor = await roles._identity_at_0056(
@@ -179,6 +180,11 @@ async def _owner_observation(engine, pins, head):
 
 
 async def _role_observation(selected, owner, pins, head):
+    async with parent.old._marker_checked_v2(owner, pins):
+        return await _role_observation_body(selected, owner, pins, head)
+
+
+async def _role_observation_body(selected, owner, pins, head):
     from app.core import native_role_identity_0056_v2 as identity
 
     profile = profiles.from_head(head)
@@ -244,6 +250,7 @@ async def _inventory(owner, pins):
     async with owner.connect() as connection, connection.begin():
         for sql in parent.old._READBACK_SETTINGS:
             await connection.exec_driver_sql(sql)
+        await retained_rows.heap_am.lock_native_owner_marker_v1(connection)
         parent._checked_owner(
             tuple((await connection.execute(route._PROFILE_SQL)).one()),
             pins,
@@ -301,6 +308,7 @@ def _preserved(before, after):
 
 
 async def _held_inventory(connection, pins, head):
+    await retained_rows.heap_am.require_native_owner_storage_v1(connection)
     parent._checked_owner(
         tuple((await connection.execute(route._PROFILE_SQL)).one()),
         pins,
@@ -346,8 +354,10 @@ async def _commit_once(script, pins, owner, expected):
             try:
                 for sql in parent.old._OWNER_SETTINGS:
                     await connection.exec_driver_sql(sql)
+                await retained_rows.heap_am.require_native_owner_storage_v1(connection)
                 await connection.execute(parent.old._OWNER_LOCK)
                 await connection.exec_driver_sql(parent.old._LOCK_REVISION)
+                await retained_rows.heap_am.require_native_owner_storage_v1(connection)
                 await parent._relations(connection, lock=True)
                 stage = "LOCKED_PREVIOUS_INVENTORY"
                 before = await _held_inventory(connection, pins, "0057")

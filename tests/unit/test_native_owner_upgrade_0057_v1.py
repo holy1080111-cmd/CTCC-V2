@@ -221,7 +221,13 @@ class _Connection:
         self.events.append("OWNER_ADVISORY")
         return _Rows([])
 
-    async def scalar(self, sql, args):
+    async def scalar(self, sql, args=None):
+        if args is None:
+            assert (
+                str(sql) == subject.retained_rows.heap_am.NATIVE_MARKER_AND_HEAP_SQL_V1
+            )
+            self.events.append("NATIVE_HEAP_METADATA")
+            return True
         return 30001 if args["name"].endswith("claims") else 30002
 
     async def run_sync(self, migration, script):

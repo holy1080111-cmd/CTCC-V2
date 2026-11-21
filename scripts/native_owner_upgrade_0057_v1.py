@@ -233,6 +233,7 @@ async def _owner_observation(engine, pins, head):
     async with engine.connect() as connection, connection.begin():
         for sql in old._READBACK_SETTINGS:
             await connection.exec_driver_sql(sql)
+        await retained_rows.heap_am.lock_native_owner_marker_v1(connection)
         _checked_owner(
             tuple((await connection.execute(route._PROFILE_SQL)).one()),
             pins,
@@ -244,6 +245,7 @@ async def _owner_observation(engine, pins, head):
     async with factory() as session, session.begin():
         for sql in roles._OWNER_SETTINGS:
             await session.execute(text(sql))
+        await retained_rows.heap_am.lock_native_owner_marker_v1(session)
         row = tuple((await session.execute(route._PROFILE_SQL)).one())
         _checked_owner(row, pins, head, read_only=True)
         actor = await roles._identity_at_0056(
@@ -276,6 +278,11 @@ def _server_sha(actor, profile):
 
 
 async def _role_observation(selected, owner_engine, pins, head):
+    async with old._marker_checked_v2(owner_engine, pins):
+        return await _role_observation_body(selected, owner_engine, pins, head)
+
+
+async def _role_observation_body(selected, owner_engine, pins, head):
     from app.core import native_role_identity_0056_v2 as identity
 
     profile = profiles.DB0056 if head == "0056" else profiles.DB0057
@@ -507,6 +514,7 @@ async def _readonly_inventory(owner, pins):
     async with owner.connect() as connection, connection.begin():
         for sql in old._READBACK_SETTINGS:
             await connection.exec_driver_sql(sql)
+        await retained_rows.heap_am.lock_native_owner_marker_v1(connection)
         _checked_owner(
             tuple((await connection.execute(route._PROFILE_SQL)).one()),
             pins,
@@ -560,8 +568,10 @@ async def _commit_once(
             try:
                 for sql in old._OWNER_SETTINGS:
                     await connection.exec_driver_sql(sql)
+                await retained_rows.heap_am.require_native_owner_storage_v1(connection)
                 await connection.execute(old._OWNER_LOCK)
                 await connection.exec_driver_sql(old._LOCK_REVISION)
+                await retained_rows.heap_am.require_native_owner_storage_v1(connection)
                 _checked_owner(
                     tuple((await connection.execute(route._PROFILE_SQL)).one()),
                     pins,
@@ -602,6 +612,7 @@ async def _commit_once(
                     frame_reader=pins.role_names[2],
                 ):
                     await connection.exec_driver_sql(sql)
+                await retained_rows.heap_am.require_native_owner_storage_v1(connection)
                 _checked_owner(
                     tuple((await connection.execute(route._PROFILE_SQL)).one()),
                     pins,

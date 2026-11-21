@@ -93,7 +93,8 @@ RELATIONS_SQL = text("""SELECT c.relname::text,c.oid::bigint,c.relkind::text,c.r
  WHERE a.attrelid=c.oid AND a.attnum>0 AND NOT a.attisdropped),'[]'::jsonb)
  FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
  WHERE n.nspname='public' AND c.relkind IN ('r','p','v','m','f','S') ORDER BY c.relname""")
-SAFE_ROW_TYPES_SQL = text("""SELECT
+SAFE_ROW_TYPES_SQL = text(
+    """SELECT
  NOT EXISTS(SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
   WHERE n.nspname='public' AND c.relkind IN ('r','S') AND c.relhasrules)
  AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_inherits i JOIN pg_catalog.pg_class c ON c.oid=i.inhrelid OR c.oid=i.inhparent
@@ -101,8 +102,13 @@ SAFE_ROW_TYPES_SQL = text("""SELECT
  AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_class c ON c.oid=a.attrelid
   JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
   WHERE n.nspname='public' AND c.relkind IN ('r','S') AND a.attnum>0 AND NOT a.attisdropped
-   AND a.atttypid NOT IN (16,17,20,21,23,25,114,700,701,869,1042,1043,1082,1114,1184,1700,2950,3802))
-""")
+   AND a.atttypid NOT IN ("""
+    + ",".join(str(oid) for oid in sorted(retained_rows._NATIVE_SCALAR_OIDS))
+    + """))
+"""
+    + " AND "
+    + retained_rows.heap_am.ALL_PUBLIC_TABLES_HEAP_V1
+)
 
 
 class Retained0017PlanRefused(ValueError):

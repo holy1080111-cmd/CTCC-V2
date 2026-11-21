@@ -124,6 +124,42 @@ async def _read(owner, pins, plan):
             await transaction.rollback()
 
 
+async def test_actual0017_custom_marker_am_refuses_before_head_row_or_storage_read(
+    _actual_retained17_lab,
+):
+    import re
+
+    from sqlalchemy import event
+
+    owner, pins, plan = _actual_retained17_lab
+    name = "ctcc_unreviewed_marker_" + uuid4().hex[:12]
+    async with owner.begin() as connection:
+        await connection.exec_driver_sql(
+            'CREATE ACCESS METHOD "'
+            + name
+            + '" TYPE TABLE HANDLER pg_catalog.heap_tableam_handler'
+        )
+        await connection.exec_driver_sql(
+            'ALTER TABLE public.alembic_version SET ACCESS METHOD "' + name + '"'
+        )
+    opened = []
+
+    def watch(conn, cursor, statement, parameters, context, executemany):
+        if (
+            re.search(r"\bFROM\s+public\.", statement, re.IGNORECASE)
+            or "pg_relation_size(" in statement
+        ):
+            opened.append(True)
+
+    event.listen(owner.sync_engine, "before_cursor_execute", watch)
+    try:
+        with pytest.raises(subject.Retained0017PlanRefused):
+            await _read(owner, pins, plan)
+    finally:
+        event.remove(owner.sync_engine, "before_cursor_execute", watch)
+    assert opened == []
+
+
 async def test_actual0017_two_readonly_snapshots_preserve_all_rows_oids_sequences_and_unknown_intent(
     _actual_retained17_lab,
 ):

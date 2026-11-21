@@ -224,3 +224,45 @@ async def test_actual0055_v2_marker_view_refuses_before_its_select_callback(
     # SQL/canary callback. The readonly inventory must not SELECT the view.
     with pytest.raises(subject.NativeOwnerUpgradeRefusal):
         await subject._readonly_inventory_v2(owner, pins, "0055")
+
+
+async def test_actual0055_v2_and_commonroute_custom_marker_am_refuse_before_head_reads(
+    _actual55_v2_lab,
+):
+    import re
+
+    from sqlalchemy import event
+
+    from scripts import native_owner_heap_am_v1 as heap
+
+    owner, _selected, pins, _prepared = _actual55_v2_lab
+    name = "ctcc_unreviewed_marker_" + uuid4().hex[:12]
+    async with owner.begin() as connection:
+        await connection.exec_driver_sql(
+            'CREATE ACCESS METHOD "'
+            + name
+            + '" TYPE TABLE HANDLER pg_catalog.heap_tableam_handler'
+        )
+        await connection.exec_driver_sql(
+            'ALTER TABLE public.alembic_version SET ACCESS METHOD "' + name + '"'
+        )
+    opened = []
+
+    def watch(conn, cursor, statement, parameters, context, executemany):
+        if (
+            re.search(r"\bFROM\s+public\.", statement, re.IGNORECASE)
+            or "pg_relation_size(" in statement
+        ):
+            opened.append(True)
+
+    event.listen(owner.sync_engine, "before_cursor_execute", watch)
+    try:
+        with pytest.raises(subject.NativeOwnerUpgradeRefusal):
+            await subject._readonly_inventory_v2(owner, pins, "0055")
+        from scripts import native_owner_route_preflight_0056_v1 as route
+
+        with pytest.raises(heap.NativeOwnerStorageRefused):
+            await route._read_one(owner, pins.route)
+    finally:
+        event.remove(owner.sync_engine, "before_cursor_execute", watch)
+    assert opened == []

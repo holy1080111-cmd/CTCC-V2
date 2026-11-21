@@ -386,7 +386,8 @@ SELECT NOT EXISTS(SELECT 1 FROM pg_catalog.pg_namespace
  AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_largeobject_metadata)
  AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_foreign_table)
 """)
-_SAFE_MARKER_V2 = text("""
+_SAFE_MARKER_V2 = text(
+    """
 SELECT current_user::pg_catalog.text=:owner AND session_user::pg_catalog.text=:owner
  AND (SELECT d.oid=:database_oid AND d.datdba=:owner_oid FROM pg_catalog.pg_database d
       WHERE d.datname=pg_catalog.current_database())
@@ -401,7 +402,10 @@ SELECT current_user::pg_catalog.text=:owner AND session_user::pg_catalog.text=:o
    AND a.attname='version_num' AND a.atttypid=1043 AND a.atttypmod=36
    AND a.attnotnull AND NOT a.attisdropped AND NOT a.atthasdef
    AND a.attgenerated='' AND a.attidentity=''))
-""")
+"""
+    + " AND "
+    + retained_rows.heap_am.ALL_PUBLIC_TABLES_HEAP_V1
+)
 
 
 async def _marker_safe_v2(connection, pins):
@@ -420,16 +424,40 @@ async def _marker_safe_v2(connection, pins):
 
 @asynccontextmanager
 async def _marker_checked_v2(owner, pins):
-    # Hold the genuine ordinary-table marker against DDL substitution while
-    # separate physical route/role/catalog sessions perform their own reads.
+    # Prove metadata before opening an application relation, then hold all
+    # native public tables against AM/DDL substitution during separate role
+    # sessions. Ordinary DML remains possible and later snapshot equality is
+    # still required under the existing exclusive upgrade locks.
     async with owner.connect() as connection:
         transaction = await connection.begin()
         try:
             for sql in _READBACK_SETTINGS:
                 await connection.exec_driver_sql(sql)
             await _marker_safe_v2(connection, pins)
+            names = tuple(
+                (
+                    await connection.execute(
+                        text(
+                            "SELECT c.relname::pg_catalog.text FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind='r' ORDER BY c.relname"
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            _need(
+                0 < len(names) <= 512
+                and "alembic_version" in names
+                and all(
+                    type(name) is str
+                    and re.fullmatch(r"[a-z_][a-z0-9_]{0,62}", name) is not None
+                    for name in names
+                )
+            )
             await connection.exec_driver_sql(
-                "LOCK TABLE public.alembic_version IN ACCESS SHARE MODE NOWAIT"
+                "LOCK TABLE "
+                + ",".join('public."' + name + '"' for name in names)
+                + " IN ACCESS SHARE MODE NOWAIT"
             )
             await _marker_safe_v2(connection, pins)
             yield connection
@@ -615,6 +643,11 @@ async def _configured_resources_v2(stack, prepared, pins):
 
 
 async def _role_observation_v2(selected, owner, pins, head):
+    async with _marker_checked_v2(owner, pins):
+        return await _role_observation_body_v2(selected, owner, pins, head)
+
+
+async def _role_observation_body_v2(selected, owner, pins, head):
     from app.core import native_role_preflight_v1 as roles
 
     if head == "0055":
@@ -680,8 +713,10 @@ async def _commit_once(prepared, pins: OwnerUpgradePinsV2, engine, expected):
                 try:
                     for setting in _OWNER_SETTINGS:
                         await connection.exec_driver_sql(setting)
+                    await _marker_safe_v2(connection, pins)
                     await connection.execute(_OWNER_LOCK)
                     await connection.exec_driver_sql(_LOCK_REVISION)
+                    await _marker_safe_v2(connection, pins)
                     from scripts import native_owner_upgrade_0057_v1 as shared
 
                     await shared._relations(connection, lock=True)
@@ -761,6 +796,7 @@ async def _independent_readback(prepared, pins, owner_dsn_file, ca_file, archive
                 try:
                     for setting in _READBACK_SETTINGS:
                         await connection.exec_driver_sql(setting)
+                    await retained_rows.heap_am.lock_native_owner_marker_v1(connection)
                     row = tuple((await connection.execute(_PROFILE_SQL)).one())
                     _checked_profile(row, fresh, "0056", read_only=True)
                     with redirect_stdout(io.StringIO()):

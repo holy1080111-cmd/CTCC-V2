@@ -119,6 +119,11 @@ class _Connection:
     async def execute(self, *args):
         self.events.append("ADVISORY_LOCK")
 
+    async def scalar(self, sql):
+        assert str(sql) == subject.retained_rows.heap_am.NATIVE_MARKER_AND_HEAP_SQL_V1
+        self.events.append("NATIVE_HEAP_METADATA")
+        return True
+
     async def run_sync(self, function, script):
         assert function is subject._migrate
         self.migrations += 1

@@ -8,6 +8,8 @@ from enum import Enum
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from scripts import native_owner_heap_am_v1 as heap_am
+
 ROW_ENCODING = "ctcc.owner.retained_row_sql_null_bitmap.v2"
 _NAME = re.compile(r"[a-z_][a-z0-9_]{0,62}\Z", re.ASCII)
 _HEX = re.compile(r"[0-9a-f]{64}\Z", re.ASCII)
@@ -15,29 +17,7 @@ _MAX_RELATIONS = 512
 # Closed native scalar column types used by the reviewed source schemas.
 # User domains/enums/composites/base types have their own OIDs and can execute
 # foreign output functions during to_jsonb; they are not an extensible fallback.
-_NATIVE_SCALAR_OIDS = frozenset(
-    {
-        16,
-        17,
-        20,
-        21,
-        23,
-        25,
-        26,  # pg_catalog.oid: reviewed55/56 publisher/observer/role identities.
-        114,
-        700,
-        701,
-        869,
-        1042,
-        1043,
-        1082,
-        1114,
-        1184,
-        1700,
-        2950,
-        3802,
-    }
-)
+_NATIVE_SCALAR_OIDS = heap_am.NATIVE_SCALAR_OIDS_V1
 
 
 class MarkerScopeV2(Enum):
@@ -91,13 +71,20 @@ def row_multiset_sql_v2(name, columns):
     )
 
 
-_LAYOUT_SQL = text("""SELECT c.relname::pg_catalog.text,c.oid::pg_catalog.int8,c.relkind::pg_catalog.text,c.relowner::pg_catalog.int8,
+_LAYOUT_SQL = text(
+    """SELECT c.relname::pg_catalog.text,c.oid::pg_catalog.int8,c.relkind::pg_catalog.text,c.relowner::pg_catalog.int8,
  c.relpersistence::pg_catalog.text,c.relrowsecurity,c.relforcerowsecurity,c.relispartition,c.relhassubclass,c.relhasrules,
+ c.relam::pg_catalog.int8,"""
+    + "("
+    + heap_am.ALL_PUBLIC_TABLES_HEAP_V1
+    + ")"
+    + """,
  COALESCE((SELECT pg_catalog.jsonb_agg(pg_catalog.jsonb_build_array(a.attname,a.atttypid::pg_catalog.int8,a.atttypmod,a.attnotnull,a.attcollation::pg_catalog.int8,a.attidentity::pg_catalog.text,a.attgenerated::pg_catalog.text)
   ORDER BY a.attnum) FROM pg_catalog.pg_attribute a WHERE a.attrelid=c.oid AND a.attnum>0 AND NOT a.attisdropped),'[]'::pg_catalog.jsonb)
  FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
  WHERE n.nspname='public' AND c.relkind IN ('r','p','m','f','v') ORDER BY c.relname COLLATE pg_catalog."C"
-""")
+"""
+)
 _SEQUENCES_SQL = text("""SELECT c.relname::pg_catalog.text,c.oid::pg_catalog.int8,c.relowner::pg_catalog.int8,
  pg_catalog.jsonb_build_array(s.seqtypid::pg_catalog.int8,s.seqstart,s.seqincrement,s.seqmax,s.seqmin,s.seqcache,s.seqcycle),
  COALESCE((SELECT pg_catalog.jsonb_agg(pg_catalog.jsonb_build_array(d.refobjid::pg_catalog.int8,d.refobjsubid,d.deptype::pg_catalog.text) ORDER BY d.refobjid,d.refobjsubid,d.deptype)
@@ -136,7 +123,7 @@ def _checked_layouts(rows, expected, owner_oid):
     layouts = []
     names = set()
     for row in rows:
-        _need(type(row) is tuple and len(row) == 11)
+        _need(type(row) is tuple and len(row) == 13)
         (
             name,
             oid,
@@ -148,6 +135,8 @@ def _checked_layouts(rows, expected, owner_oid):
             partition,
             children,
             rules,
+            access_method,
+            native_heap_catalog,
             columns,
         ) = row
         _need(
@@ -161,6 +150,9 @@ def _checked_layouts(rows, expected, owner_oid):
             and type(owner) is int
             and persistence == "p"
             and rls is forced is partition is children is rules is False
+            and type(access_method) is int
+            and access_method == 2
+            and native_heap_catalog is True
         )
         _need(type(columns) is list and 0 < len(columns) <= 1600)
         for column in columns:

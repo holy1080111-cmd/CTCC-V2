@@ -25,6 +25,8 @@ def _layouts():
             False,
             False,
             False,
+            2,
+            True,
             [["version_num", 1043, 36, True, 100, "", ""]],
         ),
         (
@@ -38,6 +40,8 @@ def _layouts():
             False,
             False,
             False,
+            2,
+            True,
             [["before", 3802, -1, False, 0, "", ""]],
         ),
     )
@@ -123,7 +127,12 @@ def test_original_relation_column_type_nullability_and_order_remain_in_snapshot(
         (7, True),
         (8, True),
         (9, True),
-        (10, []),
+        (10, 999999),
+        (10, True),
+        (11, False),
+        (11, None),
+        (11, 1),
+        (12, []),
     ],
 )
 def test_native_layout_rejects_hidden_rows_changed_identity_or_missing_columns(
@@ -133,6 +142,21 @@ def test_native_layout_rejects_hidden_rows_changed_identity_or_missing_columns(
     row[index] = value
     with pytest.raises(subject.RetainedRowsV2Refused):
         subject._checked_layouts((_layouts()[0], tuple(row)), _expected(), 30)
+
+
+def test_catalog_heap_flag_never_invokes_an_untrusted_truth_callback():
+    called = []
+
+    class Foreign:
+        def __bool__(self):
+            called.append(True)
+            return True
+
+    row = list(_layouts()[1])
+    row[11] = Foreign()
+    with pytest.raises(subject.RetainedRowsV2Refused):
+        subject._checked_layouts((_layouts()[0], tuple(row)), _expected(), 30)
+    assert called == []
 
 
 def test_saved_receipt_or_fake_connection_never_opens_a_row_read():

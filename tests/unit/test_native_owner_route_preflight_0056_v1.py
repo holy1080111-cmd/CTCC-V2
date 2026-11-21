@@ -438,6 +438,13 @@ async def test_actual_profile_is_readonly_and_checks_owner_tls_head_and_cluster(
             statements.append(statement)
             return SimpleNamespace(one=lambda: row)
 
+        async def scalar(self, statement):
+            from scripts import native_owner_heap_am_v1 as heap
+
+            assert str(statement) == heap.NATIVE_MARKER_AND_HEAP_SQL_V1
+            statements.append("NATIVE_HEAP_METADATA")
+            return True
+
     engine = SimpleNamespace(connect=lambda: Connection())
     if changed_index is None:
         assert await subject._read_one(engine, pins) == (

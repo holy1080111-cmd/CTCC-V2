@@ -301,6 +301,8 @@ def _prepare(
 
 
 async def _read_one(engine, pins: OwnerRoutePinsV1) -> tuple[str, int, int]:
+    from scripts.native_owner_heap_am_v1 import lock_native_owner_marker_v1
+
     async with engine.connect() as connection:
         transaction = await connection.begin()
         try:
@@ -313,6 +315,7 @@ async def _read_one(engine, pins: OwnerRoutePinsV1) -> tuple[str, int, int]:
             await connection.exec_driver_sql("SET LOCAL TIME ZONE 'UTC'")
             await connection.exec_driver_sql("SET LOCAL lock_timeout='1000ms'")
             await connection.exec_driver_sql("SET LOCAL statement_timeout='10000ms'")
+            await lock_native_owner_marker_v1(connection)
             row = tuple((await connection.execute(_PROFILE_SQL)).one())
             if (
                 len(row) != 12

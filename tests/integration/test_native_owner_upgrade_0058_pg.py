@@ -286,7 +286,7 @@ async def test_actual0057_shared_snapshot_rejects_user_domain_before_selecting_i
         await connection.exec_driver_sql(
             'ALTER TABLE public.audit_logs ALTER COLUMN "before" TYPE public.unreviewed_row_output USING "before"::public.unreviewed_row_output'
         )
-    with pytest.raises(subject.retained_rows.RetainedRowsV2Refused):
+    with pytest.raises(subject.retained_rows.heap_am.NativeOwnerStorageRefused):
         await subject._inventory(owner, pins)
 
 
@@ -321,3 +321,180 @@ async def test_actual0057_shared_snapshot_never_calls_active_public_json_overloa
         assert {row[0] for row in snapshot["rows"]} == {row[0] for row in relations} - {
             "alembic_version"
         }
+
+
+async def test_actual0057_shared_snapshot_rejects_custom_table_am_before_row_or_storage_read(
+    _actual57_owner_profile_lab,
+):
+    import re
+
+    from sqlalchemy import event
+
+    owner, _selected, pins, _script = _actual57_owner_profile_lab
+    name = "ctcc_unreviewed_heap_" + uuid4().hex[:12]
+    async with owner.begin() as connection:
+        # Safe lab alias uses the genuine builtin handler; no unknown binary
+        # is installed or executed. A matching handler cannot authorize an
+        # unreviewed access-method OID/name, even when native row types match.
+        await connection.exec_driver_sql(
+            'CREATE ACCESS METHOD "'
+            + name
+            + '" TYPE TABLE HANDLER pg_catalog.heap_tableam_handler'
+        )
+        await connection.exec_driver_sql(
+            'ALTER TABLE public.audit_logs SET ACCESS METHOD "' + name + '"'
+        )
+        assert (
+            await connection.scalar(
+                text(
+                    "SELECT c.relam<>2 FROM pg_catalog.pg_class c WHERE c.oid='public.audit_logs'::pg_catalog.regclass"
+                )
+            )
+            is True
+        )
+        assert (
+            await connection.scalar(text("SELECT count(*) FROM public.audit_logs")) == 0
+        )
+    opened = []
+
+    def watch(conn, cursor, statement, parameters, context, executemany):
+        if (
+            re.search(r"\bFROM\s+public\.", statement, re.IGNORECASE)
+            or "pg_relation_size(" in statement
+        ):
+            opened.append(True)
+
+    event.listen(owner.sync_engine, "before_cursor_execute", watch)
+    try:
+        async with owner.connect() as connection, connection.begin():
+            for sql in subject.parent.old._READBACK_SETTINGS:
+                await connection.exec_driver_sql(sql)
+            relations = await subject.parent._relations(connection, lock=False)
+            with pytest.raises(subject.retained_rows.RetainedRowsV2Refused):
+                await subject.retained_rows.snapshot_rows_v2(
+                    connection,
+                    relations,
+                    owner_oid=pins.route.owner_oid,
+                    marker_scope=subject.retained_rows.MarkerScopeV2.EXCLUDE_UPGRADE_MARKER,
+                    max_rows=subject.parent._MAX_ROWS,
+                    max_table_bytes=subject.parent._MAX_ROW_BYTES,
+                    max_total_bytes=subject.parent._MAX_ROW_BYTES
+                    * subject.parent._MAX_RELATIONS,
+                )
+    finally:
+        event.remove(owner.sync_engine, "before_cursor_execute", watch)
+    assert opened == []
+
+
+@pytest.mark.parametrize("foreign", ["index_am", "operator_class", "predicate"])
+async def test_actual0057_native_btree_closure_refuses_before_any_index_callback_or_app_read(
+    _actual57_owner_profile_lab, foreign
+):
+    """Natural DDL on an empty table; no foreign binary or system-row edit."""
+    import re
+
+    from sqlalchemy import event
+
+    owner, _selected, pins, _script = _actual57_owner_profile_lab
+    nonce = uuid4().hex[:12]
+    method = "ctcc_declared_btree_" + nonce
+    opclass = "ctcc_declared_text_ops_" + nonce
+    canary = "ctcc_declared_compare_" + nonce
+    async with owner.begin() as connection:
+        assert (
+            await connection.scalar(text("SELECT count(*) FROM public.audit_logs")) == 0
+        )
+        if foreign == "index_am":
+            # A new AM identity is refused even with the genuine builtin
+            # btree handler and comparator. No unknown shared library exists.
+            await connection.exec_driver_sql(
+                'CREATE ACCESS METHOD "'
+                + method
+                + '" TYPE INDEX HANDLER pg_catalog.bthandler'
+            )
+            comparator = "pg_catalog.bttextcmp"
+        else:
+            method = "btree"
+            await connection.exec_driver_sql(
+                'CREATE FUNCTION public."'
+                + canary
+                + '"(text,text) RETURNS integer LANGUAGE plpgsql IMMUTABLE STRICT AS $$ '
+                "BEGIN RAISE EXCEPTION 'declared_index_callback_must_not_run'; END $$"
+            )
+            comparator = 'public."' + canary + '"'
+            savepoint = await connection.begin_nested()
+            with pytest.raises(DBAPIError) as called:
+                await connection.exec_driver_sql("SELECT " + comparator + "('a','b')")
+            assert called.value.orig.sqlstate == "P0001"
+            await savepoint.rollback()
+        if foreign == "predicate":
+            await connection.exec_driver_sql(
+                'CREATE INDEX "ctcc_declared_index_'
+                + nonce
+                + '" ON public.audit_logs(actor) WHERE '
+                + comparator
+                + "(actor::pg_catalog.text,'x')=0"
+            )
+        else:
+            await connection.exec_driver_sql(
+                'CREATE OPERATOR CLASS public."'
+                + opclass
+                + '" FOR TYPE text USING "'
+                + method
+                + '" AS '
+                "OPERATOR 1 pg_catalog.<(text,text), OPERATOR 2 pg_catalog.<=(text,text), "
+                "OPERATOR 3 pg_catalog.=(text,text), OPERATOR 4 pg_catalog.>=(text,text), "
+                "OPERATOR 5 pg_catalog.>(text,text), FUNCTION 1 "
+                + comparator
+                + "(text,text)"
+            )
+            await connection.exec_driver_sql(
+                'CREATE INDEX "ctcc_declared_index_'
+                + nonce
+                + '" ON public.audit_logs USING "'
+                + method
+                + '"(actor public."'
+                + opclass
+                + '")'
+            )
+        assert (
+            await connection.scalar(
+                text(
+                    "SELECT count(*) FROM pg_catalog.pg_index i JOIN pg_catalog.pg_class c ON c.oid=i.indexrelid WHERE c.relname=:name"
+                ),
+                {"name": "ctcc_declared_index_" + nonce},
+            )
+            == 1
+        )
+    opened = []
+
+    def watch(conn, cursor, statement, parameters, context, executemany):
+        if re.search(r"\bFROM\s+public\.", statement, re.IGNORECASE) or any(
+            token in statement
+            for token in ("pg_relation_size(", "pg_get_indexdef(", "pg_get_expr(")
+        ):
+            opened.append(True)
+
+    event.listen(owner.sync_engine, "before_cursor_execute", watch)
+    try:
+        with pytest.raises(subject.retained_rows.heap_am.NativeOwnerStorageRefused):
+            await subject._inventory(owner, pins)
+        # Direct shared codec does not depend on an owner wrapper for safety.
+        async with owner.connect() as connection, connection.begin():
+            for sql in subject.parent.old._READBACK_SETTINGS:
+                await connection.exec_driver_sql(sql)
+            relations = await subject.parent._relations(connection, lock=False)
+            with pytest.raises(subject.retained_rows.RetainedRowsV2Refused):
+                await subject.retained_rows.snapshot_rows_v2(
+                    connection,
+                    relations,
+                    owner_oid=pins.route.owner_oid,
+                    marker_scope=subject.retained_rows.MarkerScopeV2.EXCLUDE_UPGRADE_MARKER,
+                    max_rows=subject.parent._MAX_ROWS,
+                    max_table_bytes=subject.parent._MAX_ROW_BYTES,
+                    max_total_bytes=subject.parent._MAX_ROW_BYTES
+                    * subject.parent._MAX_RELATIONS,
+                )
+    finally:
+        event.remove(owner.sync_engine, "before_cursor_execute", watch)
+    assert opened == []
