@@ -19,6 +19,7 @@ from scripts.evidence_json import read_evidence_json
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = "ctcc.canonical0055.full_catalog_data.v1"
 RECEIPT_SCHEMA = "ctcc.canonical0055.full_catalog_reference_receipt.v1"
+FAILED_SCHEMA = "ctcc.canonical0055.failed_capture_data.v1"
 MODULE = "tests/integration/test_canonical0055_catalog_reference_v1_pg.py"
 CASE = (
     MODULE.removesuffix(".py").replace("/", "."),
@@ -26,6 +27,10 @@ CASE = (
 )
 FILES = tuple(
     "test-results/canonical0055-" + suffix + ".json"
+    for suffix in ("raw", "native-owner", "receipt")
+)
+FAILED_FILES = tuple(
+    "test-results/FAILED_CAPTURE_RAW-canonical0055-" + suffix + ".json"
     for suffix in ("raw", "native-owner", "receipt")
 )
 ENV = "CTCC_DEVVAL_NATIVE_STORAGE_DIAGNOSTIC_DIR"
@@ -129,6 +134,7 @@ def _document(raw, native, receipt):
     physical = receipt["physical"]
     _need(
         role["name"] == role["current_user"] == role["session_user"] == profile["owner"]
+        and role["setting"] == profile["role"]
         and role["superuser"] is True
         and role["login"] is True
         and type(role["oid"]) is int
@@ -174,8 +180,10 @@ def _document(raw, native, receipt):
             )
         )
     )
-    # The frozen native55 role SQL reports COUNT(*), not EXISTS.
-    _need(type(role["membership"]) is int and role["membership"] == 0)
+    # Frozen0054._wrap, inherited unchanged by55, uses EXISTS(pg_has_role
+    # MEMBER): SUPER has semantic membership even with zero physical edges.
+    # The independent pg_auth_members COUNTs above remain exact integer zero.
+    _need(role["membership"] is True and role["create"] is True)
     entries = raw["entries"]
     _need(type(entries) is list and 0 < len(entries) <= 40000)
     _need(
@@ -242,11 +250,10 @@ def _document(raw, native, receipt):
     )
 
 
-def record_if_requested_v1(raw, native, receipt):
-    _document(raw, native, receipt)
+def _record_context_v1(receipt):
     directory = os.environ.get(ENV)
     if directory is None:
-        return
+        return None, receipt
     root = Path(directory)
     _need(
         root == Path("/validation-results") and root.is_dir() and not root.is_symlink()
@@ -268,12 +275,50 @@ def record_if_requested_v1(raw, native, receipt):
         producer_sha256=files[_PRODUCER]["sha256"],
         native_source_sha256=files[_NATIVE_MODULE]["sha256"],
     )
-    _write_files_v1(root, (raw, native, receipt))
+    return root, receipt
+
+
+def record_if_requested_v1(raw, native, receipt):
+    # The fixed actual case reaches this function only after real native55
+    # baseline admission and complete typed capture. Bind its source context
+    # before the new codec so an honest refusal can retain diagnostic DATA.
+    root, receipt = _record_context_v1(receipt)
+    try:
+        _document(raw, native, receipt)
+    except Exception as error:
+        if root is not None:
+            failed = dict(
+                receipt,
+                schema=FAILED_SCHEMA,
+                attempted_reference_schema=RECEIPT_SCHEMA,
+                status="FAILED_CAPTURE_RAW",
+                stage="after_native55_admission_before_reference_codec",
+                codec_error_type=type(error).__name__,
+                diagnostic_only=True,
+                accepted_reference=False,
+                schema_admission=False,
+                startup_admission=False,
+                paper_admission=False,
+                execution_authority=False,
+                saved_reference_is_authority=False,
+                expected_full_typed_catalog_query_sha256=digest(
+                    catalog_query_v1().encode("utf-8")
+                ),
+            )
+            _write_exact_files_v1(root, FAILED_FILES, (raw, native, failed))
+        raise
+    if root is not None:
+        _write_files_v1(root, (raw, native, receipt))
 
 
 def _write_files_v1(root, documents):
+    _write_exact_files_v1(root, FILES, documents)
+
+
+def _write_exact_files_v1(root, names, documents):
+    _need(type(names) is tuple and names in (FILES, FAILED_FILES))
     _need(type(documents) is tuple and len(documents) == len(FILES))
-    for name, value in zip(FILES, documents, strict=True):
+    for name, value in zip(names, documents, strict=True):
         payload = canonical(value)
         _need(0 < len(payload) <= MAX_BYTES)
         target = root / Path(name).name

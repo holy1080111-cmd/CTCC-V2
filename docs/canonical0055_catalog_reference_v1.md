@@ -41,3 +41,24 @@ The files are reference DATA for later review and Paper observer development.
 They install no literal template and grant no schema, startup, Paper, trading
 or saved-receipt authority. The new actual SQL case remains pending until the
 matching archived diagnostic executes and is independently verified.
+
+The role fields have different frozen SQL meanings. Inherited
+`collector_current_0054_catalog_v1._wrap` emits `role.membership` with
+`EXISTS(...pg_has_role(...,'MEMBER'))`, so the required SUPER maintenance owner
+has exact boolean `true`. Its `role.create` privilege expression is also true.
+These semantic privileges do not mean there are physical membership edges.
+The complete raw `actor_physical.membership_count` and independently queried
+`physical.owner_memberships` are `COUNT(*)` values and must each be exact
+integer zero. Booleans, strings and floats never substitute for either count.
+Role OID/names, login/SUPER flags and the four explicit negative role flags
+retain their original native SQL types. The profile strings, TLS boolean,
+seven-flag projection order, raw catalog entry triples, TOAST relation kinds
+and original native55 observation schema come from their unchanged source SQL.
+
+After actual native55 baseline admission and complete typed capture, an export
+codec refusal retains a separate `FAILED_CAPTURE_RAW-canonical0055-*.json`
+bundle when the fixed diagnostic output context is configured. Its receipt
+retains actual source/query hashes, physical metadata and native observation,
+but has a distinct failure schema, `diagnostic_only=true` and
+`accepted_reference=false`. The test still fails. These files are never read
+as the formal three-file reference; renaming them cannot promote their receipt.

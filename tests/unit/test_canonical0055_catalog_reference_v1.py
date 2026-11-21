@@ -64,13 +64,15 @@ def _synthetic_documents():
             "name": owner,
             "current_user": owner,
             "session_user": owner,
+            "setting": "none",
             "login": True,
             "superuser": True,
             "createdb": False,
             "createrole": False,
             "replication": False,
             "bypassrls": False,
-            "membership": 0,
+            "membership": True,
+            "create": True,
         },
     }
     receipt = {
@@ -155,8 +157,8 @@ def test_real_filesystem_export_and_archived_readback_preserve_data_only(tmp_pat
     assert originals == [(tmp_path / name).read_bytes() for name in reference.FILES]
 
 
-@pytest.mark.parametrize("membership", [False, True, 1, None, 0.0, "0"])
-def test_native55_membership_is_exact_sql_count_not_bool_or_coerced_zero(
+@pytest.mark.parametrize("membership", [False, 0, 1, None, 0.0, "true"])
+def test_native55_super_semantic_membership_is_exact_true_not_physical_count(
     tmp_path, membership
 ):
     raw, native, receipt, source, files = _synthetic_documents()
@@ -165,6 +167,76 @@ def test_native55_membership_is_exact_sql_count_not_bool_or_coerced_zero(
     _publish(tmp_path, (raw, native, receipt))
     with pytest.raises(ValueError, match="canonical0055_reference_evidence_invalid"):
         reference.verify_reference_v1(tmp_path, source, files)
+
+
+@pytest.mark.parametrize("count", [False, True, 1, None, 0.0, "0"])
+@pytest.mark.parametrize("field", ["actor", "physical"])
+def test_physical_membership_edge_counts_are_exact_integer_zero(tmp_path, count, field):
+    raw, native, receipt, source, files = _synthetic_documents()
+    if field == "actor":
+        raw["actor_physical"]["membership_count"] = count
+        receipt["raw_sha256"] = reference.digest(reference.canonical(raw))
+    else:
+        receipt["physical"]["owner_memberships"] = count
+    _publish(tmp_path, (raw, native, receipt))
+    with pytest.raises(ValueError, match="canonical0055_reference_evidence_invalid"):
+        reference.verify_reference_v1(tmp_path, source, files)
+
+
+def test_failed_codec_retains_separate_data_and_never_becomes_formal_reference(
+    tmp_path, monkeypatch
+):
+    # Only the container artifact-mount/source-envelope seam is synthetic.
+    # The actual case performs native55 admission before this same exporter.
+    raw, native, receipt, source, files = _synthetic_documents()
+    native["role"]["membership"] = 0
+    receipt["native_owner_sha256"] = reference.digest(reference.canonical(native))
+    folder = tmp_path / "test-results"
+    folder.mkdir()
+    monkeypatch.setattr(reference, "_record_context_v1", lambda value: (folder, value))
+    with pytest.raises(ValueError, match="canonical0055_reference_evidence_invalid"):
+        reference.record_if_requested_v1(raw, native, receipt)
+    assert all(not (tmp_path / name).exists() for name in reference.FILES)
+    captured = [
+        json.loads((tmp_path / name).read_bytes()) for name in reference.FAILED_FILES
+    ]
+    assert captured[:2] == [raw, native]
+    failed = captured[2]
+    assert failed["schema"] == reference.FAILED_SCHEMA
+    assert failed["status"] == "FAILED_CAPTURE_RAW"
+    assert failed["accepted_reference"] is False and failed["diagnostic_only"] is True
+    assert failed["source_commit"] == source["commit"]
+    assert failed["physical"] == receipt["physical"]
+    assert failed["native55_observation"] == receipt["native55_observation"]
+    assert failed["producer_sha256"] == files[reference._PRODUCER]["sha256"]
+    # Repair only this declared synthetic input's original bad field, so the
+    # negative below specifically proves failure-purpose refusal, not another
+    # membership rejection. No actual captured artifact is retagged/repaired.
+    repaired_native = copy.deepcopy(native)
+    repaired_native["role"]["membership"] = True
+    repaired_receipt = dict(
+        failed,
+        native_owner_sha256=reference.digest(reference.canonical(repaired_native)),
+    )
+    reference._document(
+        raw, repaired_native, dict(repaired_receipt, schema=reference.RECEIPT_SCHEMA)
+    )
+    for formal_name, value in zip(
+        reference.FILES, (raw, repaired_native, repaired_receipt), strict=True
+    ):
+        (tmp_path / formal_name).write_bytes(reference.canonical(value))
+    with pytest.raises(ValueError, match="canonical0055_reference_evidence_invalid"):
+        reference.verify_reference_v1(tmp_path, source, files)
+
+
+def test_successful_codec_never_writes_failed_capture_bundle(tmp_path, monkeypatch):
+    raw, native, receipt, source, files = _synthetic_documents()
+    folder = tmp_path / "test-results"
+    folder.mkdir()
+    monkeypatch.setattr(reference, "_record_context_v1", lambda value: (folder, value))
+    reference.record_if_requested_v1(raw, native, receipt)
+    assert all(not (tmp_path / name).exists() for name in reference.FAILED_FILES)
+    assert reference.verify_reference_v1(tmp_path, source, files)["admission"] == "DENY"
 
 
 @pytest.mark.parametrize(
