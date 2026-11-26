@@ -20,6 +20,17 @@ class NativeOwnerReviewedSource0056Error(ValueError):
     """Fixed refusal without source or deployment path details."""
 
 
+def _installed_file_pin(entry: os.stat_result) -> tuple[int, ...]:
+    return (
+        entry.st_dev,
+        entry.st_ino,
+        entry.st_mode,
+        entry.st_size,
+        entry.st_mtime_ns,
+        getattr(entry, "st_file_attributes", 0),
+    )
+
+
 def require_exact_installed_owner_source_0056_v1(
     source: Path,
     pins: OwnerUpgradePinsV1,
@@ -63,6 +74,9 @@ def require_exact_installed_source_0056_v1(
         raw = capture_hermetic_archive(source_archive_file, source_archive_sha256)
         with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as archive:
             files = archive_files(archive)
+            member_sizes = {
+                item.name: item.size for item in archive.getmembers() if item.isfile()
+            }
         installed = {
             path.relative_to(source).as_posix()
             for path in manifest.source_files(source)
@@ -72,17 +86,36 @@ def require_exact_installed_source_0056_v1(
         for name, expected in files.items():
             path = source / name
             mode = path.lstat()
+            size = member_sizes[name]
             if (
                 not stat.S_ISREG(mode.st_mode)
                 or getattr(mode, "st_file_attributes", 0) & 1024
-                or mode.st_size > 1_048_576
+                or mode.st_size != size
                 or os.name == "posix"
                 and bool(mode.st_mode & 0o111) != expected["executable"]
             ):
                 raise ValueError
+            pin = _installed_file_pin(mode)
             with path.open("rb") as opened:
-                value = opened.read(1_048_577)
-            if len(value) != mode.st_size or sha(value) != expected["sha256"]:
+                before_read = os.fstat(opened.fileno())
+                if _installed_file_pin(before_read) != pin:
+                    raise ValueError
+                value = opened.read(size + 1)
+                after_read = os.fstat(opened.fileno())
+                # Windows path and descriptor stats can report distinct
+                # creation-time precision. Check stability within each view.
+                if (
+                    _installed_file_pin(after_read) != pin
+                    or after_read.st_ctime_ns != before_read.st_ctime_ns
+                ):
+                    raise ValueError
+            path_after = path.lstat()
+            if (
+                _installed_file_pin(path_after) != pin
+                or path_after.st_ctime_ns != mode.st_ctime_ns
+                or len(value) != size
+                or sha(value) != expected["sha256"]
+            ):
                 raise ValueError
     except Exception:  # noqa: BLE001 -- preserve a fixed operator-facing denial
         raise NativeOwnerReviewedSource0056Error(
