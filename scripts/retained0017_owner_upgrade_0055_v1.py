@@ -701,8 +701,10 @@ async def _after(connection, pins, before, *, read_only):
     # This is the existing genuine source55 native catalog/baseline, not an
     # observed rehearsal substituted for an independent expected definition.
     value = await connection.scalar(text(target55.OWNER_CATALOG_SQL))
-    observed = target55._observed(
-        value, owner_mode=True, read_only="on" if read_only else "off"
+    observed = (
+        target55._observe_retained_postcommit_owner_catalog_v1(value)
+        if read_only
+        else target55._observed(value, owner_mode=True, read_only="off")
     )
     _need(observed["native_definitions_sha256"] == target55._required_baseline())
     layouts = await _layouts(connection, pins, expected_names=_target_tables())

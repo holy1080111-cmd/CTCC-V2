@@ -101,6 +101,21 @@ class RetainedRuntimeProviderPending(RetainedBootstrapRefused):
     pass
 
 
+class RetainedBootstrapCommitUnknown(RetainedBootstrapRefused):
+    status = "COMMIT_UNKNOWN_DO_NOT_RETRY"
+
+
+class RetainedBootstrapReadbackRequired(RetainedBootstrapRefused):
+    status = "COMMITTED_READBACK_REQUIRED"
+
+
+_FRESH_TERMINAL_ERRORS = (
+    RetainedBootstrapCommitUnknown,
+    RetainedBootstrapReadbackRequired,
+)
+_FRESH_SUCCESS_STATUS = "FRESH_CANONICAL17_COLD_TO_STOPPED0055_VERIFIED"
+
+
 def _need(value, code="retained_pg_bootstrap_refused"):
     if value is not True:
         raise RetainedBootstrapRefused(code) from None
@@ -2871,6 +2886,17 @@ def _require_child_runtime_visibility_v1(rootfs, runtime, vendor_manifest):
         ) from None
 
 
+def _fresh_failure_stdout_v1(status):
+    return _canonical({"status": status, "execution_authority": False}) + b"\n"
+
+
+def _raise_fresh_supervisor_terminal_v1(outcome):
+    if outcome.returncode == 2 and outcome.stderr == b"":
+        for error in _FRESH_TERMINAL_ERRORS:
+            if outcome.stdout == _fresh_failure_stdout_v1(error.status):
+                raise error(error.status) from None
+
+
 def _run_fixed_supervisor_v1(request, files, source, origin):
     """One fixed genuine-runtime launcher, no external proof/listener adapter.
 
@@ -3006,8 +3032,12 @@ def _run_fixed_supervisor_v1(request, files, source, origin):
         common,
         BOOTSTRAP_SECONDS + OWNER_SECONDS + CLEANUP_SECONDS,
     )
-    _write_private(outer / "supervisor.stdout.private", outcome.stdout)
-    _write_private(outer / "supervisor.stderr.private", outcome.stderr)
+    try:
+        _write_private(outer / "supervisor.stdout.private", outcome.stdout)
+        _write_private(outer / "supervisor.stderr.private", outcome.stderr)
+    finally:
+        if origin is _Origin.FRESH_FIXTURE:
+            _raise_fresh_supervisor_terminal_v1(outcome)
     _need(
         outcome.returncode == 0
         and len(outcome.stdout) <= 65536
@@ -3016,6 +3046,8 @@ def _run_fixed_supervisor_v1(request, files, source, origin):
     )
     result = json.loads(outcome.stdout)
     _need(type(result) is dict and result.get("execution_authority") is False)
+    if origin is _Origin.FRESH_FIXTURE:
+        _need(result.get("status") == _FRESH_SUCCESS_STATUS)
     return result
 
 
@@ -3055,31 +3087,48 @@ async def _execute_owned_request_v1(request, files):
 async def _execute_fresh_acceptance_v1(resources, source):
     from scripts import retained0017_owner_upgrade_0055_v1 as owner_api
 
-    async with _create_owned_fresh_canonical17_cold_v1(resources, source) as fresh:
-        async with _begin_owned_fresh_fixture_pg_v1(fresh) as (owned, pins):
-            result = await owner_api._exercise_owned_fresh_0017_to_0055_v1(
-                owned, pins, source_archive_file=Path(resources.source_archive_file)
+    committed = False
+    try:
+        async with _create_owned_fresh_canonical17_cold_v1(resources, source) as fresh:
+            async with _begin_owned_fresh_fixture_pg_v1(fresh) as (owned, pins):
+                result = await owner_api._exercise_owned_fresh_0017_to_0055_v1(
+                    owned, pins, source_archive_file=Path(resources.source_archive_file)
+                )
+                committed = True
+            completed = _COMPLETED_DATA.pop(id(owned), None)
+            _need(
+                type(completed) is dict
+                and completed["origin"] == _Origin.FRESH_FIXTURE.value
             )
-        completed = _COMPLETED_DATA.pop(id(owned), None)
-        _need(
-            type(completed) is dict
-            and completed["origin"] == _Origin.FRESH_FIXTURE.value
-        )
-        _need(
-            completed["phase_before_close"] == _Phase.READBACK_ONLY.value
-            and completed["commit_attempts"] == 1
-            and completed["journal_steps"] == 7
-        )
-        _need(
-            all(
-                completed[name] is True
-                for name in (
-                    "cold_source_unchanged_verified",
-                    "distinct_working_copy_verified",
-                    "owned_server_fast_shutdown_verified",
+            _need(
+                completed["phase_before_close"] == _Phase.READBACK_ONLY.value
+                and completed["commit_attempts"] == 1
+                and completed["journal_steps"] == 7
+            )
+            _need(
+                all(
+                    completed[name] is True
+                    for name in (
+                        "cold_source_unchanged_verified",
+                        "distinct_working_copy_verified",
+                        "owned_server_fast_shutdown_verified",
+                    )
                 )
             )
-        )
+    except owner_api.Retained0017UpgradeCommitUnknown:
+        raise RetainedBootstrapCommitUnknown(
+            "retained_pg_fresh_commit_unknown_do_not_retry"
+        ) from None
+    except owner_api.Retained0017UpgradeReadbackRequired:
+        raise RetainedBootstrapReadbackRequired(
+            "retained_pg_fresh_committed_readback_required"
+        ) from None
+    except BaseException:
+        if committed:
+            raise RetainedBootstrapReadbackRequired(
+                "retained_pg_fresh_committed_readback_required"
+            ) from None
+        raise
     return {
         **result,
         **{
@@ -3088,7 +3137,7 @@ async def _execute_fresh_acceptance_v1(resources, source):
             if name not in ("phase_before_close", "journal_steps")
         },
         "schema": "ctcc.retained_pg.fresh_acceptance_result.v1",
-        "status": "FRESH_CANONICAL17_COLD_TO_STOPPED0055_VERIFIED",
+        "status": _FRESH_SUCCESS_STATUS,
         "preserved_pg_inputs_read": 0,
     }
 
@@ -3110,6 +3159,8 @@ def _supervisor_fresh_main_v1():
     except BaseException as failure:  # noqa: BLE001 -- fixed DATA refusal; complete diagnostics remain private.
         import traceback
 
+        error = type(failure)
+        status = error.status if error in _FRESH_TERMINAL_ERRORS else "REFUSED"
         try:
             _write_private(
                 Path("/run/fresh-acceptance-exception-chain.private.json"),
@@ -3120,8 +3171,9 @@ def _supervisor_fresh_main_v1():
                 traceback.format_exc().encode("utf-8"),
             )
         except BaseException:  # noqa: BLE001 -- absent diagnostics cannot turn refusal into acceptance.
-            return 2
-        print('{"status":"REFUSED","execution_authority":false}')
+            if status == "REFUSED":
+                return 2
+        print(_fresh_failure_stdout_v1(status).decode("ascii"), end="")
         return 2
 
 

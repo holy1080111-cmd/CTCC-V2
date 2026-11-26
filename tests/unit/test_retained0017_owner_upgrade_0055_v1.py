@@ -474,6 +474,32 @@ def test_rehearsal_sql_does_not_bind_pg_node_tree_field_tokens():
     assert str(statement).count(" :funcresulttype ") == 6
 
 
+def test_native55_retained_readback_pins_private_owner_snapshot_isolation(monkeypatch):
+    calls = []
+
+    def observe(value, **policy):
+        calls.append(policy)
+        return value
+
+    target = subject.target55
+    monkeypatch.setattr(target, "_observe", observe)
+    marker = object()
+    assert target._observe_retained_postcommit_owner_catalog_v1(marker) is marker
+    assert target.observe_actual_owner_catalog(marker) is marker
+    assert target.observe_actual_writer_catalog(marker, read_only="on") is marker
+    assert calls == [
+        {"owner_mode": True, "read_only": "on", "isolation": "repeatable read"},
+        {"owner_mode": True, "read_only": "on", "isolation": "read committed"},
+        {"owner_mode": False, "read_only": "on", "isolation": "read committed"},
+    ]
+    for owner, read_only in ((True, "off"), (False, "on")):
+        with pytest.raises(target.Current0055CatalogError):
+            target._observed(
+                marker, owner_mode=owner, read_only=read_only, _retained_postcommit=True
+            )
+    assert len(calls) == 3
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("phase", (1, 2))
 async def test_every_precommit_rehearsal_or_final_failure_rolls_back_without_commit(

@@ -13,6 +13,26 @@ import pytest
 from scripts import retained_pg_bootstrap_custody_v1 as subject
 
 
+@pytest.mark.parametrize("error", subject._FRESH_TERMINAL_ERRORS)
+def test_fresh_supervisor_carries_only_exact_terminal_failure_frame(error):
+    stdout = subject._fresh_failure_stdout_v1(error.status)
+    with pytest.raises(error, match=error.status):
+        subject._raise_fresh_supervisor_terminal_v1(
+            SimpleNamespace(returncode=2, stdout=stdout, stderr=b"")
+        )
+    for outcome in (
+        SimpleNamespace(returncode=0, stdout=stdout, stderr=b""),
+        SimpleNamespace(returncode=2, stdout=stdout, stderr=b"private"),
+        SimpleNamespace(returncode=2, stdout=stdout + b"private", stderr=b""),
+        SimpleNamespace(
+            returncode=2,
+            stdout=subject._fresh_failure_stdout_v1("REFUSED"),
+            stderr=b"",
+        ),
+    ):
+        assert subject._raise_fresh_supervisor_terminal_v1(outcome) is None
+
+
 def test_private_maintenance_config_pins_lock_capacity_and_existing_limits(
     tmp_path, monkeypatch
 ):
