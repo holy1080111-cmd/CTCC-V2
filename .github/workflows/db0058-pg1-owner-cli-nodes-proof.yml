@@ -1,0 +1,95 @@
+name: Source58 two exact actual PostgreSQL owner CLI nodes
+
+on:
+  push:
+    branches: [work/db0058-pg1-owner-cli-nodes-proof]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  actual-pg1-owner-cli-nodes:
+    if: github.ref == 'refs/heads/work/db0058-pg1-owner-cli-nodes-proof'
+    name: Actual supported and demoted owner CLI checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact validation topic
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify both exact historical CLI test functions and run them on native TLS
+        shell: bash
+        run: |
+          set -euo pipefail
+          subject=16e4f88bbc9f2f37a89614b4362b5378dd727a4d
+          commit=$(git rev-parse HEAD)
+          test "$commit" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD^)" = "$subject"
+          test "$(git rev-parse "$subject^{tree}")" = '02906197543669fb5c278b57bf4927f7b1bfc581'
+          test "$(git show "$subject:MANIFEST.sha256" | sha256sum | cut -d ' ' -f 1)" = '75f6c177a4442cbd86f77b35d70256838aee0e961f45c83c3baee4108224796b'
+          diff -u <(printf '%s\n' \
+            .github/workflows/db0058-pg1-owner-cli-nodes-proof.yml MANIFEST.sha256 \
+            scripts/run_retained0017_reference_probe_v1.py tests/integration/test_gate3_fitted_candidate_custody_pg.py) \
+            <(git diff --name-only "$subject" "$commit")
+          python3 scripts/manifest.py --check
+
+          subject_archive="$RUNNER_TEMP/ctcc-subject.tar"
+          git -c core.autocrlf=false -c core.eol=lf archive --format=tar --output="$subject_archive" "$subject"
+          python3 -B - "$subject" "$subject_archive" <<'PY'
+          import ast
+          import hashlib
+          import json
+          import os
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          subject, archive = sys.argv[1:]
+          test_file = "tests/integration/test_gate3_fitted_candidate_custody_pg.py"
+          names = ('test_actual0056_reviewed_superowner_upgrades_0055_once_with_fresh_readback', 'test_actual0056_demoted_owner_refuses_before_ddl_with_unchanged_0055')
+          def test_bodies(raw):
+              lines = raw.splitlines(keepends=True)
+              return {node.name:b"".join(lines[node.lineno-1:node.end_lineno])
+                       for node in ast.parse(raw).body
+                       if isinstance(node, ast.AsyncFunctionDef) and node.name in names}
+          old = test_bodies(subprocess.check_output(["git", "show", subject+":"+test_file]))
+          assert set(old) == set(names) and old == test_bodies(Path(test_file).read_bytes())
+          for path in ("tests/native_owner55_upgrade_lab_v2.py", "scripts/native_owner_upgrade_0056_v1.py"):
+              assert subprocess.check_output(["git", "show", subject+":"+path]) == Path(path).read_bytes()
+          with Path(archive).open("rb") as stream:
+              archive_sha256 = hashlib.file_digest(stream, "sha256").hexdigest()
+          output = {"schema":"ctcc.source58.pg1_owner_cli_nodes_subject.v1",
+                     "subject_commit":subject,"subject_archive_sha256":archive_sha256,
+                     "workflow_commit":os.environ["GITHUB_SHA"],
+                     "test_function_bytes_sha256":{name:hashlib.sha256(value).hexdigest()
+                                                   for name,value in old.items()},
+                     "full_postgres_component_acceptance":False,"execution_authority":False}
+          with Path(os.environ["RUNNER_TEMP"],"ctcc-pg1-cli-node-source.json").open("x",encoding="utf-8") as stream:
+              json.dump(output,stream,sort_keys=True)
+              stream.write("\n")
+          PY
+          tree=$(git rev-parse 'HEAD^{tree}')
+          archive="$RUNNER_TEMP/ctcc-source.tar"
+          git -c core.autocrlf=false -c core.eol=lf archive --format=tar --output="$archive" "$commit"
+          digest=$(sha256sum "$archive" | cut -d ' ' -f 1)
+          options=(--archive "$archive" --archive-sha256 "$digest" --commit "$commit" --tree "$tree"
+            --pg1-owner-cli-nodes --output "$RUNNER_TEMP/ctcc-pg1-owner-cli-nodes")
+          python3 -m scripts.run_retained0017_reference_probe_v1 "${options[@]}"
+          python3 -m scripts.run_retained0017_reference_probe_v1 "${options[@]}" --verify-only
+      - name: Preserve exact source, case results and disposable cleanup
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ctcc-pg1-owner-cli-nodes-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/ctcc-source.tar
+            ${{ runner.temp }}/ctcc-subject.tar
+            ${{ runner.temp }}/ctcc-pg1-cli-node-source.json
+            ${{ runner.temp }}/ctcc-pg1-owner-cli-nodes/*.json
+            ${{ runner.temp }}/ctcc-pg1-owner-cli-nodes/*.log
+            ${{ runner.temp }}/ctcc-pg1-owner-cli-nodes/test-results/*.xml
+          if-no-files-found: error
+          retention-days: 30

@@ -346,7 +346,42 @@ async def _actual0055_reviewed_cli_lab(tmp_path):
     """Build one disposable DB0055 with the real owner and exact three-role ACL."""
     url, tls = _isolated_tls_database_config()
     identity, files, files_raw = fitted_measurement._read_hermetic_inputs()
-    source = fitted_measurement.source_identity(identity, files, files_raw)
+    if (
+        identity.get("runner_contract")
+        == "ctcc.source58.pg1_owner_cli_nodes_identity.v1"
+    ):
+        from scripts import run_retained0017_reference_probe_v1 as admitted
+
+        probe = admitted._exact_cases_probe(SimpleNamespace(pg1_owner_cli_nodes=True))
+        assert probe is not None and len(probe.nodes) == 2
+        assert identity["schema"] == identity["runner_contract"] == probe.schema
+        assert identity["validation_scope"] == probe.scope
+        assert identity["suite"] == probe.suite
+        assert identity["source_contract_head"] == "0058"
+        assert identity["database_target"] == "0055_and_0056"
+        assert identity["build_context"] == "admitted_archive_bytes_v1"
+        assert identity["hermetic_regression"] == "NOT_RUN"
+        assert (
+            identity["full_suite_acceptance"] is identity["trading_acceptance"] is False
+        )
+        assert identity["host_env"] is identity["host_credentials"] is False
+        assert type(identity["external_order_writes"]) is int
+        assert identity["external_order_writes"] == 0
+        assert fitted_measurement._canonical(files) == files_raw
+        assert sha(files_raw) == identity["source_files_sha256"]
+        assert files["MANIFEST.sha256"]["sha256"] == identity["manifest_sha256"]
+        assert files[admitted.RUNNER]["sha256"] == identity["runner_sha256"]
+        assert (
+            sha((_SOURCE_ROOT / "MANIFEST.sha256").read_bytes())
+            == identity["manifest_sha256"]
+        )
+        assert (
+            sha((_SOURCE_ROOT / admitted.RUNNER).read_bytes())
+            == identity["runner_sha256"]
+        )
+        source = {"manifest_sha256": identity["manifest_sha256"]}
+    else:
+        source = fitted_measurement.source_identity(identity, files, files_raw)
     assert source["manifest_sha256"] == os.environ.get(
         "CTCC_DEVVAL_CUSTODY_TEST_SOURCE_MANIFEST_SHA256"
     )
