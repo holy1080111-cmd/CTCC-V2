@@ -103,7 +103,7 @@ async def _canonical_upgrade17_lab(tmp_path):
         archive = Path("/ctcc-admitted-test-source.tar")
         if (
             identity.get("runner_contract")
-            == "ctcc.source58.retained17_preload_tls_probe.v1"
+            == "ctcc.source58.retained17_stored_default_tls_probe.v1"
         ):
             from scripts.run_retained0017_reference_probe_v1 import (
                 bound_preload_fixture_source_v1,
@@ -506,3 +506,63 @@ async def test_actual0017_controlled_startup_blocks_preload_but_rejects_original
         await controlled.dispose()
     # The owning fixture drops only this new disposable database through its
     # separate admin database; its bad DB-specific setting is not propagated.
+
+
+@pytest.mark.parametrize(
+    "setting", ("session_preload_libraries", "local_preload_libraries")
+)
+async def test_actual0017_controlled_owner_read_rejects_exact_stored_default(
+    _canonical_upgrade17_lab, setting
+):
+    from dataclasses import replace
+
+    owner, pins, prepared, arguments, _audit, _private = _canonical_upgrade17_lab
+    assert setting in ("session_preload_libraries", "local_preload_libraries")
+    async with owner.begin() as connection:
+        await connection.exec_driver_sql(
+            'ALTER DATABASE "'
+            + owner.url.database
+            + '" SET '
+            + setting
+            + "='ctcc_declared_missing_preload_never_loaded'"
+        )
+    route = pins.retained.route
+    identity = {"owner_oid": route.owner_oid, "database_oid": route.database_oid}
+    controlled = create_async_engine(
+        owner.url,
+        poolclass=NullPool,
+        hide_parameters=True,
+        connect_args={
+            "ssl": prepared[1],
+            "server_settings": dict(subject._STARTUP_SETTINGS),
+        },
+    )
+    context = text("""SELECT pg_catalog.current_setting(:setting),
+        pg_catalog.current_setting('transaction_read_only'),
+        EXISTS(SELECT 1 FROM pg_catalog.pg_stat_ssl WHERE pid=pg_catalog.pg_backend_pid() AND ssl)
+    """)
+    try:
+        async with controlled.connect() as connection:
+            assert tuple(
+                (await connection.execute(context, {"setting": setting})).one()
+            ) == ("", "on", True)
+            stored = await connection.scalar(subject._SETTINGS_HASH, identity)
+        assert stored != pins.maintenance_settings_sha256
+        reviewed_bad = replace(pins, maintenance_settings_sha256=stored)
+        with pytest.raises(
+            subject.Retained0017UpgradeRefused,
+            match=r"^retained0017_upgrade0055_stored_maintenance_policy_refused$",
+        ):
+            await subject.upgrade_preserved_owner_0017_to_0055_v1(
+                reviewed_bad, confirmation=None, **arguments
+            )
+        async with controlled.connect() as connection:
+            assert await connection.scalar(subject._SETTINGS_HASH, identity) == stored
+            assert (
+                await connection.scalar(
+                    text("SELECT version_num FROM public.alembic_version")
+                )
+                == "0017"
+            )
+    finally:
+        await controlled.dispose()

@@ -43,18 +43,16 @@ OWNED_PAPER_SCOPE = (
 OWNED_PAPER_SUITE = "paper58-fresh-owned-runtime"
 OWNED_PAPER_REPORT = "test-results/paper58-fresh-owned-runtime.xml"
 OWNED_PAPER_ACCEPTANCE = "owned-paper-acceptance.json"
-PRELOAD_SCHEMA = "ctcc.source58.retained17_preload_tls_probe.v1"
-PRELOAD_SCOPE = "fresh_tls0017_startup_negative_default_two_cases"
-PRELOAD_SUITE = "retained17-preload"
+PRELOAD_SCHEMA = "ctcc.source58.retained17_stored_default_tls_probe.v1"
+PRELOAD_SCOPE = "fresh_tls0017_exact_stored_policy_readonly_denial_two_cases"
+PRELOAD_SUITE = "retained17-stored-default"
 PRELOAD_MODULE = "tests.integration.test_retained0017_owner_upgrade_0055_v1_pg"
-PRELOAD_CASE = (
-    "test_actual0017_controlled_startup_blocks_preload_but_rejects_original_bad_default"
-)
+PRELOAD_CASE = "test_actual0017_controlled_owner_read_rejects_exact_stored_default"
 PRELOAD_CASES = tuple(
     (PRELOAD_MODULE, f"{PRELOAD_CASE}[{setting}]")
     for setting in ("session_preload_libraries", "local_preload_libraries")
 )
-PRELOAD_REPORT = "test-results/retained17-preload.xml"
+PRELOAD_REPORT = "test-results/retained17-stored-default.xml"
 PRELOAD_ARCHIVE = "/ctcc-admitted-test-source.tar"
 canonical, digest = measurement.canonical, measurement.digest
 
@@ -677,7 +675,7 @@ def run_probe(args, raw, files, root):
         )
     verify_probe(root, args=args, files=files)
     print(
-        "RETAINED17_PRELOAD_TLS=PASS"
+        "RETAINED17_STORED_DEFAULT_READONLY_TLS=PASS"
         if preload
         else "PAPER58_FRESH_OWNED_RUNTIME=PASS"
         if owned_paper
@@ -705,7 +703,11 @@ def main():
     purposes.add_argument("--native-storage-diagnostic", action="store_true")
     purposes.add_argument("--paper58-structural-reference", action="store_true")
     purposes.add_argument("--paper58-owned-runtime", action="store_true")
-    purposes.add_argument("--retained17-preload", action="store_true")
+    purposes.add_argument(
+        "--retained17-stored-default-proof",
+        dest="retained17_preload",
+        action="store_true",
+    )
     args = parser.parse_args()
     for value, pattern in (
         (args.commit, r"[a-f0-9]{40}"),
@@ -717,7 +719,7 @@ def main():
     if args.verify_only:
         verify_probe(args.output, args=args, files=files)
         print(
-            "RETAINED17_PRELOAD_ARCHIVED_READBACK=PASS"
+            "RETAINED17_STORED_DEFAULT_ARCHIVED_READBACK=PASS"
             if _preload_mode(args)
             else "PAPER58_FRESH_OWNED_RUNTIME_ARCHIVED_READBACK=PASS"
             if _owned_paper_mode(args)

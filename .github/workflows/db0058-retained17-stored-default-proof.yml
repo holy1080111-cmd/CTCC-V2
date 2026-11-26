@@ -1,0 +1,56 @@
+name: Source58 retained DB0017 stored preload policy read-only proof
+
+on:
+  push:
+    branches: [work/db0058-retained17-stored-default-proof]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    if: github.ref == 'refs/heads/work/db0058-retained17-stored-default-proof'
+    name: Actual owner read-only refusal for both stored preload settings
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact validation topic
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Build exact source and verify two stored-policy refusals
+        shell: bash
+        run: |
+          set -euo pipefail
+          subject=5a8ef3789593bde40e39bfed12f0147bb6438c45
+          commit=$(git rev-parse HEAD)
+          test "$commit" = "$GITHUB_SHA"
+          git merge-base --is-ancestor "$subject" "$commit"
+          diff -u <(printf '%s\n' \
+            .github/workflows/db0058-retained17-stored-default-proof.yml MANIFEST.sha256 \
+            scripts/run_retained0017_reference_probe_v1.py \
+            tests/integration/test_retained0017_owner_upgrade_0055_v1_pg.py) \
+            <(git diff --name-only "$subject" "$commit")
+          python3 scripts/manifest.py --check
+          tree=$(git rev-parse 'HEAD^{tree}')
+          archive="$RUNNER_TEMP/ctcc-source.tar"
+          git -c core.autocrlf=false -c core.eol=lf archive --format=tar --output="$archive" "$commit"
+          digest=$(sha256sum "$archive" | cut -d ' ' -f 1)
+          options=(--archive "$archive" --archive-sha256 "$digest" --commit "$commit" --tree "$tree"
+            --retained17-stored-default-proof --output "$RUNNER_TEMP/ctcc-retained17-stored-default")
+          python3 -m scripts.run_retained0017_reference_probe_v1 "${options[@]}"
+          python3 -m scripts.run_retained0017_reference_probe_v1 "${options[@]}" --verify-only
+      - name: Preserve measured source, JUnit and resource cleanup evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ctcc-retained17-stored-default-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/ctcc-source.tar
+            ${{ runner.temp }}/ctcc-retained17-stored-default/*.json
+            ${{ runner.temp }}/ctcc-retained17-stored-default/*.log
+            ${{ runner.temp }}/ctcc-retained17-stored-default/test-results/*.xml
+          if-no-files-found: error
+          retention-days: 30
