@@ -143,7 +143,15 @@ def _controlled_history_structure(view, owner_oid, role_oids, grants):
 
 
 def observe_granted_owner_structure(
-    document, *, head, read_only, owner_name, owner_oid, role_names, role_oids
+    document,
+    *,
+    head,
+    read_only,
+    owner_name,
+    owner_oid,
+    role_names,
+    role_oids,
+    granted_maintainer_oid=None,
 ):
     """Replay only the structure, after the held transaction verifies actual ACLs."""
     _need(
@@ -163,6 +171,13 @@ def observe_granted_owner_structure(
         and len(role_oids) == 3
         and all(type(oid) is int and 0 < oid < 2**32 for oid in role_oids.values())
         and len({owner_oid, *role_oids.values()}) == 4
+        and (
+            granted_maintainer_oid is None
+            or (
+                type(granted_maintainer_oid) is int
+                and granted_maintainer_oid == owner_oid
+            )
+        )
     )
     try:
         role = document["role"]
@@ -183,25 +198,24 @@ def observe_granted_owner_structure(
         _controlled_history_structure(
             view["controlled_history55"], owner_oid, role_oids, grants
         )
+        inspect = (
+            current55._observe if head == "0055" else current56._observe_inherited_graph
+        )
+        observed = inspect(
+            view,
+            owner_mode=True,
+            read_only="on" if read_only else "off",
+            isolation="repeatable read" if read_only else "read committed",
+            _granted_maintainer_oid=granted_maintainer_oid,
+        )
         if head == "0055":
-            observed = (
-                current55._observe_owner_repeatable_read_catalog_v1(view)
-                if read_only
-                else current55._observed(view, owner_mode=True, read_only="off")
-            )
             _need(
                 observed["native_definitions_sha256"] == current55._required_baseline()
-            )
-        else:
-            observed = (
-                current56._observe_owner_repeatable_read_catalog_v1(view)
-                if read_only
-                else current56.observe_owner_readwrite_installation_0056(view)
             )
         _need(
             observed["database_head"] == head
             and observed["role_oid"] == owner_oid
             and observed["execution_authority"] is False
         )
-    except (KeyError, TypeError, ValueError):
+    except (AttributeError, KeyError, TypeError, ValueError):
         raise GrantedOwnerCatalogError("native_granted_owner_catalog_refused") from None

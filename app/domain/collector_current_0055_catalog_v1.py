@@ -2007,7 +2007,13 @@ def _source_bodies55():
     return _body(operator.ISSUER_GUARD_SQL, "$ctcc$"), immutable
 
 
-def _observe(value, *, owner_mode, read_only, isolation):
+def _observe(value, *, owner_mode, read_only, isolation, _granted_maintainer_oid=None):
+    if _granted_maintainer_oid is not None and (
+        owner_mode is not True
+        or type(_granted_maintainer_oid) is not int
+        or not 0 < _granted_maintainer_oid < 2**32
+    ):
+        _deny()
     if (
         type(value) is not dict
         or set(value) != CATALOG_KEYS
@@ -2041,7 +2047,16 @@ def _observe(value, *, owner_mode, read_only, isolation):
         or role["session_user"] != role["name"]
         or role["setting"] != "none"
         or role["login"] is not True
-        or role["superuser"] is not owner_mode
+        or role["superuser"]
+        is not (owner_mode if _granted_maintainer_oid is None else False)
+    ):
+        _deny()
+    if _granted_maintainer_oid is not None and (
+        role["oid"] != _granted_maintainer_oid
+        or any(
+            role[key] is not False
+            for key in ("createdb", "createrole", "replication", "bypassrls")
+        )
     ):
         _deny()
     if not owner_mode and any(

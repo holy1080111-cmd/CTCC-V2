@@ -324,8 +324,20 @@ def observe_controlled_history_0056(
 
 
 def _observe_inherited_graph(
-    value, *, owner_mode, read_only, profile=profiles.DB0056, isolation="read committed"
+    value,
+    *,
+    owner_mode,
+    read_only,
+    profile=profiles.DB0056,
+    isolation="read committed",
+    _granted_maintainer_oid=None,
 ):
+    if _granted_maintainer_oid is not None and (
+        owner_mode is not True
+        or type(_granted_maintainer_oid) is not int
+        or not 0 < _granted_maintainer_oid < 2**32
+    ):
+        inherited._deny()
     profiles.checked(profile)
     if profile in (profiles.DB0057, profiles.DB0058) and owner_mode:
         inherited._deny()
@@ -375,7 +387,16 @@ def _observe_inherited_graph(
         or role["session_user"] != role["name"]
         or role["setting"] != "none"
         or role["login"] is not True
-        or role["superuser"] is not owner_mode
+        or role["superuser"]
+        is not (owner_mode if _granted_maintainer_oid is None else False)
+    ):
+        inherited._deny()
+    if _granted_maintainer_oid is not None and (
+        role["oid"] != _granted_maintainer_oid
+        or any(
+            role[key] is not False
+            for key in ("createdb", "createrole", "replication", "bypassrls")
+        )
     ):
         inherited._deny()
     if not owner_mode and any(

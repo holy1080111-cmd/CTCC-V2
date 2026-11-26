@@ -523,6 +523,44 @@ async def _read_fitted_owner_catalog_v2(connection, *, read_only):
         _need(tuple((await connection.execute(_CATALOG_CONTEXT)).one()) == original)
 
 
+_NONSUPER_MAINTAINER_SQL = text("""
+SELECT EXISTS(
+ SELECT 1 FROM pg_catalog.pg_roles r JOIN pg_catalog.pg_database d ON d.datdba=r.oid
+ WHERE r.oid=:owner_oid AND d.oid=:database_oid
+   AND r.rolname::pg_catalog.text=:owner
+   AND r.rolname=CURRENT_USER AND r.rolname=SESSION_USER
+   AND d.datname=pg_catalog.current_database()
+   AND pg_catalog.current_setting('role')='none'
+   AND r.rolcanlogin AND NOT r.rolsuper AND NOT r.rolcreatedb AND NOT r.rolcreaterole
+   AND NOT r.rolreplication AND NOT r.rolbypassrls
+   AND EXISTS(SELECT 1 FROM pg_catalog.pg_stat_ssl
+     WHERE pid=pg_catalog.pg_backend_pid() AND ssl)
+   AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_auth_members m
+     WHERE m.member=r.oid OR m.roleid=r.oid)
+)
+""")
+
+
+async def _granted_maintainer_oid(connection, pins, document):
+    # Only this held maintenance route may opt in. The historical pregrant
+    # and writer consumers still use their original role contracts.
+    if document["role"]["superuser"] is True:
+        return None
+    _need(
+        document["role"]["superuser"] is False
+        and await connection.scalar(
+            _NONSUPER_MAINTAINER_SQL,
+            {
+                "owner": pins.route.owner,
+                "owner_oid": pins.route.owner_oid,
+                "database_oid": pins.route.database_oid,
+            },
+        )
+        is True
+    )
+    return pins.route.owner_oid
+
+
 async def _catalog_v2(connection, pins, head, *, read_only):
     """Actual source-defined catalog admission precedes all application-row reads."""
     from app.core.native_role_preflight_v1 import _exact_existing_acl
@@ -537,11 +575,13 @@ async def _catalog_v2(connection, pins, head, *, read_only):
         current55.OWNER_CATALOG_SQL if head == "0055" else current56.OWNER_CATALOG_SQL
     )
     document = await connection.scalar(text(query))
+    maintainer_oid = await _granted_maintainer_oid(connection, pins, document)
     actual = await core._roles(connection, pins.role_names, pins.route.owner_oid)
     _need(tuple(actual[name] for name in pins.role_names) == pins.role_oids)
     await _exact_existing_acl(connection, pins.role_names, pins.role_oids[0])
     repeated = await connection.scalar(text(query))
     _need(document == repeated)
+    _need(await _granted_maintainer_oid(connection, pins, repeated) == maintainer_oid)
     _need(
         await core._roles(connection, pins.role_names, pins.route.owner_oid) == actual
     )
@@ -553,6 +593,7 @@ async def _catalog_v2(connection, pins, head, *, read_only):
         owner_oid=pins.route.owner_oid,
         role_names=pins.role_names,
         role_oids=actual,
+        granted_maintainer_oid=maintainer_oid,
     )
     if head == "0056":
         fitted = await _read_fitted_owner_catalog_v2(connection, read_only=read_only)

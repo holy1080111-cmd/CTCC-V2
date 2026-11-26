@@ -404,50 +404,6 @@ async def test_actual0056_non_superuser_owner_upgrades_0055_once_with_fresh_read
         )
         async with owner.begin() as connection:
             await connection.run_sync(_migrate_owned_empty_to_0055)
-        # Immutable 0050 requires the historical parent owner to be a
-        # superuser. End that lab-only genesis session before the 0056 actor;
-        # the actor must open a new, non-superuser physical connection.
-        await owner.dispose()
-        owner = None
-        async with admin.begin() as connection:
-            await connection.exec_driver_sql(
-                f"ALTER ROLE {_delta56_identifier(login)} NOSUPERUSER"
-            )
-        owner = create_async_engine(
-            owner_url,
-            poolclass=NullPool,
-            connect_args={"ssl": tls, "timeout": 10},
-            hide_parameters=True,
-        )
-        async with owner.connect() as connection:
-            row = tuple(
-                (
-                    await connection.execute(
-                        text("""SELECT d.oid::bigint,d.datdba::bigint,
-                                 r.rolsuper,r.rolcreatedb,r.rolcreaterole,
-                                 (SELECT system_identifier::text
-                                  FROM pg_catalog.pg_control_system()),
-                                 current_user,session_user
-                          FROM pg_catalog.pg_database d
-                          JOIN pg_catalog.pg_roles r ON r.oid=d.datdba
-                          WHERE d.datname=pg_catalog.current_database()""")
-                    )
-                ).one()
-            )
-        assert row[2:5] == (False, False, False)
-        assert row[6:] == (login, login)
-        route = owner_route.OwnerRoutePinsV1(
-            source_manifest_sha256=source["manifest_sha256"],
-            ca_sha256=ca_sha,
-            cluster_system_identifier_sha256=sha(row[5].encode("ascii")),
-            host=url.host,
-            port=url.port,
-            database=database,
-            owner=login,
-            database_oid=row[0],
-            owner_oid=row[1],
-            database_head="0055",
-        )
         # New positive V2 binds three already-provisioned actual restricted
         # logins. Provisioning is lab setup; the upgrade installs no grants.
         from scripts import current0055_native_account_source_acl_v1 as account55
@@ -483,7 +439,9 @@ async def test_actual0056_non_superuser_owner_upgrades_0055_once_with_fresh_read
             zip(("writer", "custody", "frame_reader"), restricted_names, strict=True)
         )
         async with owner.connect() as connection:
-            await core_acl.provision_current55_core_grants(connection, **arguments)
+            provisioned = await core_acl.provision_current55_core_grants(
+                connection, **arguments
+            )
         async with owner.connect() as connection, restricted[0].connect() as writer:
             await account55.provision_current55_native_account_source_acl_v1(
                 connection, writer, **arguments
@@ -492,6 +450,51 @@ async def test_actual0056_non_superuser_owner_upgrades_0055_once_with_fresh_read
             await lifecycle55.provision_current55_native_lifecycle_acl_v1(
                 connection, writer, **arguments
             )
+        # Historical genesis and its 42 grants require the provisioning
+        # superowner. The CLI uses fresh physical connections as the
+        # same owning OID with real nonsuperuser flags.
+        await owner.dispose()
+        owner = None
+        async with admin.begin() as connection:
+            await connection.exec_driver_sql(
+                f"ALTER ROLE {_delta56_identifier(login)} NOSUPERUSER"
+            )
+        owner = create_async_engine(
+            owner_url,
+            poolclass=NullPool,
+            connect_args={"ssl": tls, "timeout": 10},
+            hide_parameters=True,
+        )
+        async with owner.connect() as connection:
+            row = tuple(
+                (
+                    await connection.execute(
+                        text("""SELECT d.oid::bigint,d.datdba::bigint,
+                                 r.rolsuper,r.rolcreatedb,r.rolcreaterole,
+                                 (SELECT system_identifier::text
+                                  FROM pg_catalog.pg_control_system()),
+                                 current_user,session_user
+                          FROM pg_catalog.pg_database d
+                          JOIN pg_catalog.pg_roles r ON r.oid=d.datdba
+                          WHERE d.datname=pg_catalog.current_database()""")
+                    )
+                ).one()
+            )
+        assert row[1] == provisioned["owner_oid"]
+        assert row[2:5] == (False, False, False)
+        assert row[6:] == (login, login)
+        route = owner_route.OwnerRoutePinsV1(
+            source_manifest_sha256=source["manifest_sha256"],
+            ca_sha256=ca_sha,
+            cluster_system_identifier_sha256=sha(row[5].encode("ascii")),
+            host=url.host,
+            port=url.port,
+            database=database,
+            owner=login,
+            database_oid=row[0],
+            owner_oid=row[1],
+            database_head="0055",
+        )
         await seed_stopped_retained_owner55_v2(owner)
         async with owner.connect() as connection:
             role_oids = tuple(
