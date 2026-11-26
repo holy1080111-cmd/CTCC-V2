@@ -71,9 +71,23 @@ def _state(stage, key):
 
 def _prefix(state):
     head, events = journal._replay_open_v3_prefix(state["attempt"])
-    if head != state["prefix"] or events[-1]["kind"] != "ohlc_stage_complete":
+    if (
+        head != state["prefix"]
+        or events[-1]["kind"] != "ohlc_stage_complete"
+        or events[-1]["metadata"]["candles_sha256"] != sha(state["candles"])
+    ):
         raise StagedGlobalPublicError("global_public_stage_prefix_changed")
     return head
+
+
+def _take_prepared_candles(state):
+    prepared = state.pop("prepared_candles")
+    if type(prepared) is not candles.CollectedCandles:
+        raise StagedGlobalPublicError("global_public_stage_prepared_candles_changed")
+    candles._guard(prepared)
+    if canonical(prepared.model_dump(mode="json", round_trip=True)) != state["candles"]:
+        raise StagedGlobalPublicError("global_public_stage_prepared_candles_changed")
+    return prepared
 
 
 @asynccontextmanager
@@ -185,6 +199,9 @@ async def begin_global_public_ohlc_v2(
                         {"completed": completed, "candles_sha256": sha(encoded)},
                         encoded,
                     )
+                    # This detached construction uses only the sealed OHLC
+                    # prefix operands. It does not sample or refresh any data.
+                    prepared = candles.CollectedCandles.model_validate_json(encoded)
                     state = {
                         "task": task,
                         "source": source,
@@ -192,6 +209,7 @@ async def begin_global_public_ohlc_v2(
                         "plan": plan,
                         "prefix": head,
                         "candles": encoded,
+                        "prepared_candles": prepared,
                         "completed": completed,
                         "started_at": started_at,
                         "finished": False,
@@ -285,14 +303,15 @@ async def complete_global_public_v2(
         await public._join_component_tasks(tasks, _source=source, already_failed=True)
         raise
     components = await public._join_component_tasks(tasks, _source=source)
+    completed_at = transport_state["clock"]()
     packet = production.GlobalPublicComponentPacketV1(
         report_id=transport_state["report_id"],
         instrument_id=transport_state["instrument_id"],
         started_at=state["started_at"],
-        completed_at=transport_state["clock"](),
+        completed_at=completed_at,
         policy=policy,
         policy_sha256=transport_state["plan"]["policy_sha256"],
-        candles=candles.CollectedCandles.model_validate_json(state["candles"]),
+        candles=_take_prepared_candles(state),
         **components,
     )
     packet = runtime._complete_owned_public_market_v3(

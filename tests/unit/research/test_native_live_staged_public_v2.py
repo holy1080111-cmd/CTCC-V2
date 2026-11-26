@@ -64,7 +64,10 @@ async def test_staged_exact_wire_ohlc_then_account_then_mutable_and_full_replay(
     clock, parent, raw, harness, key, issue, ready = staged_source
     request, params = issue()
     async with subject.begin_owned_live_post_g12_public_v2(request, key=key) as stage:
+        preparation = lower._STAGES[subject._OHLC_STAGES[stage]["runtime_stage"]]
+        prepared = preparation["prepared_candles"]
         data = subject.replay_owned_live_public_ohlc_stage_v2(stage, key=key)
+        assert prepared == data.candles and prepared is not data.candles
         assert type(data) is subject.LivePublicOHLCStageDataV2
         assert data.invocation is params.invocation
         assert data.publication_barrier == params.publication_barrier
@@ -434,6 +437,37 @@ async def test_staged_caller_mutation_never_replaces_retained_original_candle_by
         owner = await subject.complete_owned_live_post_g12_public_v2(stage, key=key)
     complete = subject._replay_owned_live_public_v1(owner, key=key)
     assert complete.packet.candles == two.candles
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ("private_model", "both_views"))
+async def test_staged_prepared_candles_are_bound_to_original_journal(
+    staged_source, change
+):
+    _clock, parent, raw, harness, key, issue, ready = staged_source
+    request, params = issue()
+    refusal = (
+        "global_public_stage_prepared_candles_changed"
+        if change == "private_model"
+        else "global_public_stage_prefix_changed"
+    )
+    with pytest.raises(lower.StagedGlobalPublicError, match=refusal):
+        async with subject.begin_owned_live_post_g12_public_v2(
+            request, key=key
+        ) as stage:
+            state = lower._STAGES[subject._OHLC_STAGES[stage]["runtime_stage"]]
+            prepared = state["prepared_candles"]
+            candle = prepared.frames[0].confirmed[0]
+            object.__setattr__(candle, "close", candle.close + 1)
+            if change == "both_views":
+                state["candles"] = canonical(
+                    prepared.model_dump(mode="json", round_trip=True)
+                )
+            ready(stage, params)
+            await subject.complete_owned_live_post_g12_public_v2(stage, key=key)
+    assert not subject._OWNERS and subject._FILE not in parent.content
+    assert decode(raw.content["summary.json"])["disposition"] == "rejected"
+    harness.assert_closed()
 
 
 @pytest.mark.asyncio

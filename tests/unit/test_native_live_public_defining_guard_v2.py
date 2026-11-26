@@ -22,6 +22,7 @@ def test_original_closed_public_graph_has_no_runtime_or_order_authority():
         (q.public.production, "_read_global_raw_bank_v2"),
         (q.public.production, "_replay_packet"),
         (q.public.production, "_checked_packet"),
+        (q.public_staged_source, "_take_prepared_candles"),
         (q.public.transport, "replay_public_runtime"),
         (q.public.transport, "_replay_captured_packet"),
         (q.public.transport, "_reopen_runtime_journal"),
@@ -101,6 +102,18 @@ def test_hidden_context_body_code_change_is_denied_before_original_read(
         raise AssertionError("foreign context body executed")
 
     assert not original.__closure__ and not foreign.__closure__
+    monkeypatch.setattr(original, "__code__", foreign.__code__)
+    with pytest.raises(NativeSourceClosureError):
+        q._NATIVE_GUARD()
+
+
+def test_prepared_candle_consumer_code_change_is_denied(monkeypatch):
+    q._NATIVE_GUARD()
+    original = q.public_staged_source._take_prepared_candles
+
+    def foreign(_state):
+        raise AssertionError("foreign prepared candle consumer executed")
+
     monkeypatch.setattr(original, "__code__", foreign.__code__)
     with pytest.raises(NativeSourceClosureError):
         q._NATIVE_GUARD()
