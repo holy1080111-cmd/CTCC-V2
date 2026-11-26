@@ -1,0 +1,258 @@
+name: Native Paper held PGDATA selector
+
+on:
+  push:
+    branches: [work/native-paper-held-selector-0b65959-linux]
+
+permissions:
+  contents: read
+
+jobs:
+  held-selector:
+    if: github.ref == 'refs/heads/work/native-paper-held-selector-0b65959-linux'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      SUBJECT: '0b659591076f168fe42d1be6bd784e4c986b0626'
+      SUBJECT_TREE: '9d858db49b4c62faf3e75dde54931fb6dbb3586b'
+    steps:
+      - name: Check out the validation overlay
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Admit exact validation source
+        id: admit
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          [[ $GITHUB_ACTIONS == true && $RUNNER_ENVIRONMENT == github-hosted && $GITHUB_EVENT_NAME == push && $EUID != 0 ]]
+          [[ $GITHUB_REF == refs/heads/work/native-paper-held-selector-0b65959-linux ]]
+          [[ $(uname -sm) == 'Linux x86_64' ]]
+          private=$(mktemp -d -- "$RUNNER_TEMP/ctcc-paper-held-selector.XXXXXXXX")
+          /usr/bin/python3 -I -S -B - "$private" >> "$GITHUB_OUTPUT" <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+          import sys
+
+          def need(condition):
+              if not condition:
+                  raise SystemExit("paper_held_selector_overlay_refused")
+
+          def git(*args):
+              return subprocess.check_output(["/usr/bin/git", *args], stderr=subprocess.DEVNULL)
+
+          def blob(commit, name, limit):
+              entry = git("ls-tree", "-z", commit, "--", name).decode("ascii")
+              match = re.fullmatch(r"100(?:644|755) blob ([a-f0-9]{40})\t([^\0]+)\0", entry)
+              need(match is not None and match[2] == name)
+              need(0 < int(git("cat-file", "-s", match[1])) <= limit)
+              return git("cat-file", "blob", match[1])
+
+          subject, head = os.environ["SUBJECT"], os.environ["GITHUB_SHA"]
+          need(git("rev-list", "--parents", "-n", "1", "HEAD").decode("ascii").split() == [head, subject])
+          need(git("rev-parse", f"{subject}^{{tree}}").decode("ascii").strip() == os.environ["SUBJECT_TREE"])
+          prefix = "ci-validation/paper-held-selector"
+          workflow = ".github/workflows/ctcc-paper-held-selector-native.yml"
+          pins = {
+              "paper_wal_exchange.py": "fe4e6ec88e1f824638dd8e7f0d3305ef529acb6eff9180a2376b086cab0946ae",
+              "paper_wal_held_selector.py": "610b9bc0e3275bb2826f9c47bf44c38a0b4a48be1dc583b080217a2f24a5cf69",
+              "verify_paper_held_selector_native.py": "58e74454e4cf5380c13165e856e332e9ea31c913e30e36b6cb7376e6f2eed193",
+          }
+          need(all(pin not in {"1" * 64, "2" * 64} for pin in pins.values()))
+          expected = {workflow} | {f"{prefix}/{name}" for name in {*pins, "SHA256SUMS"}}
+          diff = git("diff", "--no-renames", "--name-status", "-z", subject, head).decode("ascii").split("\0")
+          need(diff.pop() == "" and len(diff) == 2 * len(expected))
+          need(set(diff[::2]) == {"A"} and set(diff[1::2]) == expected)
+          need(Path(workflow).read_bytes() == blob(head, workflow, 32768))
+          sums = "".join(f"{pins[name]}  {name}\n" for name in sorted(pins)).encode("ascii")
+          need(blob(head, f"{prefix}/SHA256SUMS", 4096) == sums)
+
+          private = Path(sys.argv[1])
+          for name, pin in pins.items():
+              raw = blob(head, f"{prefix}/{name}", 65536)
+              need(hashlib.sha256(raw).hexdigest() == pin)
+              target = private / name
+              with target.open("xb") as stream:
+                  stream.write(raw)
+              need(target.read_bytes() == raw)
+          print("exchange_pin=" + pins["paper_wal_exchange.py"])
+          print("selector_pin=" + pins["paper_wal_held_selector.py"])
+          print("harness_pin=" + pins["verify_paper_held_selector_native.py"])
+          PY
+          printf 'private=%s\n' "$private" >> "$GITHUB_OUTPUT"
+
+      - name: Run the held-directory verifier in disposable Linux namespaces
+        shell: bash
+        env:
+          PRIVATE: ${{ steps.admit.outputs.private }}
+          EXCHANGE_PIN: ${{ steps.admit.outputs.exchange_pin }}
+          SELECTOR_PIN: ${{ steps.admit.outputs.selector_pin }}
+          HARNESS_PIN: ${{ steps.admit.outputs.harness_pin }}
+          PUBLISH: ${{ runner.temp }}/ctcc-paper-held-selector-native-result.json
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          [[ $EUID != 0 && $PRIVATE == "$RUNNER_TEMP"/ctcc-paper-held-selector.* ]]
+          [[ ! -e $PUBLISH && ! -L $PUBLISH ]]
+          outer=()
+          for name in mnt net ipc pid; do outer+=("$(readlink "/proc/self/ns/$name")"); done
+          code=0
+          sudo -n /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LANG=C LC_ALL=C \
+            /usr/bin/unshare --mount --net --ipc --pid --fork --kill-child=SIGKILL --mount-proc --propagation private \
+            /usr/bin/bash -s -- "$PRIVATE" "$EXCHANGE_PIN" "$SELECTOR_PIN" "$HARNESS_PIN" "${outer[@]}" \
+            > "$PRIVATE/harness.json" 2> "$PRIVATE/harness.stderr" <<'ISOLATED' || code=$?
+          set -Eeuo pipefail
+          umask 077
+          [[ $# == 8 && $EUID == 0 && $$ == 1 ]]
+          incoming=$1
+          pins=("$2" "$3" "$4")
+          shift 4
+          for name in mnt net ipc pid; do
+            [[ $(readlink "/proc/self/ns/$name") != "$1" ]]
+            shift
+          done
+          /usr/bin/python3 -I -S -B -c 'import socket,sys; sys.exit(socket.if_nameindex() != [(1, "lo")])'
+          mount -t tmpfs -o size=64m,mode=0700,nosuid,nodev tmpfs /root
+          [[ $(stat -f -c %T /root) == tmpfs && $(stat -c '%u:%g:%a' /root) == 0:0:700 ]]
+          mkdir -m 0700 /root/work
+          cd /root/work
+          /usr/bin/python3 -I -S -B - "$incoming" "${pins[@]}" <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+          import re
+          import stat
+          import sys
+
+          def need(condition):
+              if not condition:
+                  raise SystemExit("isolated_paper_held_selector_input_refused")
+
+          def read(path, limit):
+              need(path.resolve(strict=True) == path)
+              fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+              with os.fdopen(fd, "rb") as stream:
+                  info = os.fstat(stream.fileno())
+                  need(stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and 0 < info.st_size <= limit)
+                  raw = stream.read(limit + 1)
+              need(len(raw) == info.st_size)
+              return raw
+
+          incoming = Path(sys.argv[1])
+          scripts = ("paper_wal_exchange.py", "paper_wal_held_selector.py", "verify_paper_held_selector_native.py")
+          for name, pin in zip(scripts, sys.argv[2:], strict=True):
+              need(re.fullmatch(r"[a-f0-9]{64}", pin) is not None)
+              raw = read(incoming / name, 65536)
+              need(hashlib.sha256(raw).hexdigest() == pin)
+              with Path(name).open("xb") as target:
+                  target.write(raw)
+              need(Path(name).read_bytes() == raw)
+          PY
+          exec /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LANG=C LC_ALL=C \
+            /usr/bin/python3 -I -S -B /root/work/verify_paper_held_selector_native.py </dev/null
+          ISOLATED
+          /usr/bin/python3 -I -S -B - "$PRIVATE" "$PUBLISH" "$code" <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import stat
+          import sys
+
+          private, publish = (Path(arg) for arg in sys.argv[1:3])
+          code = int(sys.argv[3])
+          schema = "ctcc.validation.paper_held_pgdata_selector_native.v1"
+
+          def need(condition):
+              if not condition:
+                  raise SystemExit("paper_held_selector_receipt_refused")
+
+          def unique(pairs):
+              value = dict(pairs)
+              need(len(value) == len(pairs))
+              return value
+
+          def canonical(value):
+              return (json.dumps(value, sort_keys=True, ensure_ascii=True, separators=(",", ":"), allow_nan=False) + "\n").encode("ascii")
+
+          def bounded_document(path):
+              fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+              with os.fdopen(fd, "rb") as stream:
+                  info = os.fstat(stream.fileno())
+                  need(stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and 0 < info.st_size <= 8192)
+                  raw = stream.read(8193)
+              need(len(raw) == info.st_size)
+              value = json.loads(raw.decode("ascii"), object_pairs_hook=unique)
+              need(type(value) is dict and canonical(value) == raw)
+              return value
+
+          if code != 0:
+              phase = "runner_or_envelope"
+              try:
+                  denied = bounded_document(private / "harness.stderr")
+                  phases = {"environment", "pins", "disposable_mount", "locks", "positive_bind", "negative_binds", "name_swap", "symlink"}
+                  if (
+                      set(denied) == {"schema", "status", "phase", "execution_authority"}
+                      and denied["schema"] == schema and denied["status"] == "REFUSED"
+                      and denied["execution_authority"] is False and type(denied["phase"]) is str
+                      and denied["phase"] in phases
+                  ):
+                      phase = denied["phase"]
+              except (Exception, SystemExit):
+                  pass
+              raise SystemExit(f"::error::Disposable Paper held PGDATA selector refused at {phase}")
+
+          pins = {
+              "paper_wal_exchange.py": os.environ["EXCHANGE_PIN"],
+              "paper_wal_held_selector.py": os.environ["SELECTOR_PIN"],
+              "verify_paper_held_selector_native.py": os.environ["HARNESS_PIN"],
+          }
+          expected = {
+              "schema": schema,
+              "status": "PASS_DISPOSABLE_HELD_PGDATA_SELECTOR",
+              "held_selector_sha256": pins["paper_wal_held_selector.py"],
+              "exchange_sha256": pins["paper_wal_exchange.py"],
+              "positive_bound_alias_verified": True,
+              "wrong_inode_with_identical_bytes_refused": True,
+              "direct_view_refused": True,
+              "foreign_bind_refused": True,
+              "unlocked_refused": True,
+              "foreign_lock_refused": True,
+              "symlink_refused": True,
+              "swapped_name_refused": True,
+              "borrowed_lock_preserved": True,
+              "synthetic_only": True,
+              "postgres_started": False,
+              "execution_authority": False,
+          }
+          observed = bounded_document(private / "harness.json")
+          need(observed.keys() == expected.keys())
+          need(all(type(observed[key]) is type(value) and observed[key] == value for key, value in expected.items()))
+          raw = canonical({
+              "schema": "ctcc.validation.hosted_paper_held_pgdata_selector.v1",
+              "subject_parent": os.environ["SUBJECT"],
+              "subject_tree": os.environ["SUBJECT_TREE"],
+              "native_script_sha256": pins,
+              "harness_result": observed,
+              "execution_authority": False,
+          })
+          with publish.open("xb") as stream:
+              stream.write(raw)
+              stream.flush()
+              os.fsync(stream.fileno())
+          need(publish.read_bytes() == raw)
+          PY
+
+      - name: Upload the validated selector receipt
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ctcc-paper-held-selector-native-0b65959-linux
+          path: ${{ runner.temp }}/ctcc-paper-held-selector-native-result.json
+          if-no-files-found: error
+          retention-days: 14
