@@ -53,6 +53,57 @@ def test_positive_pins_are_explicit_and_v1_remains_data_only():
         subject._upgrade_pins_v2(_pins())
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("read_only", (True, False))
+@pytest.mark.parametrize("refused", (True, False))
+async def test_fitted_catalog_path_is_held_only_until_observation_rollback(
+    read_only, refused
+):
+    original = "pg_catalog, public, pg_temp"
+    fitted = "pg_catalog, pg_temp"
+    context = ("repeatable read", "on") if read_only else ("read committed", "off")
+    seen = []
+
+    class Connection:
+        path = original
+
+        async def execute(self, statement):
+            assert statement is subject._CATALOG_CONTEXT
+            seen.append(self.path)
+            return SimpleNamespace(one=lambda: (self.path, *context))
+
+        async def begin_nested(self):
+            async def rollback():
+                self.path = original
+
+            return SimpleNamespace(rollback=rollback)
+
+        async def exec_driver_sql(self, statement):
+            assert statement == "SET LOCAL search_path TO pg_catalog, pg_temp"
+            self.path = fitted
+
+        async def scalar(self, statement):
+            assert self.path == fitted
+            assert statement.text == (
+                subject.fitted56.CATALOG_SQL
+                if read_only
+                else subject.fitted56.OWNER_READWRITE_CATALOG_SQL
+            )
+            if refused:
+                raise RuntimeError("inert query fault")
+            return {"search_path": fitted}
+
+    connection = Connection()
+    if refused:
+        with pytest.raises(RuntimeError, match="inert query fault"):
+            await subject._read_fitted_owner_catalog_v2(connection, read_only=read_only)
+    else:
+        assert await subject._read_fitted_owner_catalog_v2(
+            connection, read_only=read_only
+        ) == {"search_path": fitted}
+    assert seen == [original, fitted, original]
+
+
 @pytest.mark.parametrize(
     "field,value",
     [
