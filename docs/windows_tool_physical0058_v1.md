@@ -7,11 +7,12 @@ reconciliation. The preserved September DB0017 and its private archives remain
 untouched. Do not point a fresh empty DB at an account to conceal old local
 intents, unknown submissions, reservations or exposure.
 
-The launcher offers three fixed applications:
+The package offers four fixed applications.
 
 | Tool | Application | Startup behavior |
 | --- | --- | --- |
 | Analysis | Existing offline snapshot viewer | No database, exchange or order calls; imported data remains unverified. |
+| Paper | Persistent manual Paper and offline snapshot analysis | Requires a separately provisioned fresh PostgreSQL 0058 database, exact role checks and successful Paper restart recovery. |
 | Demo | Canonical manual Demo application | Genuine physical0058 full role/catalog preflight, then genuine main startup/restart recovery. No restored Arm or scheduler. Normal protected holding and engineering round-trip remain separate UI actions. |
 | Live | Dedicated manual Live application | Default OFF. Missing dedicated private runtime stays `NOT_CONFIGURED`. Configured startup only persists/reads the negative stop; a current exact human challenge is required for any one-shot entry. |
 
@@ -115,6 +116,31 @@ TLS roles and an existing stopped legacy state must already be genuinely
 provisioned. Live uses its distinct dedicated runtime configuration, never a
 Demo DSN/identity fallback. Its legacy write flags remain OFF even when the
 dedicated source credentials are configured.
+
+### Persistent Paper on Windows
+
+Use the installed package with a fresh, dedicated PostgreSQL 17.11 database at
+revision `0058`. It must have the reviewed fresh owner profile and separately
+provisioned restricted Paper actor. Complete that maintenance step before
+configuring Paper. Use authenticated, direct TLS connections for the two roles
+and the SHA256 of the independently verified CA. The retained bootstrap-owner
+ledger has a separate continuation. [Paper database and role requirements](paper58_owned_startup_design_v1.md)
+
+```powershell
+.\scripts\Install-CTCC-0058.ps1 -Mode Configure -Tool paper -Port 8131 -PackageRoot $ReleaseRoot -PackageIdentitySha256 $PackageIdentity
+.\scripts\Install-CTCC-0058.ps1 -Mode Check -Tool paper -PackageRoot $ReleaseRoot -PackageIdentitySha256 $PackageIdentity -ProfileFile $PaperProfile
+.\scripts\Install-CTCC-0058.ps1 -Mode Launch -Tool paper -PackageRoot $ReleaseRoot -PackageIdentitySha256 $PackageIdentity -ProfileFile $PaperProfile
+```
+
+`Configure` prompts for the two database URLs without displaying them. It
+prints the new private `paper-profile.json` path for `$PaperProfile`. The
+profile binds three separate secret files in the same owner/System-only NTFS
+directory. `Check` verifies those files, the CA and the installed package
+without connecting to PostgreSQL. `Launch` holds the package runtime lock
+until the server stops. Use the printed loopback URL after `/readiness`
+reports `ready`. The dashboard and Paper token use the same installation
+binding as the recovered service. Stop with `Ctrl+C` before reopening or
+reinstalling.
 
 ## Upgrade, activation and rollback
 

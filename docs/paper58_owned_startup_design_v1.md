@@ -80,8 +80,9 @@ remains in the original catalog hash. A separate projection of the explicitly
 matched delta replays against the same full pre-provision structural literal.
 The expected schema ACL grantor is the observed stock `pg_database_owner` role.
 The separately collected restricted inventory checks every explicit dependency
-for the Paper role across the cluster. Genuine isolated PostgreSQL must still
-validate the overlay and restricted inventory.
+for the Paper role across the cluster. The isolated PostgreSQL case verified
+the overlay, restricted inventory and corrective control-function revoke.
+[Source-pinned hosted run](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/45835901026)
 
 The owned context collects both observations itself and keeps the owner
 connection open through restricted recovery. One restricted TLS backend holds
@@ -107,25 +108,25 @@ uses the same service and skips a checkpoint if its commit outcome is unknown.
 
 The six writable tables in the retained catalog have four native foreign-key
 triggers on Paper order and position rows. Paper account and checkpoint inserts
-supply `id=1`, so their serial defaults require no sequence grant. The first
-actual restricted test must exercise those writes and a restart using a fresh
-engine under the same actor. It must also exercise the unknown-commit fence
-before closing the container startup boundary. Native Demo and Live retain
-their own physical origin requirements.
+supply `id=1`, so their serial defaults require no sequence grant. The hosted
+case exercised those writes, injected acknowledgment loss after a real commit,
+and recovered the persisted state under the same restricted actor in a fresh
+runtime. Native Demo and Live retain their own physical origin requirements.
 
 ## Verified Windows launcher
 
-`python -m scripts.run_paper58_owned_v1 --profile <absolute-private-profile>`
-starts the app on `127.0.0.1` with its PostgreSQL recovery lifespan enabled.
-Append `--check` for package and configuration readback. The launcher checks
-the original Windows package identity, Git archive, source tree, manifest and
-dependency set before configuring the app.
+Use `Install-CTCC-0058.ps1 -Tool paper` for `Configure`, `Check` and `Launch`.
+The launcher uses the locked interpreter from the same package and binds the
+app to `127.0.0.1` after its PostgreSQL recovery lifespan succeeds. It verifies
+the Git archive, source tree, manifest and dependency set before serving.
+[Windows commands and setup](windows_tool_physical0058_v1.md#persistent-paper-on-windows)
 
 The private profile schema is `ctcc.paper58.fresh_owned_windows_profile.v1`.
 It requires `package_root`, `package_identity_sha256`, `port`, `ca_file` and
 `ca_sha256` plus private file pointers `api_token_file`,
-`owner_database_url_file` and `actor_database_url_file`. Each pointer holds
-one exact value. The two authenticated PostgreSQL URLs use the same direct TLS
+`owner_database_url_file` and `actor_database_url_file`. The three files use
+fixed names under the profile directory and their hashes are bound in
+`secret_files_sha256`. The authenticated PostgreSQL URLs use the same direct TLS
 server and fresh database with distinct roles. The application is available at
 `/dashboard/local-analysis` after the startup lifespan passes. This launcher
 requires a separately provisioned fresh database. Existing bootstrap-owner
