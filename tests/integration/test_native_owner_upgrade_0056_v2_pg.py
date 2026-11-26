@@ -7,6 +7,7 @@ by the existing non-superuser owner test in the fitted-custody module.
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import replace
 from types import SimpleNamespace
 from uuid import uuid4
@@ -20,7 +21,9 @@ from sqlalchemy.ext.asyncio import AsyncTransaction
 from app.domain import collector_current_0055_catalog_v1 as current55
 from app.domain import collector_current_0056_inherited_catalog_v1 as current56
 from scripts import current_contract_source_scopes_v1 as scopes
+from scripts import native_owner_granted_catalog_v1 as granted
 from scripts import native_owner_upgrade_0056_v1 as subject
+from scripts import native_owner_upgrade_0057_v1 as owner57
 from scripts import retained0056_unscoped_fitted_observation_v1 as unscoped
 from tests.integration import test_native_owner_upgrade_0057_pg as owner57_lab
 
@@ -59,7 +62,9 @@ async def _actual55_v2_lab(_actual56_owner_profile_lab):
     yield owner, selected, pins, prepared
 
 
-async def _assert_exact_catalog_isolation(owner, pins, catalog_sql, default_observer):
+async def _assert_exact_catalog_isolation(
+    owner, pins, head, catalog_sql, default_observer
+):
     async with subject._marker_checked_v2(owner, pins) as connection:
         document = await connection.scalar(text(catalog_sql))
         for section in ("issued", "lineage"):
@@ -67,6 +72,62 @@ async def _assert_exact_catalog_isolation(owner, pins, catalog_sql, default_obse
             assert document[section]["server"]["read_only"] == "on"
         with pytest.raises(current55.Current0055CatalogError):
             default_observer(document)
+        held = deepcopy(document)
+        arguments = {
+            "head": head,
+            "read_only": True,
+            "owner_name": pins.route.owner,
+            "owner_oid": pins.route.owner_oid,
+            "role_names": pins.role_names,
+            "role_oids": dict(zip(pins.role_names, pins.role_oids, strict=True)),
+        }
+        assert granted.observe_granted_owner_structure(document, **arguments) is None
+        assert document == held
+        with pytest.raises(granted.GrantedOwnerCatalogError):
+            granted.observe_granted_owner_structure(
+                document, **{**arguments, "read_only": False}
+            )
+
+        changed = deepcopy(document)
+        table = changed["native_configuration55"]["tables"][0]
+        grant = next(row for row in table["acl"] if row[0] == pins.role_oids[0])
+        grant[3] = True
+        with pytest.raises(granted.GrantedOwnerCatalogError):
+            granted.observe_granted_owner_structure(changed, **arguments)
+
+        changed = deepcopy(document)
+        changed["controlled_history55"]["functions"][0]["can_execute"] = False
+        with pytest.raises(granted.GrantedOwnerCatalogError):
+            granted.observe_granted_owner_structure(changed, **arguments)
+
+        changed = deepcopy(document)
+        assert len(changed["controlled_history55"]["roles"]) == 2
+        changed["controlled_history55"]["roles"].pop()
+        with pytest.raises(granted.GrantedOwnerCatalogError):
+            granted.observe_granted_owner_structure(changed, **arguments)
+
+        changed = deepcopy(document)
+        changed["issued"]["bad_table_acl"] = False
+        with pytest.raises(granted.GrantedOwnerCatalogError):
+            granted.observe_granted_owner_structure(changed, **arguments)
+
+    async with owner.connect() as connection, connection.begin():
+        for setting in subject._OWNER_SETTINGS:
+            await connection.exec_driver_sql(setting)
+        document = await connection.scalar(text(catalog_sql))
+        for section in ("issued", "lineage"):
+            assert document[section]["server"]["isolation"] == "read committed"
+            assert document[section]["server"]["read_only"] == "off"
+        original = deepcopy(document)
+        assert (
+            granted.observe_granted_owner_structure(
+                document, **{**arguments, "read_only": False}
+            )
+            is None
+        )
+        assert document == original
+        with pytest.raises(granted.GrantedOwnerCatalogError):
+            granted.observe_granted_owner_structure(document, **arguments)
 
 
 async def test_actual0056_unscoped_fitted_catalog_rejects_permissive_acl(
@@ -122,7 +183,11 @@ async def test_actual0055_v2_rehearsal_rollback_then_commit_preserves_all_rows_a
     owner, selected, pins, prepared = _actual55_v2_lab
     actors = await subject._role_observation_v2(selected, owner, pins, "0055")
     await _assert_exact_catalog_isolation(
-        owner, pins, current55.OWNER_CATALOG_SQL, current55.observe_actual_owner_catalog
+        owner,
+        pins,
+        "0055",
+        current55.OWNER_CATALOG_SQL,
+        current55.observe_actual_owner_catalog,
     )
     before = await subject._readonly_inventory_v2(owner, pins, "0055")
     final = await subject._commit_once(prepared, pins, owner, before)
@@ -130,6 +195,7 @@ async def test_actual0055_v2_rehearsal_rollback_then_commit_preserves_all_rows_a
     await _assert_exact_catalog_isolation(
         owner,
         pins,
+        "0056",
         current56.OWNER_CATALOG_SQL,
         current56.observe_owner_installation_0056,
     )
@@ -157,6 +223,37 @@ async def test_actual0055_v2_rehearsal_rollback_then_commit_preserves_all_rows_a
     with pytest.raises(subject.NativeOwnerUpgradeRefusal):
         await subject._commit_once(prepared, pins, owner, before)
     assert await subject._readonly_inventory_v2(owner, pins, "0056") == final
+
+
+async def test_actual0055_v2_extra_lineage_acl_refuses_before_maintenance_row_reads(
+    _actual55_v2_lab, monkeypatch
+):
+    owner, _selected, pins, _prepared = _actual55_v2_lab
+
+    async def unexpected_rows(*_args):
+        pytest.fail("refused ACL unexpectedly reached the retained row scan")
+
+    async with owner.connect() as connection, connection.begin():
+        for setting in subject._OWNER_SETTINGS:
+            await connection.exec_driver_sql(setting)
+        await subject._catalog_v2(connection, pins, "0055", read_only=False)
+        trial = await connection.begin_nested()
+        try:
+            await connection.exec_driver_sql(
+                "GRANT SELECT ON public.demo_collector_current_revision_lineages TO PUBLIC"
+            )
+            with monkeypatch.context() as guard:
+                guard.setattr(owner57, "_snapshot", unexpected_rows)
+                with pytest.raises(
+                    ValueError,
+                    match="^current0055_core_grant_scope_or_catalog_changed$",
+                ):
+                    await subject._inventory_v2(
+                        connection, pins, "0055", read_only=False
+                    )
+        finally:
+            await trial.rollback()
+        await subject._catalog_v2(connection, pins, "0055", read_only=False)
 
 
 @pytest.mark.parametrize("phase", [1, 2])

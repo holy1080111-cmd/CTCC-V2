@@ -500,6 +500,7 @@ async def _catalog_v2(connection, pins, head, *, read_only):
     from app.domain import collector_current_0055_catalog_v1 as current55
     from app.domain import collector_current_0056_inherited_catalog_v1 as current56
     from scripts import current0055_runtime_grants as core
+    from scripts.native_owner_granted_catalog_v1 import observe_granted_owner_structure
 
     _need(head in {"0055", "0056"})
     _need(await connection.scalar(_STORAGE_SCOPE_V2) is True)
@@ -507,21 +508,24 @@ async def _catalog_v2(connection, pins, head, *, read_only):
         current55.OWNER_CATALOG_SQL if head == "0055" else current56.OWNER_CATALOG_SQL
     )
     document = await connection.scalar(text(query))
+    actual = await core._roles(connection, pins.role_names, pins.route.owner_oid)
+    _need(tuple(actual[name] for name in pins.role_names) == pins.role_oids)
+    await _exact_existing_acl(connection, pins.role_names, pins.role_oids[0])
     repeated = await connection.scalar(text(query))
     _need(document == repeated)
-    if head == "0055":
-        observed = (
-            current55._observe_owner_repeatable_read_catalog_v1(document)
-            if read_only
-            else current55._observed(document, owner_mode=True, read_only="off")
-        )
-        _need(observed["native_definitions_sha256"] == current55._required_baseline())
-    else:
-        observed = (
-            current56._observe_owner_repeatable_read_catalog_v1(document)
-            if read_only
-            else current56.observe_owner_readwrite_installation_0056(document)
-        )
+    _need(
+        await core._roles(connection, pins.role_names, pins.route.owner_oid) == actual
+    )
+    observe_granted_owner_structure(
+        document,
+        head=head,
+        read_only=read_only,
+        owner_name=pins.route.owner,
+        owner_oid=pins.route.owner_oid,
+        role_names=pins.role_names,
+        role_oids=actual,
+    )
+    if head == "0056":
         fitted = await _read_fitted_owner_catalog_v2(connection, read_only=read_only)
         check = (
             fitted56.inspect_catalog_document
@@ -532,14 +536,6 @@ async def _catalog_v2(connection, pins, head, *, read_only):
         if read_only:
             arguments["fitted_roles"] = None
         _need(_pin(check(fitted, **arguments), _HEX))
-    _need(
-        observed["database_head"] == head
-        and observed["role_oid"] == pins.route.owner_oid
-        and observed["execution_authority"] is False
-    )
-    actual = await core._roles(connection, pins.role_names, pins.route.owner_oid)
-    _need(tuple(actual[name] for name in pins.role_names) == pins.role_oids)
-    await _exact_existing_acl(connection, pins.role_names, pins.role_oids[0])
 
 
 async def _inventory_v2(connection, pins, head, *, read_only):
