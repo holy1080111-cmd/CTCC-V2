@@ -397,7 +397,7 @@ def _source_functions():
     return result
 
 
-def _context(value, *, role, read_only, parents, schema_name):
+def _context(value, *, role, read_only, isolation, parents, schema_name):
     if (
         value["schema_version"] != schema_name
         or value["database_head"] != "0055"
@@ -447,7 +447,7 @@ def _context(value, *, role, read_only, parents, schema_name):
         ("role_setting", "none"),
         ("timezone", "UTC"),
         ("search_path", "pg_catalog, public, pg_temp"),
-        ("isolation", "read committed"),
+        ("isolation", isolation),
         ("read_only", read_only),
         ("synchronous_commit", "on"),
         ("fsync", "on"),
@@ -2007,7 +2007,7 @@ def _source_bodies55():
     return _body(operator.ISSUER_GUARD_SQL, "$ctcc$"), immutable
 
 
-def _observe(value, *, owner_mode, read_only):
+def _observe(value, *, owner_mode, read_only, isolation):
     if (
         type(value) is not dict
         or set(value) != CATALOG_KEYS
@@ -2141,6 +2141,7 @@ def _observe(value, *, owner_mode, read_only):
         current,
         role=role,
         read_only=read_only,
+        isolation=isolation,
         parents=PARENTS,
         schema_name="ctcc.collector_current0054.actual_issued_catalog.v1",
     )
@@ -2148,6 +2149,7 @@ def _observe(value, *, owner_mode, read_only):
         previous,
         role=role,
         read_only=read_only,
+        isolation=isolation,
         parents=old53.PARENTS,
         schema_name="ctcc.collector_current0053.actual_owner_catalog.v1",
     )
@@ -2298,9 +2300,18 @@ def _observe(value, *, owner_mode, read_only):
     }
 
 
-def _observed(value, *, owner_mode, read_only):
+def _observed(value, *, owner_mode, read_only, _owner_repeatable_read=False):
+    if type(_owner_repeatable_read) is not bool or (
+        _owner_repeatable_read and (owner_mode is not True or read_only != "on")
+    ):
+        _deny()
     try:
-        return _observe(value, owner_mode=owner_mode, read_only=read_only)
+        return _observe(
+            value,
+            owner_mode=owner_mode,
+            read_only=read_only,
+            isolation="repeatable read" if _owner_repeatable_read else "read committed",
+        )
     except Current0055CatalogError:
         raise
     except (KeyError, TypeError, ValueError, AttributeError):
@@ -2309,6 +2320,13 @@ def _observed(value, *, owner_mode, read_only):
 
 def observe_actual_owner_catalog(value):
     return _observed(value, owner_mode=True, read_only="on")
+
+
+def _observe_owner_repeatable_read_catalog_v1(value):
+    # Maintenance inventory uses a stable read-only owner snapshot.
+    return _observed(
+        value, owner_mode=True, read_only="on", _owner_repeatable_read=True
+    )
 
 
 def observe_actual_writer_catalog(value, *, read_only):

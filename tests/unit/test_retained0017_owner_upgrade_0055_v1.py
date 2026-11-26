@@ -10,6 +10,30 @@ from scripts import retained0017_upgrade_projection_v1 as projection
 from tests.unit import test_native_retained0017_catalog_data_v1 as catalog_data
 
 
+def _declared_retained_pins(*, expected_catalog=None):
+    """Typed inert SQL-unit input, never a verified route/backup/connection."""
+    route = subject.original.RetainedOwnerRoute0017V1(
+        "a" * 64,
+        "b" * 64,
+        "c" * 64,
+        "127.0.0.1",
+        15439,
+        "declared_database",
+        "declared_owner",
+        20,
+        10,
+    )
+    retained = subject.original.RetainedOwnerPins0017V1(
+        "d" * 40,
+        "e" * 40,
+        "f" * 64,
+        "1" * 64,
+        route,
+        expected_catalog_sha256=expected_catalog,
+    )
+    return subject.Retained0017UpgradePinsV1(retained, "a" * 64)
+
+
 def _control():
     return [
         {
@@ -127,7 +151,7 @@ async def test_optional_old_catalog_review_pin_is_an_additional_refusal_only(exp
             return canonical.decode("ascii")
 
     pin = None if expected is None else digest if expected == "matching" else "0" * 64
-    pins = SimpleNamespace(retained=SimpleNamespace(expected_catalog_sha256=pin))
+    pins = _declared_retained_pins(expected_catalog=pin)
     if expected == "wrong":
         with pytest.raises(
             subject.Retained0017UpgradeRefused, match="reviewed_catalog_mismatch"
@@ -357,14 +381,17 @@ class _Connection:
         self.events.append("migrate")
 
 
-def _inert_transaction(monkeypatch, *, commit_error=None, failure_phase=None):
+def _inert_transaction(
+    monkeypatch, *, commit_error=None, failure_phase=None, rehearsal_catalog_drift=False
+):
     # Deliberately inert orchestration only; this is not a lineage/source/SQL
     # acceptance fixture. The real public and internal apply denials above
     # remain mandatory until actual copy/bootstrap custody is implemented.
     monkeypatch.setattr(subject, "_require_apply_lineage", lambda: None)
     events = []
     conn = _Connection(events, commit_error)
-    before, final = {"original": "held"}, {"logical_sha256": "a" * 64}
+    before = {"original": "held"}
+    final = {"logical_sha256": "a" * 64, "rehearsal_catalog_sha256": "b" * 64}
     count = 0
 
     async def no_op(*_args, **_kwargs):
@@ -380,6 +407,12 @@ def _inert_transaction(monkeypatch, *, commit_error=None, failure_phase=None):
         events.append("after_read")
         if failure_phase == count:
             raise RuntimeError("declared inert fault")
+        if count == 1:
+            return final | {
+                "logical_sha256": "c" * 64,
+                "rehearsal_catalog_sha256": ("d" if rehearsal_catalog_drift else "b")
+                * 64,
+            }
         return final
 
     monkeypatch.setattr(subject, "_maintenance", no_op)
@@ -420,6 +453,112 @@ async def test_rehearsal_must_rollback_and_exact_before_replays_before_one_commi
         "commit_attempt",
         "commit_returned",
     ]
+
+
+@pytest.mark.asyncio
+async def test_rehearsal_catalog_semantic_drift_rolls_back_before_commit(monkeypatch):
+    events, engine, before, _final = _inert_transaction(
+        monkeypatch, rehearsal_catalog_drift=True
+    )
+    with pytest.raises(subject.Retained0017UpgradeRefused):
+        await subject._commit_once(
+            engine, object(), (None, None, None, object()), before
+        )
+    assert "commit_attempt" not in events and events[-1] == "outer_rollback"
+
+
+def test_rehearsal_sql_does_not_bind_pg_node_tree_field_tokens():
+    statement = subject._RETAINED_CATALOG.compile()
+    assert statement.params == {}
+    assert str(statement).count("{FUNCEXPR :funcid ") == 6
+    assert str(statement).count(" :funcresulttype ") == 6
+
+
+def test_stopped_target_continuity_recovers_only_exact_source17_projection_layouts():
+    names = subject.baseline.source17_contract_v1()["columns"]
+    original = [
+        [name, 20000 + index, "r", [[column] for column in names[name]]]
+        for index, name in enumerate(sorted(names))
+    ]
+    target = deepcopy(original)
+    state = next(row for row in target if row[0] == "demo_automation_state")
+    state[3].extend(deepcopy(projection._NEW_STATE_COLUMNS))
+    target.append(["new_0055_table", 21000, "r", [["unrelated"]]])
+    assert subject._original_layouts_from_target55_v1(target) == original
+    state[3][-1][1] = 23
+    with pytest.raises(projection.Retained0017ProjectionRefused):
+        subject._original_layouts_from_target55_v1(target)
+    state[3][-1][1] = 16
+    with pytest.raises(subject.Retained0017UpgradeRefused):
+        subject._original_layouts_from_target55_v1(target[1:])
+
+
+def test_native55_retained_readback_pins_private_owner_snapshot_isolation(monkeypatch):
+    calls = []
+
+    def observe(value, **policy):
+        calls.append(policy)
+        return value
+
+    target = subject.target55
+    monkeypatch.setattr(target, "_observe", observe)
+    marker = object()
+    assert target._observe_owner_repeatable_read_catalog_v1(marker) is marker
+    assert target.observe_actual_owner_catalog(marker) is marker
+    assert target.observe_actual_writer_catalog(marker, read_only="on") is marker
+    assert calls == [
+        {"owner_mode": True, "read_only": "on", "isolation": "repeatable read"},
+        {"owner_mode": True, "read_only": "on", "isolation": "read committed"},
+        {"owner_mode": False, "read_only": "on", "isolation": "read committed"},
+    ]
+    for owner, read_only in ((True, "off"), (False, "on")):
+        with pytest.raises(target.Current0055CatalogError):
+            target._observed(
+                marker,
+                owner_mode=owner,
+                read_only=read_only,
+                _owner_repeatable_read=True,
+            )
+    assert len(calls) == 3
+
+
+@pytest.mark.asyncio
+async def test_owned_preserved_plan_performs_two_reads_without_claiming_write(
+    monkeypatch,
+):
+    from scripts import retained_pg_bootstrap_custody_v1 as custody
+
+    seen = []
+    owned = object()
+    pins = _declared_retained_pins()
+
+    async def dispose():
+        seen.append("dispose")
+
+    engine = SimpleNamespace(dispose=dispose)
+
+    async def read(value, actual_pins, *, _custody):
+        assert value is engine and actual_pins is pins and _custody is owned
+        seen.append("read")
+        return {"before": "same"}
+
+    def forbid(*_args, **_kwargs):
+        pytest.fail("read-only plan attempted to commit")
+
+    monkeypatch.setattr(subject, "_commit_once", forbid)
+    monkeypatch.setattr(subject, "_prepared_owned_v1", lambda *_: (None, None))
+    monkeypatch.setattr(
+        subject, "create_async_engine", lambda *_args, **_kwargs: engine
+    )
+    monkeypatch.setattr(subject, "_readonly_before", read)
+    monkeypatch.setattr(custody, "_bind_engine_v1", lambda *_: seen.append("bind"))
+    result = await subject._run_owned_0017_to_0055_v1(
+        owned, pins, source_archive_file=object(), confirmation=None
+    )
+    assert seen == ["bind", "read", "read", "dispose"]
+    assert result["independent_readbacks"] == 2
+    assert result["maintenance_settings_sha256"] == pins.maintenance_settings_sha256
+    assert result["migration_performed"] is result["execution_authority"] is False
 
 
 @pytest.mark.asyncio
@@ -537,10 +676,7 @@ async def test_unexpected_effective_ddl_setting_is_rejected_without_normalizatio
                 )
             return True
 
-    pins = SimpleNamespace(
-        retained=SimpleNamespace(route=SimpleNamespace(owner_oid=10, database_oid=20)),
-        maintenance_settings_sha256="a" * 64,
-    )
+    pins = _declared_retained_pins()
     with pytest.raises(
         subject.Retained0017UpgradeRefused, match="session_policy_refused"
     ):
@@ -563,10 +699,7 @@ async def test_reviewed_ddl_policy_requires_actual_primary_not_unknown(recovery)
                 return recovery
             return True
 
-    pins = SimpleNamespace(
-        retained=SimpleNamespace(route=SimpleNamespace(owner_oid=10, database_oid=20)),
-        maintenance_settings_sha256="a" * 64,
-    )
+    pins = _declared_retained_pins()
     if recovery is False:
         await subject._maintenance(Connection(), pins, before_settings=True)
     else:
@@ -592,10 +725,7 @@ async def test_startup_overrides_cannot_promote_unapproved_original_stored_polic
                 "rejected original defaults must stop before later effective-value/hash acceptance"
             )
 
-    pins = SimpleNamespace(
-        retained=SimpleNamespace(route=SimpleNamespace(owner_oid=10, database_oid=20)),
-        maintenance_settings_sha256="a" * 64,
-    )
+    pins = _declared_retained_pins()
     with pytest.raises(
         subject.Retained0017UpgradeRefused, match="stored_maintenance_policy_refused"
     ):

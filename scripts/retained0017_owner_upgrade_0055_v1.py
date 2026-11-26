@@ -38,7 +38,10 @@ from scripts import retained0017_catalog_baseline_v1 as baseline
 from scripts import retained0017_owner_plan_v1 as original
 from scripts import retained0017_upgrade_projection_v1 as projection
 from scripts.evidence_json import read_evidence_json
-from scripts.native_owner_catalog_snapshot_0058_v1 import LOGICAL_ACL, LOGICAL_CATALOG
+from scripts.native_owner_catalog_snapshot_0058_v1 import (
+    LOGICAL_ACL,
+    LOGICAL_CATALOG_ENTRIES_V1,
+)
 from scripts.native_owner_route_preflight_0056_v1 import _PROFILE_SQL
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -175,6 +178,56 @@ _COLUMN_ACL = text("""SELECT 'column'::pg_catalog.text,c.relname||'.'||a.attname
  WHERE n.nspname='public' AND a.attnum>0
  ORDER BY c.relname COLLATE pg_catalog."C",a.attname COLLATE pg_catalog."C",x.grantee,x.grantor,x.privilege_type,x.is_grantable""")
 
+# Independent canonical55 PG17.11 artifact R451 (raw SHA256 1756e0ad43a255f76199be126ffd4dfd8197b133ae033efccfa27ab24a004d92).
+# These two CHECK trees are pinned in full with only three FUNCEXPR funcid
+# tokens mapped to exact qualified signatures. Keep the original fingerprint
+# for post-commit checks of the final generation's physical function bindings.
+_RETAINED_CATALOG = text(
+    LOGICAL_CATALOG_ENTRIES_V1
+    + r""", transport_pins(relation_name,constraint_name,ast_sha256) AS (VALUES
+ ('qualification_report_spool','ck_qualification_report_spool_transport_unverified',
+  '8e1831bd2ea990031d4629e5b0f78b2dddef4c5800c0c4e808d521fb45b2f7e6'),
+ ('qualification_report_projection_receipts','ck_qualification_report_projection_receipts_transport_unverifie',
+  '1a97bcc8629d4f41f5da4551f34854a044088696411d1443b7c084b264422f88')
+), callbacks AS (
+ SELECT pg_catalog.to_regprocedure('public.qualification_native_canonical_v55(pg_catalog.jsonb)')::pg_catalog.oid::pg_catalog.int8 AS canonical_id,
+ pg_catalog.to_regprocedure('public.qualification_native_report_eligible_v55(pg_catalog.text,pg_catalog.text,pg_catalog.text,pg_catalog.text)')::pg_catalog.oid::pg_catalog.int8 AS report_id,
+ pg_catalog.to_regprocedure('public.qualification_native_projection_eligible_v55(pg_catalog.text,pg_catalog.text,pg_catalog.text,pg_catalog.text,pg_catalog.timestamptz)')::pg_catalog.oid::pg_catalog.int8 AS projection_id
+), checked_entries AS (
+ SELECT e.kind,e.value,p.relation_name,p.ast_sha256,CASE WHEN p.relation_name IS NOT NULL THEN
+ pg_catalog.replace(pg_catalog.replace(pg_catalog.replace(e.value->>'conbin',
+  '{FUNCEXPR \:funcid '||f.canonical_id||' \:funcresulttype ',
+  '{FUNCEXPR \:funcid [public.qualification_native_canonical_v55(pg_catalog.jsonb)] \:funcresulttype '),
+  '{FUNCEXPR \:funcid '||f.report_id||' \:funcresulttype ',
+  '{FUNCEXPR \:funcid [public.qualification_native_report_eligible_v55(pg_catalog.text,pg_catalog.text,pg_catalog.text,pg_catalog.text)] \:funcresulttype '),
+  '{FUNCEXPR \:funcid '||f.projection_id||' \:funcresulttype ',
+  '{FUNCEXPR \:funcid [public.qualification_native_projection_eligible_v55(pg_catalog.text,pg_catalog.text,pg_catalog.text,pg_catalog.text,timestamp with time zone)] \:funcresulttype ')
+ END AS mapped_ast
+ FROM entries e CROSS JOIN callbacks f LEFT JOIN transport_pins p
+ ON e.kind='constraint' AND e.value->>'contype'='c'
+ AND e.value->>'relation'=pg_catalog.to_regclass('public.'||p.relation_name)::pg_catalog.text
+ AND e.value->>'conname'=p.constraint_name
+ WHERE f.canonical_id>=16384 AND f.report_id>=16384 AND f.projection_id>=16384
+ AND f.canonical_id<>f.report_id AND f.canonical_id<>f.projection_id AND f.report_id<>f.projection_id
+), mapped_entries AS (
+ SELECT kind,value,relation_name,CASE WHEN relation_name IS NULL THEN value
+ ELSE pg_catalog.jsonb_set(value,'{conbin}',pg_catalog.to_jsonb(mapped_ast),false) END AS mapped_value,
+ pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(mapped_ast,'UTF8')),'hex') IS NOT DISTINCT FROM ast_sha256 AS ast_matches
+ FROM checked_entries
+), documents AS (
+ SELECT pg_catalog.jsonb_agg(pg_catalog.jsonb_build_array(kind,value) ORDER BY kind,value::pg_catalog.text)::pg_catalog.text AS original,
+ pg_catalog.jsonb_agg(pg_catalog.jsonb_build_array(kind,mapped_value) ORDER BY kind,mapped_value::pg_catalog.text)::pg_catalog.text AS mapped,
+ count(relation_name)=2 AND count(DISTINCT relation_name)=2 AND bool_and(ast_matches) AS approved
+ FROM mapped_entries
+)
+SELECT approved,pg_catalog.octet_length(original),
+ pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(original,'UTF8')),'hex'),
+ pg_catalog.octet_length(mapped),
+ pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(mapped,'UTF8')),'hex')
+FROM documents
+"""
+)
+
 
 class Retained0017UpgradeRefused(ValueError):
     pass
@@ -196,7 +249,91 @@ def _need(value, code="retained0017_upgrade0055_refused"):
 @dataclass(frozen=True, slots=True, repr=False)
 class Retained0017UpgradePinsV1:
     retained: original.RetainedOwnerPins0017V1
+    maintenance_settings_sha256: str | None
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class _FreshSourcePinsV1:
+    source_commit: str
+    source_tree: str
+    source_archive_sha256: str
+    origin_sha256: str
+    route: original.RetainedOwnerRoute0017V1
+    expected_catalog_sha256: str | None = None
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class _FreshUpgradePinsV1:
+    source: _FreshSourcePinsV1
     maintenance_settings_sha256: str
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class _StoppedTarget55PinsV1:
+    source: shared.OwnerUpgradePinsV1
+    maintenance_settings_sha256: str
+
+
+def _transaction_source_v1(pins):
+    if type(pins) is Retained0017UpgradePinsV1:
+        _need(type(pins.retained) is original.RetainedOwnerPins0017V1)
+        return pins.retained
+    if type(pins) is _StoppedTarget55PinsV1:
+        _need(
+            type(pins.source) is shared.OwnerUpgradePinsV1
+            and type(pins.source.route) is shared.OwnerRoutePinsV1
+            and pins.source.route.database_head == "0055"
+            and original._digest(pins.maintenance_settings_sha256)
+        )
+        return pins.source
+    _need(type(pins) is _FreshUpgradePinsV1 and type(pins.source) is _FreshSourcePinsV1)
+    return pins.source
+
+
+def _checked_fresh_pins_v1(pins):
+    _need(type(pins) is _FreshUpgradePinsV1 and type(pins.source) is _FreshSourcePinsV1)
+    p = pins.source
+    _need(type(p.route) is original.RetainedOwnerRoute0017V1)
+    _need(
+        all(
+            type(value) is str
+            for value in (
+                p.route.database_head,
+                p.route.host,
+                p.route.database,
+                p.route.owner,
+            )
+        )
+    )
+    _need(
+        original._digest(p.source_commit, git=True)
+        and original._digest(p.source_tree, git=True)
+    )
+    _need(
+        all(
+            original._digest(value)
+            for value in (
+                p.source_archive_sha256,
+                p.origin_sha256,
+                p.route.source_manifest_sha256,
+                p.route.ca_sha256,
+                p.route.cluster_system_identifier_sha256,
+                pins.maintenance_settings_sha256,
+            )
+        )
+    )
+    _need(p.route.database_head == "0017" and p.route.host == "127.0.0.1")
+    _need(type(p.route.port) is int and p.route.port == 15439)
+    _need(
+        type(p.route.owner_oid) is int
+        and p.route.owner_oid == 10
+        and type(p.route.database_oid) is int
+        and p.route.database_oid > 0
+    )
+    _need(type(p.route.database) is str and type(p.route.owner) is str)
+    _need(
+        p.expected_catalog_sha256 is None or original._digest(p.expected_catalog_sha256)
+    )
 
 
 class _TransactionPurpose(Enum):
@@ -236,7 +373,7 @@ def _prepared(pins, *, owner_dsn_file, ca_file, source_archive_file):
     _need(type(pins) is Retained0017UpgradePinsV1)
     _need(original._digest(pins.maintenance_settings_sha256))
     url, tls, plan = original._prepared(
-        pins.retained,
+        _transaction_source_v1(pins),
         owner_dsn_file=owner_dsn_file,
         ca_file=ca_file,
         source_archive_file=source_archive_file,
@@ -259,10 +396,12 @@ def _replay_source(prepared, pins):
     _require_reference_seal()
     shared._verify_reviewed_source_archive(
         prepared[4],
-        source_commit=pins.retained.source_commit,
-        source_tree=pins.retained.source_tree,
-        source_archive_sha256=pins.retained.source_archive_sha256,
-        source_manifest_sha256=pins.retained.route.source_manifest_sha256,
+        source_commit=_transaction_source_v1(pins).source_commit,
+        source_tree=_transaction_source_v1(pins).source_tree,
+        source_archive_sha256=_transaction_source_v1(pins).source_archive_sha256,
+        source_manifest_sha256=_transaction_source_v1(
+            pins
+        ).route.source_manifest_sha256,
     )
     _need(
         original._source_plan() == prepared[2],
@@ -281,7 +420,7 @@ def _target_tables():
 
 
 async def _maintenance(connection, pins, *, before_settings):
-    p = pins.retained.route
+    p = _transaction_source_v1(pins).route
     _need(
         await connection.scalar(
             _STORED_POLICY_SQL,
@@ -371,7 +510,9 @@ async def _begin_reviewed(connection, pins, *, purpose):
 async def _actor(connection, pins, head, *, read_only):
     await rows.heap_am.require_native_owner_storage_v1(connection)
     profile = tuple((await connection.execute(_PROFILE_SQL)).one())
-    shared._checked_profile(profile, pins.retained.route, head, read_only=read_only)
+    shared._checked_profile(
+        profile, _transaction_source_v1(pins).route, head, read_only=read_only
+    )
     return profile
 
 
@@ -382,7 +523,9 @@ async def _layouts(connection, pins, *, expected_names):
     relations = tuple((row[0], row[1], row[2]) for row in actual)
     _need({row[0] for row in actual} == expected_names)
     return rows._checked_layouts(
-        actual, rows._expected_relations(relations), pins.retained.route.owner_oid
+        actual,
+        rows._expected_relations(relations),
+        _transaction_source_v1(pins).route.owner_oid,
     )
 
 
@@ -394,7 +537,7 @@ async def _lock_original_tables(connection, columns):
     )
 
 
-async def _capture_source17(connection, *, read_only):
+async def _capture_source17(connection, *, read_only, _custody=None):
     components = (
         ("scope", baseline.SAFE_CATALOG_SQL.removeprefix("\nSELECT ")),
         ("functions", baseline._source_functions_predicate()),
@@ -416,10 +559,20 @@ async def _capture_source17(connection, *, read_only):
     await baseline._require_raw_catalog_admission_v1(connection, combined, components)
     raw = await connection.scalar(text(baseline.CATALOG_SQL))
     # Actual observed read/write mode is validated explicitly, never retagged.
-    normalized = baseline._normalize(raw, read_only="on" if read_only else "off")
-    _need(
-        baseline.sha(baseline.canonical(normalized)) == baseline.SEALED_CATALOG_SHA256
-    )
+    if _custody is None:
+        normalized = baseline._normalize(raw, read_only="on" if read_only else "off")
+        _need(
+            baseline.sha(baseline.canonical(normalized))
+            == baseline.SEALED_CATALOG_SHA256
+        )
+    else:
+        from scripts import retained0017_bootstrap_catalog_v2 as bootstrap
+        from scripts import retained_pg_bootstrap_custody_v1 as custody
+
+        await custody._replay_owned_connection_v1(_custody, connection)
+        bootstrap._require_bootstrap_catalog17_v2(
+            raw, read_only="on" if read_only else "off"
+        )
     _require_reference_seal()
     _need(baseline.source17_contract_v1() == contract)
     return baseline.sha(
@@ -487,7 +640,7 @@ async def _state(connection, pins, layouts):
     snapshot = await rows.snapshot_rows_v2(
         connection,
         relations,
-        owner_oid=pins.retained.route.owner_oid,
+        owner_oid=_transaction_source_v1(pins).route.owner_oid,
         marker_scope=rows.MarkerScopeV2.EXCLUDE_UPGRADE_MARKER,
         max_rows=original.MAX_ROWS,
         max_table_bytes=original.MAX_TABLE_BYTES,
@@ -510,7 +663,7 @@ async def _state(connection, pins, layouts):
 
 
 async def _optional_legacy_catalog_pin(connection, pins):
-    expected = pins.retained.expected_catalog_sha256
+    expected = _transaction_source_v1(pins).expected_catalog_sha256
     if expected is None:
         return None
     _need(original._digest(expected))
@@ -524,9 +677,11 @@ async def _optional_legacy_catalog_pin(connection, pins):
     return digest
 
 
-async def _before(connection, pins, *, read_only):
+async def _before(connection, pins, *, read_only, _custody=None):
     await _actor(connection, pins, "0017", read_only=read_only)
-    catalog = await _capture_source17(connection, read_only=read_only)
+    catalog = await _capture_source17(
+        connection, read_only=read_only, _custody=_custody
+    )
     legacy_catalog_pin = await _optional_legacy_catalog_pin(connection, pins)
     contract = baseline.source17_contract_v1()
     layouts = await _layouts(connection, pins, expected_names=set(contract["columns"]))
@@ -552,7 +707,7 @@ async def _before(connection, pins, *, read_only):
     return state
 
 
-async def _after(connection, pins, before, *, read_only):
+async def _target55_layouts_v1(connection, pins, *, read_only):
     await connection.exec_driver_sql(
         "SET LOCAL search_path TO pg_catalog, public, pg_temp"
     )
@@ -560,11 +715,48 @@ async def _after(connection, pins, before, *, read_only):
     # This is the existing genuine source55 native catalog/baseline, not an
     # observed rehearsal substituted for an independent expected definition.
     value = await connection.scalar(text(target55.OWNER_CATALOG_SQL))
-    observed = target55._observed(
-        value, owner_mode=True, read_only="on" if read_only else "off"
+    observed = (
+        target55._observe_owner_repeatable_read_catalog_v1(value)
+        if read_only
+        else target55._observed(value, owner_mode=True, read_only="off")
     )
     _need(observed["native_definitions_sha256"] == target55._required_baseline())
-    layouts = await _layouts(connection, pins, expected_names=_target_tables())
+    return await _layouts(connection, pins, expected_names=_target_tables())
+
+
+async def _retained_target55_catalog_v1(connection):
+    control = await connection.scalar(
+        text(
+            "SELECT pg_catalog.jsonb_agg(pg_catalog.to_jsonb(s) ORDER BY id) FROM public.demo_automation_state s"
+        )
+    )
+    _need(type(control) is list and len(control) == 1)
+    item = control[0]
+    _need(
+        item["armed"] is False
+        and item["emergency_stop"]
+        is item["locked"]
+        is item["restart_latch_required"]
+        is True
+        and type(item["control_revision"]) is int
+        and item["control_revision"] == 0
+    )
+    approved, size, logical, mapped_size, mapped = (
+        await connection.execute(_RETAINED_CATALOG)
+    ).one()
+    _need(
+        approved is True,
+        "retained0017_upgrade0055_transport_check_identity_mismatch",
+    )
+    _need(
+        all(type(n) is int and 0 < n <= 32 * 1024 * 1024 for n in (size, mapped_size))
+        and all(original._digest(digest) for digest in (logical, mapped))
+    )
+    return {"logical_sha256": logical, "rehearsal_catalog_sha256": mapped}
+
+
+async def _after(connection, pins, before, *, read_only):
+    layouts = await _target55_layouts_v1(connection, pins, read_only=read_only)
     projection.require_preserved_old_layouts_v1(before["row_layouts"], layouts)
     await _maintenance(connection, pins, before_settings=False)
     state = await _state(connection, pins, layouts)
@@ -593,27 +785,55 @@ async def _after(connection, pins, before, *, read_only):
             if name not in original_names
         )
     )
-    control = await connection.scalar(
-        text(
-            "SELECT pg_catalog.jsonb_agg(pg_catalog.to_jsonb(s) ORDER BY id) FROM public.demo_automation_state s"
-        )
+    catalog = await _retained_target55_catalog_v1(connection)
+    return state | catalog | {"old_projection": actual}
+
+
+def _original_layouts_from_target55_v1(layouts):
+    names = baseline.source17_contract_v1()["columns"]
+    old = []
+    for name, oid, kind, columns in layouts:
+        if name in names:
+            original_columns = columns[: len(names[name])]
+            _need([column[0] for column in original_columns] == names[name])
+            old.append([name, oid, kind, original_columns])
+    _need({row[0] for row in old} == set(names))
+    projection.require_preserved_old_layouts_v1(old, layouts)
+    return old
+
+
+async def _replay_stopped0055_continuity_v1(connection, pins, *, expected_after_sha256):
+    """Reproduce the upgrade's exact target-state digest in a READ ONLY snapshot.
+
+    The caller must establish physical cold-copy custody separately. Neither a
+    matching digest nor the observations here grants any write authority.
+    """
+    _need(type(pins) is _StoppedTarget55PinsV1)
+    _transaction_source_v1(pins)
+    _require_reference_seal()
+    _need(original._digest(expected_after_sha256))
+    await rows.heap_am.lock_native_owner_marker_v1(connection)
+    await connection.exec_driver_sql(
+        "LOCK TABLE "
+        + ",".join('public."' + name + '"' for name in sorted(_target_tables()))
+        + " IN ACCESS SHARE MODE NOWAIT"
     )
-    _need(type(control) is list and len(control) == 1)
-    item = control[0]
+    layouts = await _target55_layouts_v1(connection, pins, read_only=True)
+    old = _original_layouts_from_target55_v1(layouts)
+    await _maintenance(connection, pins, before_settings=False)
+    state = await _state(connection, pins, layouts)
+    catalog = await _retained_target55_catalog_v1(connection)
+    actual = await _projection(
+        connection, old, phase=projection.OldColumnProjectionV1.ORIGINAL
+    )
+    after_sha256 = baseline.sha(
+        baseline.canonical(state | catalog | {"old_projection": actual})
+    )
     _need(
-        item["armed"] is False
-        and item["emergency_stop"]
-        is item["locked"]
-        is item["restart_latch_required"]
-        is True
-        and type(item["control_revision"]) is int
-        and item["control_revision"] == 0
+        after_sha256 == expected_after_sha256,
+        "retained0017_upgrade0055_stopped_continuity_digest_mismatch",
     )
-    size, logical = (await connection.execute(LOGICAL_CATALOG)).one()
-    _need(
-        type(size) is int and 0 < size <= 32 * 1024 * 1024 and original._digest(logical)
-    )
-    return state | {"logical_sha256": logical, "old_projection": actual}
+    return after_sha256
 
 
 def _migrate(sync_connection, script):
@@ -631,20 +851,28 @@ def _migrate(sync_connection, script):
     _need(migration.get_current_heads() == ("0055",))
 
 
-async def _readonly_before(engine, pins):
+async def _readonly_before(engine, pins, *, _custody=None):
     async with engine.connect() as connection:
         transaction = await _begin_reviewed(
             connection, pins, purpose=_TransactionPurpose.READ_SOURCE17
         )
         try:
             await rows.heap_am.lock_native_owner_marker_v1(connection)
-            return await _before(connection, pins, read_only=True)
+            return await _before(connection, pins, read_only=True, _custody=_custody)
         finally:
             await transaction.rollback()
 
 
-async def _commit_once(engine, pins, prepared, expected):
-    _require_apply_lineage()
+async def _commit_once(engine, pins, prepared, expected, *, _custody=None):
+    if _custody is None:
+        _require_apply_lineage()
+    else:
+        from scripts import retained_pg_bootstrap_custody_v1 as custody
+
+        _need(type(pins) in (Retained0017UpgradePinsV1, _FreshUpgradePinsV1))
+        custody._claim_owned_apply_v1(
+            _custody, fixture=type(pins) is _FreshUpgradePinsV1
+        )
     attempted = committed = False
     try:
         async with engine.connect() as connection:
@@ -666,7 +894,9 @@ async def _commit_once(engine, pins, prepared, expected):
                 )
                 # pg_catalog-only is part of the sealed raw capture profile.
                 await connection.exec_driver_sql("SET LOCAL search_path TO pg_catalog")
-                before = await _before(connection, pins, read_only=False)
+                before = await _before(
+                    connection, pins, read_only=False, _custody=_custody
+                )
                 _need(before == expected)
                 await connection.exec_driver_sql(
                     "SET LOCAL search_path TO " + _DDL_SEARCH_PATH
@@ -674,30 +904,53 @@ async def _commit_once(engine, pins, prepared, expected):
                 await _maintenance(connection, pins, before_settings=False)
                 _replay_source(prepared, pins)
                 savepoint = await connection.begin_nested()
+                if _custody is not None:
+                    await custody._replay_owned_connection_v1(_custody, connection)
+                    custody._advance_owned_apply_v1(_custody, "rehearsal")
                 await connection.run_sync(_migrate, prepared[3])
                 _replay_source(prepared, pins)
                 rehearsal = await _after(connection, pins, before, read_only=False)
                 await savepoint.rollback()
                 await connection.exec_driver_sql("SET LOCAL search_path TO pg_catalog")
-                _need(await _before(connection, pins, read_only=False) == before)
+                _need(
+                    await _before(connection, pins, read_only=False, _custody=_custody)
+                    == before
+                )
+                if _custody is not None:
+                    custody._advance_owned_apply_v1(_custody, "rolled_back")
                 await connection.exec_driver_sql(
                     "SET LOCAL search_path TO " + _DDL_SEARCH_PATH
                 )
                 await _maintenance(connection, pins, before_settings=False)
                 _replay_source(prepared, pins)
+                if _custody is not None:
+                    await custody._replay_owned_connection_v1(_custody, connection)
+                    custody._advance_owned_apply_v1(_custody, "final")
                 await connection.run_sync(_migrate, prepared[3])
                 _replay_source(prepared, pins)
                 final = await _after(connection, pins, before, read_only=False)
-                _need(final["logical_sha256"] == rehearsal["logical_sha256"])
+                _need(
+                    final["rehearsal_catalog_sha256"]
+                    == rehearsal["rehearsal_catalog_sha256"],
+                    "retained0017_upgrade0055_rehearsal_catalog_mismatch",
+                )
+                if _custody is not None:
+                    await custody._replay_owned_connection_v1(_custody, connection)
+                    _replay_source(prepared, pins)
+                    custody._advance_owned_apply_v1(_custody, "commit_attempted")
                 attempted = True
                 await transaction.commit()
                 committed = True
+                if _custody is not None:
+                    custody._advance_owned_apply_v1(_custody, "readback_only")
                 return before, final
             except BaseException:
                 if not attempted:
                     await transaction.rollback()
                 raise
     except BaseException:  # noqa: BLE001 -- redact driver/cancellation after the commit boundary.
+        if _custody is not None:
+            custody._mark_owned_unknown_v1(_custody)
         if committed:
             raise Retained0017UpgradeReadbackRequired(
                 "retained0017_upgrade0055_committed_readback_required"
@@ -707,6 +960,168 @@ async def _commit_once(engine, pins, prepared, expected):
                 "retained0017_upgrade0055_commit_unknown_do_not_retry"
             ) from None
         raise Retained0017UpgradeRefused("retained0017_upgrade0055_refused") from None
+
+
+def _prepared_owned_v1(owned, pins, source_archive_file):
+    """Only the live lease selects the TLS owner and database route."""
+    from contextlib import redirect_stdout
+
+    from scripts import native_owner_route_preflight_0056_v1 as route
+    from scripts import retained_pg_bootstrap_custody_v1 as custody
+
+    _require_reference_seal()
+    fixture = type(pins) is _FreshUpgradePinsV1
+    if fixture:
+        _checked_fresh_pins_v1(pins)
+    else:
+        _need(type(pins) is Retained0017UpgradePinsV1)
+        original._checked_pins(pins.retained)
+        _need(original._digest(pins.maintenance_settings_sha256))
+    url, tls = custody._owned_route_v1(owned, pins, fixture=fixture)
+    with redirect_stdout(io.StringIO()):
+        source = route._source_for_profile(route.profiles.DB0058)
+    _need(
+        source.actual_source_head == "0058"
+        and source.manifest_sha256
+        == _transaction_source_v1(pins).route.source_manifest_sha256
+    )
+    shared._verify_reviewed_source_archive(
+        source_archive_file,
+        source_commit=_transaction_source_v1(pins).source_commit,
+        source_tree=_transaction_source_v1(pins).source_tree,
+        source_archive_sha256=_transaction_source_v1(pins).source_archive_sha256,
+        source_manifest_sha256=_transaction_source_v1(
+            pins
+        ).route.source_manifest_sha256,
+    )
+    plan = original._source_plan()
+    config = Config(str(ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(ROOT / "migrations"))
+    graph = ScriptDirectory.from_config(config)
+    _need(tuple(graph.get_heads()) == ("0058",))
+    _need(
+        tuple(
+            step.revision
+            for step in reversed(tuple(graph.iterate_revisions("0055", "0017")))
+        )
+        == tuple(f"{number:04d}" for number in range(18, 56))
+    )
+    return url, tls, plan, graph, source_archive_file
+
+
+async def _exercise_owned_fresh_0017_to_0055_v1(owned, pins, *, source_archive_file):
+    _need(type(pins) is _FreshUpgradePinsV1)
+    return await _run_owned_0017_to_0055_v1(
+        owned, pins, source_archive_file=source_archive_file, confirmation=None
+    )
+
+
+async def _run_owned_0017_to_0055_v1(owned, pins, *, source_archive_file, confirmation):
+    """Owned source plan or one commit with two independent readbacks."""
+    from scripts import retained_pg_bootstrap_custody_v1 as custody
+
+    fixture = type(pins) is _FreshUpgradePinsV1
+    _need(
+        confirmation is None
+        or (not fixture and type(confirmation) is str and confirmation == CONFIRMATION)
+    )
+    prepared = _prepared_owned_v1(owned, pins, source_archive_file)
+    engine = create_async_engine(
+        prepared[0],
+        poolclass=NullPool,
+        connect_args={
+            "ssl": prepared[1],
+            "timeout": 10,
+            "server_settings": dict(_STARTUP_SETTINGS),
+        },
+        hide_parameters=True,
+    )
+    committed = False
+    try:
+        custody._bind_engine_v1(owned, engine)
+        async with asyncio.timeout(600):
+            first = await _readonly_before(engine, pins, _custody=owned)
+            second = await _readonly_before(engine, pins, _custody=owned)
+            _need(first == second, "retained0017_upgrade0055_independent_before_differ")
+            if not fixture and confirmation is None:
+                return {
+                    "database_head": "0017",
+                    "snapshot_sha256": baseline.sha(baseline.canonical(first)),
+                    "maintenance_settings_sha256": pins.maintenance_settings_sha256,
+                    "source17_bootstrap_catalog_verified": True,
+                    "independent_readbacks": 2,
+                    "migration_performed": False,
+                    "preserved_backup_lineage_verified": True,
+                    "schema_upgrade_authorized": False,
+                    "exchange_flat": None,
+                    "account_complete": False,
+                    "execution_authority": False,
+                }
+            _need(
+                _prepared_owned_v1(owned, pins, source_archive_file)[2] == prepared[2]
+            )
+            before, final = await _commit_once(
+                engine, pins, prepared, first, _custody=owned
+            )
+            committed = True
+            for _ in range(2):
+                _replay_source(prepared, pins)
+                async with engine.connect() as connection:
+                    transaction = await _begin_reviewed(
+                        connection, pins, purpose=_TransactionPurpose.READ_TARGET55
+                    )
+                    try:
+                        await custody._replay_owned_connection_v1(owned, connection)
+                        await rows.heap_am.lock_native_owner_marker_v1(connection)
+                        _need(
+                            await _after(connection, pins, before, read_only=True)
+                            == final
+                        )
+                    finally:
+                        await transaction.rollback()
+            return {
+                "migration_performed": True,
+                "database_head": "0055",
+                "row_encoding": rows.ROW_ENCODING,
+                "before_sha256": baseline.sha(baseline.canonical(before)),
+                "after_sha256": baseline.sha(baseline.canonical(final)),
+                "source17_bootstrap_catalog_verified": True,
+                "rehearsal_rolled_back_verified": True,
+                "independent_readbacks": 2,
+                "armed": False,
+                "emergency_stop": True,
+                "restart_latch_required": True,
+                "control_revision": 0,
+                "preserved_backup_lineage_verified": not fixture,
+                "schema_upgrade_authorized": False,
+                "exchange_flat": None,
+                "account_complete": False,
+                "execution_authority": False,
+            }
+    except (Retained0017UpgradeCommitUnknown, Retained0017UpgradeReadbackRequired):
+        raise
+    except BaseException:  # noqa: BLE001 -- no private DB values from failed owned acceptance.
+        custody._mark_owned_unknown_v1(owned)
+        if committed:
+            raise Retained0017UpgradeReadbackRequired(
+                "retained0017_upgrade0055_committed_readback_required"
+            ) from None
+        raise Retained0017UpgradeRefused(
+            "retained0017_upgrade0055_owned_custody_refused"
+        ) from None
+    finally:
+        already_failed = sys.exc_info()[0] is not None
+        try:
+            await engine.dispose()
+        except BaseException:  # noqa: BLE001 -- never replace commit-unknown with a cleanup error.
+            if not already_failed:
+                if committed:
+                    raise Retained0017UpgradeReadbackRequired(
+                        "retained0017_upgrade0055_cleanup_readback_required"
+                    ) from None
+                raise Retained0017UpgradeRefused(
+                    "retained0017_upgrade0055_owned_cleanup_refused"
+                ) from None
 
 
 async def upgrade_preserved_owner_0017_to_0055_v1(
@@ -792,9 +1207,11 @@ async def upgrade_preserved_owner_0017_to_0055_v1(
                 "status": "COMMITTED_STOPPED_0055_READBACK_VERIFIED",
                 "database_head": "0055",
                 "row_encoding": rows.ROW_ENCODING,
-                "source_commit": pins.retained.source_commit,
-                "source_tree": pins.retained.source_tree,
-                "preserved_backup_sha256": pins.retained.preserved_backup_sha256,
+                "source_commit": _transaction_source_v1(pins).source_commit,
+                "source_tree": _transaction_source_v1(pins).source_tree,
+                "preserved_backup_sha256": _transaction_source_v1(
+                    pins
+                ).preserved_backup_sha256,
                 "backup_to_database_lineage_verified": False,
                 "before_sha256": baseline.sha(baseline.canonical(before)),
                 "after_sha256": baseline.sha(baseline.canonical(final)),

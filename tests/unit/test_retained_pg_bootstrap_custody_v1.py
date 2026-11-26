@@ -1,0 +1,595 @@
+"""Inert bootstrap input/source refusals; no server, private data or lease mint."""
+
+import hashlib
+import io
+import json
+import stat
+import tarfile
+from copy import deepcopy
+from types import SimpleNamespace
+
+import pytest
+
+from scripts import retained_pg_bootstrap_custody_v1 as subject
+
+
+@pytest.mark.parametrize("error", subject._OWNED_TERMINAL_ERRORS)
+def test_owned_supervisor_carries_only_exact_terminal_failure_frame(error):
+    stdout = subject._owned_failure_stdout_v1(error.status)
+    with pytest.raises(error, match=error.status):
+        subject._raise_owned_supervisor_terminal_v1(
+            SimpleNamespace(returncode=2, stdout=stdout, stderr=b"")
+        )
+    for outcome in (
+        SimpleNamespace(returncode=0, stdout=stdout, stderr=b""),
+        SimpleNamespace(returncode=2, stdout=stdout, stderr=b"private"),
+        SimpleNamespace(returncode=2, stdout=stdout + b"private", stderr=b""),
+        SimpleNamespace(
+            returncode=2,
+            stdout=subject._owned_failure_stdout_v1("REFUSED"),
+            stderr=b"",
+        ),
+    ):
+        assert subject._raise_owned_supervisor_terminal_v1(outcome) is None
+
+
+@pytest.mark.parametrize(
+    ("confirmation", "settings", "admitted"),
+    (
+        (None, None, True),
+        (None, "a" * 64, True),
+        (subject._PRESERVED_CONFIRMATION, "a" * 64, True),
+        (subject._PRESERVED_CONFIRMATION, None, False),
+        (True, "a" * 64, False),
+    ),
+)
+def test_preserved_request_only_discovers_the_settings_pin_in_plan_mode(
+    tmp_path, monkeypatch, confirmation, settings, admitted
+):
+    packet = {
+        "schema": "ctcc.retained_pg.preserved_owner_request.v1",
+        "confirmation": confirmation,
+        "files": {
+            name: str(tmp_path / name)
+            for name in subject.RetainedBootstrapFilesV1.__dataclass_fields__
+        },
+        "pins": {
+            "retained": {
+                "preserved_backup_sha256": subject.PRESERVED_BACKUP_SHA256,
+                "source_commit": "a" * 40,
+                "source_tree": "b" * 40,
+                "source_archive_sha256": "c" * 64,
+                "route": {"source_manifest_sha256": "d" * 64},
+                "expected_catalog_sha256": None,
+            },
+            "maintenance_settings_sha256": settings,
+        },
+    }
+    monkeypatch.setattr(
+        subject, "_private_bytes", lambda *_: subject._canonical(packet)
+    )
+    if admitted:
+        assert subject._read_request(tmp_path / "request")[0] == packet
+    else:
+        with pytest.raises(subject.RetainedBootstrapRefused):
+            subject._read_request(tmp_path / "request")
+
+
+def test_preserved_plan_lease_cannot_claim_write_or_switch_to_fixture(monkeypatch):
+    record = SimpleNamespace(
+        phase=subject._Phase.READY,
+        origin=subject._Origin.PRESERVED,
+        engine=object(),
+        preserved_apply_confirmed=False,
+    )
+    seen = []
+    monkeypatch.setattr(subject, "_guard", lambda: None)
+    monkeypatch.setattr(subject, "_record", lambda _owner: record)
+    monkeypatch.setattr(subject, "_journal", lambda _record, phase: seen.append(phase))
+    for fixture in (False, True):
+        with pytest.raises(subject.RetainedBootstrapRefused):
+            subject._claim_owned_apply_v1(object(), fixture=fixture)
+    assert seen == [] and record.phase is subject._Phase.READY
+    record.preserved_apply_confirmed = True
+    subject._claim_owned_apply_v1(object())
+    with pytest.raises(subject.RetainedBootstrapRefused):
+        subject._claim_owned_apply_v1(object())
+    assert seen == [subject._Phase.CLAIMED]
+
+
+def _stopped55_request(tmp_path):
+    return {
+        "schema": "ctcc.retained_pg.stopped0055_readonly_request.v1",
+        "files": {
+            name: str(tmp_path / name)
+            for name in subject.RetainedBootstrapFilesV1.__dataclass_fields__
+        },
+        "source": {
+            "commit": "1" * 40,
+            "tree": "2" * 40,
+            "archive": "3" * 64,
+            "manifest": "4" * 64,
+        },
+        "predecessor": {
+            "physical_inventory_sha256": "5" * 64,
+            "native_acceptance_sha256": "6" * 64,
+            "source_archive_sha256": "7" * 64,
+            "after_sha256": "8" * 64,
+        },
+        "route": {
+            "source_manifest_sha256": "4" * 64,
+            "ca_sha256": "9" * 64,
+            "cluster_system_identifier_sha256": "a" * 64,
+            "host": "127.0.0.1",
+            "port": subject.PORT,
+            "database": "declared_db",
+            "owner": "declared_owner",
+            "database_oid": 21,
+            "owner_oid": 10,
+            "database_head": "0055",
+        },
+        "maintenance_settings_sha256": "b" * 64,
+    }
+
+
+def test_stopped55_request_is_a_distinct_read_only_purpose(tmp_path, monkeypatch):
+    packet = _stopped55_request(tmp_path)
+    monkeypatch.setattr(
+        subject, "_private_bytes", lambda *_: subject._canonical(packet)
+    )
+    assert subject._read_stopped55_request(tmp_path / "request")[0] == packet
+    packet["confirmation"] = subject._PRESERVED_CONFIRMATION
+    with pytest.raises(subject.RetainedBootstrapRefused):
+        subject._read_stopped55_request(tmp_path / "request")
+
+
+def test_stopped55_reader_purpose_cannot_claim_either_write_origin(monkeypatch):
+    record = SimpleNamespace(
+        phase=subject._Phase.READY,
+        origin=subject._Origin.STOPPED55_READER,
+        engine=object(),
+        preserved_apply_confirmed=True,
+    )
+    monkeypatch.setattr(subject, "_guard", lambda: None)
+    monkeypatch.setattr(subject, "_record", lambda _owner: record)
+    for fixture in (False, True):
+        with pytest.raises(subject.RetainedBootstrapRefused):
+            subject._claim_owned_apply_v1(object(), fixture=fixture)
+
+
+def test_private_maintenance_config_pins_lock_capacity_and_existing_limits(
+    tmp_path, monkeypatch
+):
+    written = {}
+
+    def collect(path, raw, **_kwargs):
+        written[path.name] = raw
+
+    monkeypatch.setattr(subject, "_write_private", collect)
+    settings = subject._bootstrap_config(
+        tmp_path,
+        database="fixture_db",
+        owner="fixture_owner",
+        cluster_name="fixture_cluster",
+        tls=(b"ca", b"cert", b"key"),
+    )
+    assert settings["max_locks_per_transaction"] == "1024"
+    assert settings["autovacuum_max_workers"] == "3"
+    assert settings["max_connections"] == "4"
+    assert settings["max_prepared_transactions"] == "0"
+    assert settings["max_wal_senders"] == "0"
+    assert settings["max_worker_processes"] == "0"
+    assert settings["shared_buffers"] == "'16MB'"
+    assert settings["fsync"] == settings["full_page_writes"] == "on"
+    assert written["maintenance.conf"].count(b"max_locks_per_transaction=1024\n") == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "row_change",
+    (
+        None,
+        (1, "64"),
+        (1, "2048"),
+        (3, "configuration file"),
+        (4, True),
+        (4, 0),
+        (5, "170012"),
+    ),
+)
+async def test_maintenance_lock_profile_requires_exact_server_readback(row_change):
+    rows = tuple(
+        (name, value, "postmaster", "command line", False, "170011")
+        for name, value in (
+            ("autovacuum_max_workers", "3"),
+            ("max_connections", "4"),
+            ("max_locks_per_transaction", "1024"),
+            ("max_prepared_transactions", "0"),
+            ("max_wal_senders", "0"),
+            ("max_worker_processes", "0"),
+        )
+    )
+
+    async def execute(sql):
+        assert "FROM pg_catalog.pg_settings" in sql
+        assert "'max_locks_per_transaction'" in sql
+        if row_change is None:
+            return rows
+        index, replacement = row_change
+        lock = rows[2][:index] + (replacement,) + rows[2][index + 1 :]
+        return rows[:2] + (lock,) + rows[3:]
+
+    connection = SimpleNamespace(exec_driver_sql=execute)
+    if row_change is None:
+        assert await subject._read_maintenance_lock_profile_v1(connection) == (
+            hashlib.sha256(subject._canonical(rows)).hexdigest()
+        )
+    else:
+        with pytest.raises(
+            subject.RetainedBootstrapRefused,
+            match="retained_pg_maintenance_lock_profile_mismatch",
+        ):
+            await subject._read_maintenance_lock_profile_v1(connection)
+
+
+def test_safe_chain_recovers_suppressed_context_without_messages_or_values():
+    secret = "PRIVATE_DIAG_CANARY_7a7d492a"
+    try:
+        try:
+            raise ValueError(secret)
+        except ValueError:
+            raise subject.RetainedBootstrapRefused(
+                "retained_pg_bootstrap_refused"
+            ) from None
+    except subject.RetainedBootstrapRefused as error:
+        assert error.__suppress_context__ is True
+        report = subject._safe_exception_chain_v1(error)
+    encoded = subject._canonical(report)
+    assert secret.encode() not in encoded
+    assert {node["type_name"] for node in report["nodes"]} == {
+        "RetainedBootstrapRefused",
+        "ValueError",
+    }
+    assert report["nodes"][0]["literal_safe_code"] == "retained_pg_bootstrap_refused"
+    assert report["nodes"][1]["literal_safe_code"] is None
+    assert all(
+        set(frame) == {"source", "function", "line"}
+        for node in report["nodes"]
+        for frame in node["frames"]
+    )
+
+
+def test_safe_chain_uses_native_exception_slots_without_custom_getters_or_str():
+    called = []
+
+    class Trap(ValueError):
+        @property
+        def args(self):
+            called.append("args")
+            raise AssertionError("not native args")
+
+        @property
+        def __context__(self):
+            called.append("context")
+            raise AssertionError("not native context")
+
+        @property
+        def __traceback__(self):
+            called.append("traceback")
+            raise AssertionError("not native traceback")
+
+        def __str__(self):
+            called.append("str")
+            raise AssertionError("private rendering")
+
+    try:
+        raise Trap("PRIVATE_DIAG_CANARY_736f2b")
+    except Trap as error:
+        encoded = subject._canonical(subject._safe_exception_chain_v1(error))
+    assert called == []
+    assert b"PRIVATE_DIAG_CANARY" not in encoded
+
+
+def test_image_posix_multiarch_colon_does_not_expand_source_or_cold_paths():
+    name = "var/lib/dpkg/info/libc6:amd64.list"
+    assert subject._image_relative(name).as_posix() == name
+    assert (
+        subject._image_guest_link(
+            subject._image_relative("var/lib/dpkg/info/alias"),
+            "libc6:amd64.list",
+            hard=False,
+        )
+        == name
+    )
+    with pytest.raises(subject.RetainedBootstrapRefused):
+        subject._relative(name)
+    with pytest.raises(subject.RetainedBootstrapRefused):
+        subject._guest_link(
+            subject._relative("var/lib/dpkg/info/alias"), "libc6:amd64.list", hard=False
+        )
+
+
+@pytest.mark.parametrize(
+    "name", ("../escape", "/absolute", "a//b", "a/./b", "a\\b", "a\x00b")
+)
+def test_image_paths_still_refuse_escape_ambiguous_or_control_names(name):
+    with pytest.raises(subject.RetainedBootstrapRefused):
+        subject._image_relative(name)
+
+
+def test_missing_child_submount_view_refuses_before_executable_or_pg_can_start(
+    tmp_path, monkeypatch
+):
+    rootfs, runtime = tmp_path / "image", tmp_path / "runtime"
+    rootfs.mkdir()
+    runtime.mkdir()
+    (rootfs / "run").mkdir()
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("a missing native mount view cannot launch any child")
+
+    monkeypatch.setattr(subject.subprocess, "Popen", forbidden)
+    with pytest.raises(
+        subject.RetainedBootstrapRefused, match="child_runtime_not_visible"
+    ):
+        subject._require_child_runtime_visibility_v1(
+            rootfs, runtime, b"unaccepted inventory"
+        )
+
+
+def _locator():
+    return {
+        "schema": "ctcc.private_python.maintenance_vendor_locator.v1",
+        "outer": "/root/declared-independent-vendor-fixture",
+        "venv": "/root/declared-independent-vendor-fixture/runtime/venv",
+        "tree_manifest": "/root/declared-independent-vendor-fixture/VENDOR_ENV_TREE_PRIVATE.json",
+        "tree_sha256": subject.VENDOR_TREE_SHA256,
+        "python_image_tree_sha256": subject.PYTHON_TREE_SHA256,
+        "source_dependency_input_sha256": subject.DEPENDENCY_INPUT_SHA256,
+        "lock_sha256": subject.LOCK_SHA256,
+        "logical_executable": "/run/venv/bin/python",
+        "logical_venv": "/run/venv",
+        "vendor_count": 41,
+        "project_installed": False,
+        "consumer_must_verify_tree_and_remount_readonly": True,
+        "saved_locator_is_maintenance_authority": False,
+    }
+
+
+def test_locator_address_is_data_and_never_its_historical_hash_authority():
+    raw = subject._canonical(_locator())
+    assert subject._sha(raw) != subject.VENDOR_LOCATOR_SHA256
+    parsed, _venv, _manifest = subject._checked_provider_locator(raw)
+    assert parsed == _locator()
+    assert subject._RECORDS == {}
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("saved_locator_is_maintenance_authority", True),
+        ("consumer_must_verify_tree_and_remount_readonly", 1),
+        ("vendor_count", True),
+        ("vendor_count", 42),
+        ("project_installed", 0),
+        ("tree_sha256", "0" * 64),
+        ("python_image_tree_sha256", "0" * 64),
+        ("source_dependency_input_sha256", "0" * 64),
+        ("lock_sha256", "0" * 64),
+        ("logical_executable", "/usr/bin/python"),
+        ("venv", "/root/other-runtime/venv"),
+        ("tree_manifest", "/root/other-tree.json"),
+        ("outer", "/root/../arbitrary"),
+    ],
+)
+def test_locator_cannot_promote_pass_flags_alternate_code_or_conflicting_resource(
+    field, value
+):
+    data = _locator()
+    data[field] = value
+    with pytest.raises(subject.RetainedBootstrapRefused):
+        subject._checked_provider_locator(subject._canonical(data))
+    assert subject._RECORDS == {}
+
+
+def test_locator_extra_authority_field_is_refused():
+    data = _locator() | {"verified": True}
+    with pytest.raises(subject.RetainedBootstrapRefused):
+        subject._checked_provider_locator(subject._canonical(data))
+
+
+def _fresh_manifest():
+    return {
+        "schema": "ctcc.retained_pg.fresh_canonical17_cold.v1",
+        "origin_nonce": "a" * 32,
+        "source17_prefix_sha256": subject.SOURCE17_PREFIX_SHA256,
+        "system_identifier_sha256": "b" * 64,
+        "entries": [
+            {"path": "", "mode": stat.S_IFDIR | 0o700},
+            {"path": "global", "mode": stat.S_IFDIR | 0o700},
+            {
+                "path": "global/pg_control",
+                "mode": stat.S_IFREG | 0o600,
+                "size": 4,
+                "sha256": subject._sha(b"data"),
+            },
+        ],
+        "regular_bytes": 4,
+    }
+
+
+def test_fresh_manifest_cannot_fulfil_preserved_backup_origin():
+    raw = subject._canonical(_fresh_manifest())
+    result = subject._cold_manifest(raw, origin=subject._Origin.FRESH_FIXTURE)
+    assert result[3] == subject._sha(subject.FRESH_FIXTURE_DOMAIN + raw)
+    assert result[3] != subject._sha(subject.PRESERVED_DOMAIN + raw)
+    with pytest.raises(subject.RetainedBootstrapRefused):
+        subject._cold_manifest(raw, origin=subject._Origin.PRESERVED)
+    assert subject._RECORDS == {}
+
+
+@pytest.mark.parametrize(
+    "change", ["duplicate", "unknown_parent", "total", "signal", "escape", "symlink"]
+)
+def test_manifest_refuses_ambiguous_or_unowned_storage_inventory(change):
+    data = deepcopy(_fresh_manifest())
+    if change == "duplicate":
+        data["entries"].append(deepcopy(data["entries"][-1]))
+    elif change == "unknown_parent":
+        data["entries"][-1]["path"] = "unlisted/pg_control"
+    elif change == "total":
+        data["regular_bytes"] = 5
+    elif change == "signal":
+        data["entries"][-1]["path"] = "recovery.signal"
+    elif change == "escape":
+        data["entries"][-1]["path"] = "../pg_control"
+    else:
+        data["entries"][-1]["mode"] = stat.S_IFLNK | 0o600
+    with pytest.raises(subject.RetainedBootstrapRefused):
+        subject._cold_manifest(
+            subject._canonical(data), origin=subject._Origin.FRESH_FIXTURE
+        )
+
+
+def test_live_directory_identity_preserves_inode_protection_without_pinning_mutable_directory_counters():
+    base = SimpleNamespace(
+        st_dev=1,
+        st_ino=2,
+        st_mode=stat.S_IFDIR | 0o700,
+        st_uid=70,
+        st_gid=70,
+        st_nlink=2,
+        st_mtime_ns=100,
+    )
+    live = SimpleNamespace(**{**vars(base), "st_nlink": 5, "st_mtime_ns": 200})
+    assert subject._directory_identity(base) == subject._directory_identity(live)
+    live.st_ino = 3
+    assert subject._directory_identity(base) != subject._directory_identity(live)
+
+
+def test_owned_lease_has_no_public_data_constructor():
+    with pytest.raises(subject.RetainedBootstrapRefused, match="not_constructible"):
+        subject.OwnedRetainedBootstrapV1()
+    with pytest.raises(subject.RetainedBootstrapRefused):
+        subject._record({"verified": True})
+    assert subject._RECORDS == {}
+
+
+def _archive():
+    files = {
+        "MANIFEST.sha256": b"declared fixture manifest\n",
+        "scripts/example.py": b"VALUE = 1\n",
+    }
+    source = {
+        "commit": "a" * 40,
+        "tree": "",
+        "archive": "",
+        "manifest": subject._sha(files["MANIFEST.sha256"]),
+    }
+
+    def object_id(kind, raw):
+        return hashlib.sha1(f"{kind} {len(raw)}\0".encode() + raw).digest()
+
+    script_tree = object_id(
+        "tree", b"100644 example.py\0" + object_id("blob", files["scripts/example.py"])
+    )
+    root_tree = object_id(
+        "tree",
+        b"100644 MANIFEST.sha256\0"
+        + object_id("blob", files["MANIFEST.sha256"])
+        + b"40000 scripts\0"
+        + script_tree,
+    )
+    source["tree"] = root_tree.hex()
+    stream = io.BytesIO()
+    with tarfile.open(
+        fileobj=stream,
+        mode="w",
+        format=tarfile.PAX_FORMAT,
+        pax_headers={"comment": source["commit"]},
+    ) as archive:
+        directory = tarfile.TarInfo("scripts/")
+        directory.type = tarfile.DIRTYPE
+        directory.mode = 0o755
+        archive.addfile(directory)
+        for name, raw in files.items():
+            item = tarfile.TarInfo(name)
+            item.mode = 0o644
+            item.size = len(raw)
+            archive.addfile(item, io.BytesIO(raw))
+    raw = stream.getvalue()
+    source["archive"] = subject._sha(raw)
+    return raw, source, files
+
+
+def test_archive_reconstructs_exact_git_tree_and_rejects_rehashed_commit_tree_or_manifest_rebinding():
+    raw, source, files = _archive()
+    assert {
+        name: value[0] for name, value in subject._archive_members(raw, source).items()
+    } == files
+    for key in ("commit", "tree", "archive", "manifest"):
+        changed = source | {key: "0" * len(source[key])}
+        with pytest.raises(subject.RetainedBootstrapRefused):
+            subject._archive_members(raw, changed)
+
+
+def test_large_admitted_source_archive_has_separate_bound_without_expanding_default_private_writes(
+    monkeypatch,
+):
+    raw, source, _files = _archive()
+    raw += b"\x00" * (32 * 1024 * 1024 + 1 - len(raw))
+    source = source | {"archive": subject._sha(raw)}
+    with pytest.raises(subject.RetainedBootstrapRefused):
+        subject._write_private(object(), raw)
+    called = []
+
+    def private_writer(path, actual, *, _maximum):
+        called.append((path, len(actual), _maximum))
+
+    monkeypatch.setattr(subject, "_write_private", private_writer)
+    # Pure routing evidence only: no simulated native publication is credited.
+    destination = object()
+    with pytest.raises(subject.RetainedBootstrapRefused):
+        subject._write_admitted_source_archive_v1(
+            destination, raw, source | {"archive": "0" * 64}
+        )
+    assert called == []
+    subject._write_admitted_source_archive_v1(destination, raw, source)
+    assert called == [(destination, len(raw), 128 * 1024 * 1024)]
+
+
+def test_unknown_record_cannot_acquire_write_or_resume_from_a_saved_receipt():
+    wrapped = object.__new__(subject.OwnedRetainedBootstrapV1)
+    with pytest.raises(subject.RetainedBootstrapRefused):
+        subject._record(wrapped)
+    assert json.loads(subject._canonical({"verified": True}))["verified"] is True
+    assert subject._RECORDS == {}
+
+
+def test_real_source_guard_installs_with_inert_registries_and_rejects_replaced_callback_before_execution(
+    monkeypatch,
+):
+    from app.trade_qualification.native_continuation_guard_v1 import (
+        NativeSourceClosureError,
+    )
+
+    assert subject._RECORDS == subject._FRESH_COLD_RECORDS == {}
+    subject._install_owner_guard_v1()
+    subject._NATIVE_GUARD()
+    called = []
+
+    def foreign_record(_value):
+        called.append(True)
+        raise AssertionError("foreign callback must not execute")
+
+    with monkeypatch.context() as changed:
+        changed.setattr(subject, "_record", foreign_record)
+        with pytest.raises(NativeSourceClosureError):
+            subject._owned_route_v1(object(), object())
+    assert called == []
+    with monkeypatch.context() as changed:
+        changed.setattr(subject, "_NATIVE_GUARD", lambda: called.append(True))
+        with pytest.raises(NativeSourceClosureError):
+            subject._owned_route_v1(object(), object())
+    assert called == []
+    subject._NATIVE_GUARD()

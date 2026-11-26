@@ -13,14 +13,13 @@ authority. Two equal artifacts, caller-provided hashes and saved receipts
 cannot install a new source seal or select a different reference purpose.
 An explicitly pending/empty source seal still refuses before any connection.
 
-Apply also has an independent **LINEAGE PENDING** hard refusal at both its
-public entry and internal commit boundary, before opening a connection. The
-backup hash, selected SQL system identifier, database/owner OIDs and honest
-`backup_to_database_lineage_verified=false` receipt cannot prove ancestry from
-the preserved cold backup. Until the actual full-file copy/control/selected
-datadir/controlled-TLS-bootstrap custody chain is wired and independently
-reviewed, even a sealed schema reference cannot enable DDL. There is no caller
-flag or report that enables this boundary. Read-only DATA behavior is unchanged.
+The connection-based public apply and any internal attempt without a live
+custody lease refuse before opening a database connection. The separate
+`run_preserved_owner_supervisor_v1` entry owns the full-file copy, control-file
+and TLS custody. It checks the exact 8ef cold manifest, starts an isolated
+postmaster on a distinct working copy and retains the original directory file
+descriptor through shutdown and re-verification. A saved receipt carries data
+only.
 
 The private v1 input embeds the existing read-only retained17 pins and adds the
 exact `actor_physical.maintenance_settings_sha256` from the reviewed raw source17
@@ -34,20 +33,23 @@ digest, it must also match the exact original encoding after full sealed17
 admission. A matching optional digest never replaces that mandatory baseline;
 `null` retains the original documented absence of an extra diagnostic pin.
 
-Without `--confirm`, the command performs two fresh read-only eligibility
-observations. With the exact fixed phrase
-`UPGRADE PRESERVED CTCC DB0017 TO STOPPED DB0055`, it performs one bounded owner
-transaction on that same explicitly pinned database. Frozen0050 requires the
-actual current/session database owner to be a superuser. The tool neither
-grants nor removes that privilege, and the non-superuser reference fixtures do
-not change the maintenance-owner policy.
+The private `ctcc.retained_pg.preserved_owner_request.v1` packet uses
+`confirmation: null` for two fresh read-only eligibility observations. That
+mode may also use `maintenance_settings_sha256: null`. The supervisor then
+reads the actual digest, checks the stored setting allowlist and replays the
+digest in both sessions before returning it. A confirmed request requires the
+exact phrase `UPGRADE PRESERVED CTCC DB0017 TO STOPPED DB0055` and a settings
+digest that matches the current source. It repeats eligibility in its own live
+lease and permits one bounded transaction on its working copy. The read-only
+lease cannot claim write permission. Frozen0050 requires the actual
+current/session database owner to be a superuser, and the owner role retains
+its existing privileges.
 
-The transaction description below is implemented engineering behavior whose
-apply remains unconditionally blocked by the mandatory live-custody lineage
-fence. The 15 authored owner-workflow PostgreSQL cases and five separate
-negative-Stop cases remain required and pending; they are neither passed nor
-skipped. Enabling a bootstrap-owner route still requires an explicit reviewed
-source-purpose binding and a genuine supervised producer, not a saved report.
+The disposable fresh acceptance and preserved-cold acceptance have separate
+results. The preserved plan proves the copied database's maintenance eligibility
+at observation time. A confirmed apply also requires the durable claim,
+rehearsal rollback, one COMMIT, two exact readbacks, fast shutdown and unchanged
+cold input. Both results carry `execution_authority=false`.
 
 Before opening a session, fixed driver startup settings disable session/local
 preload libraries, SET ROLE, public search paths and default writes. They bound
@@ -121,3 +123,11 @@ unknown real commit, lost readback, retained unresolved-intent refusal, and
 session/local preload defaults that an uncontrolled connection really attempts
 but the controlled startup blocks before rejecting their original policy. They
 are authored/collectable; no collection or inert unit result is SQL acceptance.
+
+The fresh native custody acceptance is invoked explicitly with
+`python -m pytest scripts/native_validation/test_retained_custody_fresh_acceptance_v1_pg.py`.
+Run it in the isolated native maintenance environment using the reviewed
+disposable resource request. Its result requires the native image, vendor
+environment, mount and network namespaces, and a real disposable PostgreSQL
+child. The regular hermetic PostgreSQL components continue to run the catalog
+and migration integration cases.

@@ -17,6 +17,8 @@ from alembic.operations import Operations
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncTransaction
 
+from app.domain import collector_current_0055_catalog_v1 as current55
+from app.domain import collector_current_0056_inherited_catalog_v1 as current56
 from scripts import current_contract_source_scopes_v1 as scopes
 from scripts import native_owner_upgrade_0056_v1 as subject
 from tests.integration import test_native_owner_upgrade_0057_pg as owner57_lab
@@ -56,14 +58,33 @@ async def _actual55_v2_lab(_actual56_owner_profile_lab):
     yield owner, selected, pins, prepared
 
 
+async def _assert_exact_catalog_isolation(owner, pins, catalog_sql, default_observer):
+    async with subject._marker_checked_v2(owner, pins) as connection:
+        document = await connection.scalar(text(catalog_sql))
+        for section in ("issued", "lineage"):
+            assert document[section]["server"]["isolation"] == "repeatable read"
+            assert document[section]["server"]["read_only"] == "on"
+        with pytest.raises(current55.Current0055CatalogError):
+            default_observer(document)
+
+
 async def test_actual0055_v2_rehearsal_rollback_then_commit_preserves_all_rows_and42_grants(
     _actual55_v2_lab,
 ):
     owner, selected, pins, prepared = _actual55_v2_lab
     actors = await subject._role_observation_v2(selected, owner, pins, "0055")
+    await _assert_exact_catalog_isolation(
+        owner, pins, current55.OWNER_CATALOG_SQL, current55.observe_actual_owner_catalog
+    )
     before = await subject._readonly_inventory_v2(owner, pins, "0055")
     final = await subject._commit_once(prepared, pins, owner, before)
     subject._preserved_v2(before, final)
+    await _assert_exact_catalog_isolation(
+        owner,
+        pins,
+        current56.OWNER_CATALOG_SQL,
+        current56.observe_owner_installation_0056,
+    )
     assert await subject._readonly_inventory_v2(owner, pins, "0056") == final
     assert await subject._role_observation_v2(selected, owner, pins, "0056") == actors
     assert len(final["relations"]) - len(before["relations"]) == 3
