@@ -239,9 +239,7 @@ class CapturedCandle(QualificationModel):
     @model_validator(mode="after")
     def geometry(self):
         _guard(self)
-        if self.high < max(self.open, self.close) or self.low > min(
-            self.open, self.close
-        ):
+        if _invalid_geometry(self.open, self.high, self.low, self.close):
             raise ValueError("candle_ohlc_invalid")
         return self
 
@@ -309,13 +307,13 @@ class CandlePage(_NoAuthority):
         if not self.request_started_at <= self.received_at <= self.completed_at:
             raise ValueError("request_clock_reversed")
         rows, canonical = _parse(self.response_body)
-        candles = _rows(rows, self.timeframe, self.received_at)
-        if len(candles) != self.row_count or len(candles) > self.limit:
+        decoded = _row_values(rows, self.timeframe, self.received_at)
+        if len(decoded) != self.row_count or len(decoded) > self.limit:
             raise ValueError("candle_page_cardinality_invalid")
-        if self.after is not None and any(
-            c.timestamp >= _timestamp(self.after) for c in candles
-        ):
-            raise ValueError("candle_after_cursor_violated")
+        if self.after is not None:
+            cursor = _timestamp(self.after)
+            if any(opened >= cursor for opened, _, _ in decoded):
+                raise ValueError("candle_after_cursor_violated")
         if (
             self.body_size_bytes != len(self.response_body)
             or self.body_sha256 != _sha(self.response_body)
@@ -497,8 +495,28 @@ def _floor(at, timeframe):
     )
 
 
-def _rows(rows, timeframe, received):
-    candles = []
+def _invalid_geometry(opening, high, low, closing):
+    return high < max(opening, closing) or low > min(opening, closing)
+
+
+def _captured_candle(opened, values, confirmed):
+    opening, high, low, closing, contracts, base, quote = values
+    return CapturedCandle(
+        timestamp=opened,
+        open=opening,
+        high=high,
+        low=low,
+        close=closing,
+        volume_contracts=contracts,
+        volume_currency=base,
+        volume_quote=quote,
+        confirmed=confirmed,
+    )
+
+
+def _row_values(rows, timeframe, received):
+    """Validate the original page rows without constructing unused models."""
+    decoded = []
     interval = timedelta(seconds=BAR_SECONDS[timeframe])
     for row in rows:
         opened = _timestamp(row[0])
@@ -511,26 +529,27 @@ def _rows(rows, timeframe, received):
             raise CandleCollectionError("future_candle")
         if not confirmed and not opened <= received < opened + interval:
             raise CandleCollectionError("unconfirmed_candle_not_current")
-        values = [
+        # The raw decimal parser caps both the integer and fractional parts
+        # at 20 digits, which also bounds the typed Price and Amount fields.
+        values = tuple(
             _decimal({"value": value}, "value", positive=index < 4)
             for index, value in enumerate(row[1:8])
-        ]
-        candles.append(
-            CapturedCandle(
-                timestamp=opened,
-                open=values[0],
-                high=values[1],
-                low=values[2],
-                close=values[3],
-                volume_contracts=values[4],
-                volume_currency=values[5],
-                volume_quote=values[6],
-                confirmed=confirmed,
-            )
         )
-    if any(a.timestamp - b.timestamp != interval for a, b in pairwise(candles)):
+        if min(values[4:]) < 0 or _invalid_geometry(*values[:4]):
+            # Retain the detailed field errors on this rejection path.
+            _captured_candle(opened, values, confirmed)
+            raise CandleCollectionError("candle_row_constraints_invalid")
+        decoded.append((opened, values, confirmed))
+    if any(a[0] - b[0] != interval for a, b in pairwise(decoded)):
         raise CandleCollectionError("candle_page_order_or_gap")
-    return tuple(candles)
+    return decoded
+
+
+def _rows(rows, timeframe, received):
+    return tuple(
+        _captured_candle(opened, values, confirmed)
+        for opened, values, confirmed in _row_values(rows, timeframe, received)
+    )
 
 
 def _reconstruct(

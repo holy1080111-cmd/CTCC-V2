@@ -10,7 +10,7 @@ from decimal import Context, Decimal, Inexact, localcontext
 
 import httpx
 import pytest
-from pydantic import create_model
+from pydantic import ValidationError, create_model
 
 from app.domain.market import Candle
 from app.market.quality.candles import BAR_SECONDS
@@ -94,6 +94,25 @@ def rows(timeframe, count, *, at=NOW, unconfirmed=True):
             ]
         )
     return result
+
+
+@pytest.mark.parametrize(
+    ("column", "invalid", "location"),
+    [
+        (2, "0.1", ()),
+        (5, "-1", ("volume_contracts",)),
+        (6, "-1", ("volume_currency",)),
+        (7, "-1", ("volume_quote",)),
+    ],
+)
+def test_raw_page_validation_preserves_invalid_row_field_diagnostics(
+    column, invalid, location
+):
+    page = rows("5m", 1, unconfirmed=False)
+    page[0][column] = invalid
+    with pytest.raises(ValidationError) as error:
+        module._row_values(page, "5m", NOW)
+    assert [entry["loc"] for entry in error.value.errors()] == [location]
 
 
 async def capture(
