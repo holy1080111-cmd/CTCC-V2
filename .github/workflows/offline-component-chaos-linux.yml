@@ -1,0 +1,330 @@
+name: Exact Linux offline component chaos subset
+
+on:
+  push:
+    branches: [work/db0058-offline-chaos-linux-proof]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-chaos-linux:
+    if: github.ref == 'refs/heads/work/db0058-offline-chaos-linux-proof'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      CTCC_CHAOS_SUBJECT: '22bb8333ec17eb53444351c1be2678253a77d374'
+      CTCC_CHAOS_TREE: '9badb3625eeb099b867b7722dac516e62dabb6e7'
+      CTCC_CHAOS_MANIFEST: '8a98024f6a85fe99666669522930e10023842cc287a3ce96dcb680d5cbb6b494'
+      CTCC_CHAOS_ARCHIVE: '317bc25fe2fb13b3a0ed6f9b09c7f6dcaecd365ef1e8c695f78a1dbf7a696d17'
+    steps:
+      - name: Check out the validation-only topic
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Run the exact stock chaos subset and independently read evidence back
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CTCC_CHAOS_RESULTS="$RUNNER_TEMP/ctcc-offline-chaos-linux"
+          mkdir -m 0700 "$CTCC_CHAOS_RESULTS"
+          python3 -B -m scripts.manifest --check
+          git -c core.autocrlf=false -c core.eol=lf archive \
+            --format=tar --output="$CTCC_CHAOS_RESULTS/source.tar" "$CTCC_CHAOS_SUBJECT"
+          chmod 0444 "$CTCC_CHAOS_RESULTS/source.tar"
+          python3 -B - <<'PY'
+          import base64
+          import hashlib
+          import json
+          import os
+          import re
+          import subprocess
+          from contextlib import ExitStack
+          from pathlib import Path
+          from types import SimpleNamespace
+          from uuid import uuid4
+
+          from scripts import verify_final_hermetic as shared
+          from scripts.current0058_full_hermetic_contract_v1 import canonical
+          from scripts.verify_current0055_hermetic import _COPIED_SOURCE, _isolated_client
+          from scripts.verify_current0058_full_hermetic import admit_archive
+          from scripts.verify_offline_chaos_subset_v1 import _COMMON, _OS_CASES
+
+          def sha(raw):
+              return hashlib.sha256(raw).hexdigest()
+
+          def require(condition, code):
+              if condition is not True:
+                  raise ValueError(code)
+
+          def git(*args):
+              return subprocess.check_output(["git", *args], text=True).strip()
+
+          def save(path, value):
+              with path.open("xb") as file:
+                  file.write(canonical(value))
+
+          root = Path(os.environ["CTCC_CHAOS_RESULTS"])
+          subject = os.environ["CTCC_CHAOS_SUBJECT"]
+          tree = os.environ["CTCC_CHAOS_TREE"]
+          manifest = os.environ["CTCC_CHAOS_MANIFEST"]
+          archive_sha = os.environ["CTCC_CHAOS_ARCHIVE"]
+          workflow = ".github/workflows/offline-component-chaos-linux.yml"
+          topic = git("rev-parse", "HEAD")
+          require(
+              topic == os.environ["GITHUB_SHA"]
+              and sorted(git("diff", "--name-only", subject, topic).splitlines())
+              == [workflow, "MANIFEST.sha256"]
+              and git("rev-list", "--parents", "-n1", topic).split() == [topic, subject]
+              and git("rev-parse", f"{subject}^{{tree}}") == tree,
+              "chaos_topic_identity_refused",
+          )
+          archive = root / "source.tar"
+          raw, files = admit_archive(
+              SimpleNamespace(archive=archive, commit=subject, tree=tree, archive_sha256=archive_sha)
+          )
+          require(files["MANIFEST.sha256"]["sha256"] == manifest, "chaos_manifest_refused")
+          source_map = root / "source-files.json"
+          save(source_map, files)
+          source_map.chmod(0o444)
+          lock_sha = files["requirements/validation-linux-py312.lock"]["sha256"]
+          runner_sha = files["scripts/verify_offline_chaos_subset_v1.py"]["sha256"]
+          nodes = ["tests/unit/" + item for item in (*_COMMON, *_OS_CASES["linux"])]
+          require(len(nodes) == len(set(nodes)) == 18, "chaos_exact_roster_refused")
+          for path in {node.split("::", 1)[0] for node in nodes}:
+              require(sha(Path(path).read_bytes()) == files[path]["sha256"], "chaos_case_source_refused")
+          require(
+              sha(Path("scripts/verify_offline_chaos_subset_v1.py").read_bytes()) == runner_sha,
+              "chaos_runner_source_refused",
+          )
+
+          logs = root / "results"
+          logs.mkdir()
+          run = shared.Run(logs, budget_seconds=1725)
+          suffix = uuid4().hex
+          image = f"ctcc-offline-chaos:{subject[:12]}-{suffix}"
+          volume = f"ctcc-offline-chaos-{suffix}"
+          container = f"ctcc-offline-chaos-run-{suffix}"
+          artifact_dir = "/run/ctcc-analysis"
+          stock_output = artifact_dir + "/chaos"
+          isolated = (
+              "--network=none", "--read-only", "--cap-drop=ALL",
+              "--tmpfs=/tmp:rw,nosuid,nodev,mode=1777",
+              "--security-opt=no-new-privileges:true",
+          )
+          archive_mount = f"type=bind,src={archive},dst=/ctcc-offline-source.tar,readonly"
+          map_mount = f"type=bind,src={source_map},dst=/ctcc-source-files.json,readonly"
+          output_mount = f"type=volume,src={volume},dst={artifact_dir}"
+          stock_command = [
+              "python", "-B", "-m", "scripts.verify_offline_chaos_subset_v1",
+              "--archive", "/ctcc-offline-source.tar", "--archive-sha256", archive_sha,
+              "--output", stock_output,
+          ]
+          readback = """
+          import base64
+          import json
+          import os
+          import pwd
+          import stat
+          from pathlib import Path
+
+          account = pwd.getpwnam("ctcc")
+          if not (os.getuid() == os.geteuid() == account.pw_uid > 0
+                  and os.getgid() == os.getegid() == account.pw_gid > 0
+                  and os.listdir("/sys/class/net") == ["lo"]):
+              raise ValueError("chaos_readback_identity")
+          root = Path("/run/ctcc-analysis/chaos")
+          info = root.lstat()
+          if not (stat.S_ISDIR(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o700
+                  and info.st_uid == account.pw_uid and info.st_gid == account.pw_gid):
+              raise ValueError("chaos_output_directory_identity")
+          allowed = {"SHA256SUMS", "report.json", "chaos.xml", "chaos-failed-outcomes.json"}
+          paths = tuple(root.iterdir())
+          names = {path.name for path in paths}
+          if not {"SHA256SUMS", "report.json"} <= names <= allowed:
+              raise ValueError("chaos_output_inventory")
+          exact = {}
+          for path in paths:
+              info = path.lstat()
+              if not (stat.S_ISREG(info.st_mode) and info.st_nlink == 1
+                      and info.st_uid == account.pw_uid and info.st_gid == account.pw_gid
+                      and 0 < info.st_size <= 512 * 1024):
+                  raise ValueError("chaos_output_file_identity")
+              raw = path.read_bytes()
+              if len(raw) != info.st_size:
+                  raise ValueError("chaos_output_changed")
+              exact[path.name] = base64.b64encode(raw).decode("ascii")
+          print(json.dumps({"uid": os.getuid(), "gid": os.getgid(), "bytes": exact}, sort_keys=True))
+          """
+
+          with _isolated_client(root), ExitStack() as cleanup:
+              run.command(
+                  "build", ["docker", "build", "--no-cache", "--build-arg",
+                            f"CTCC_SOURCE_COMMIT={subject}", "--build-arg",
+                            f"CTCC_SOURCE_TREE={tree}", "-t", image, "-"],
+                  input_bytes=raw, timeout=1200,
+              )
+              cleanup.callback(run.command, "cleanup-image", ["docker", "image", "rm", image], timeout=45)
+              run.command("image", ["docker", "image", "inspect", image, "--format", "{{json .}}"], timeout=30)
+              inspected = json.loads((logs / "image.log").read_bytes())
+              image_id = inspected["Id"]
+              labels = inspected["Config"]["Labels"]
+              require(
+                  re.fullmatch(r"sha256:[0-9a-f]{64}", image_id) is not None
+                  and inspected["Config"]["User"] == "ctcc"
+                  and labels["org.opencontainers.image.revision"] == subject
+                  and labels["org.ctcc.source.tree"] == tree,
+                  "chaos_image_identity_refused",
+              )
+              run.command(
+                  "source-copy", ["docker", "run", "--rm", *isolated, "--mount", map_mount,
+                                  image_id, "python", "-B", "-c",
+                                  _COPIED_SOURCE, sha(source_map.read_bytes())], timeout=90,
+              )
+              run.command("volume", ["docker", "volume", "create", volume], timeout=30)
+              cleanup.callback(run.command, "cleanup-volume", ["docker", "volume", "rm", volume], timeout=30)
+              run.command(
+                  "create", ["docker", "create", "--name", container, *isolated,
+                             "--mount", archive_mount, "--mount", output_mount, image_id,
+                             *stock_command], timeout=30,
+              )
+              cleanup.callback(run.command, "cleanup-container", ["docker", "rm", "-f", container], timeout=30)
+              run.command("isolation", ["docker", "inspect", container, "--format", "{{json .}}"], timeout=30)
+              active = json.loads((logs / "isolation.log").read_bytes())
+              settings = active["HostConfig"]
+              mounts = {row["Destination"]: row for row in active["Mounts"]}
+              require(
+                  active["Image"] == image_id and active["Config"]["User"] == "ctcc"
+                  and active["Config"]["Cmd"] == stock_command
+                  and settings["NetworkMode"] == "none"
+                  and settings["ReadonlyRootfs"] is True
+                  and settings["Privileged"] is False
+                  and settings["CapDrop"] == ["ALL"] and not settings["CapAdd"]
+                  and settings["SecurityOpt"] == ["no-new-privileges:true"]
+                  and settings["Tmpfs"] == {"/tmp": "rw,nosuid,nodev,mode=1777"}
+                  and len(active["Mounts"]) == 2
+                  and set(mounts) == {"/ctcc-offline-source.tar", artifact_dir}
+                  and mounts["/ctcc-offline-source.tar"]["Type"] == "bind"
+                  and mounts["/ctcc-offline-source.tar"]["Source"] == str(archive)
+                  and mounts["/ctcc-offline-source.tar"]["RW"] is False
+                  and mounts[artifact_dir]["Type"] == "volume"
+                  and mounts[artifact_dir]["Name"] == volume
+                  and mounts[artifact_dir]["RW"] is True,
+                  "chaos_isolation_refused",
+              )
+              try:
+                  run.command("stock", ["docker", "start", "-a", container], timeout=280)
+              except RuntimeError as error:
+                  require(str(error) == "validation_step_failed:stock", "chaos_stock_start_refused")
+              run.command(
+                  "exit", ["docker", "inspect", container, "--format", "{{json .State}}"], timeout=30
+              )
+              stopped = json.loads((logs / "exit.log").read_bytes())
+              require(
+                  stopped["Status"] == "exited" and stopped["Running"] is False,
+                  "chaos_stock_exit_unverified",
+              )
+              run.command(
+                  "artifact-readback", ["docker", "run", "--rm", *isolated,
+                                        "--mount", output_mount + ",readonly", image_id,
+                                        "python", "-I", "-B", "-c", readback], timeout=45,
+              )
+              observed = json.loads((logs / "artifact-readback.log").read_bytes())
+              names = set(observed["bytes"])
+              require(
+                  set(observed) == {"uid", "gid", "bytes"}
+                  and all(type(observed[key]) is int and observed[key] > 0 for key in ("uid", "gid"))
+                  and {"SHA256SUMS", "report.json"} <= names
+                  and names <= {"SHA256SUMS", "report.json", "chaos.xml", "chaos-failed-outcomes.json"},
+                  "chaos_readback_fields_refused",
+              )
+              exact = {name: base64.b64decode(value, validate=True) for name, value in observed["bytes"].items()}
+              checksums = {
+                  name: sha(content) for name, content in sorted(exact.items()) if name != "SHA256SUMS"
+              }
+              require(
+                  exact["SHA256SUMS"] == "".join(
+                      f"{digest}  {name}\n" for name, digest in checksums.items()
+                  ).encode("ascii"),
+                  "chaos_stock_checksums_refused",
+              )
+              for name, content in exact.items():
+                  path = logs / name
+                  with path.open("xb") as file:
+                      file.write(content)
+                  require(path.read_bytes() == content, "chaos_host_readback_refused")
+              report = json.loads(exact["report.json"])
+              require(
+                  stopped["ExitCode"] == 0
+                  and (logs / "stock.log").read_bytes()
+                  == f"OFFLINE_COMPONENT_CHAOS=PASS;REPORT_SHA256={checksums['report.json']}\n".encode()
+                  and names == {"SHA256SUMS", "report.json", "chaos.xml"}
+                  and report["schema"] == "ctcc.offline_component_chaos.v1"
+                  and report["status"] == "PASS" and report["target"] == "linux"
+                  and report["scope"] == "local_regression_only"
+                  and report["authority_granted"] is False and report["full_chaos_acceptance"] is False
+                  and report["pytest_exit"] == 0
+                  and report["operator_archive_sha256"] == archive_sha
+                  and report["runner_sha256"] == runner_sha
+                  and report["source"] == {
+                      "expected_source_commit": subject,
+                      "expected_source_tree": tree,
+                      "expected_source_manifest_sha256": manifest,
+                  }
+                  and report["selected_node_ids"] == nodes
+                  and report["dependency_lock"]["target"] == "linux"
+                  and report["dependency_lock"]["packages"] == 41
+                  and report["dependency_lock"]["lock_sha256"] == lock_sha,
+                  "chaos_stock_acceptance_refused",
+              )
+              junit = logs / "chaos.xml"
+              measured = shared.verify_pytest_report(junit)
+              require(
+                  measured == report["tests"]
+                  and measured["tests"] == measured["passed"] == 18 and measured["skipped"] == 0
+                  and measured["sha256"] == checksums["chaos.xml"],
+                  "chaos_linux_junit_counts_refused",
+              )
+              shared.verify_selected_junit_nodes(junit, nodes, expected_sha256=measured["sha256"])
+              save(root / "measurement.json", {
+                  "schema": "ctcc.offline_component_chaos.linux_hosted_readback.v1",
+                  "source_commit": subject, "source_tree": tree, "source_manifest_sha256": manifest,
+                  "source_archive_sha256": archive_sha, "source_files_sha256": sha(source_map.read_bytes()),
+                  "workflow_commit": topic, "workflow_sha256": sha(Path(workflow).read_bytes()),
+                  "run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+                  "image_id": image_id, "image_default_user": "ctcc",
+                  "observed_output_uid": observed["uid"], "observed_output_gid": observed["gid"],
+                  "runtime_network": "none", "host_credentials": False, "external_order_writes": 0,
+                  "runner_sha256": runner_sha, "dependency_lock_sha256": lock_sha, "packages": 41,
+                  "selected_node_ids": nodes, "measured": measured,
+                  "stock_artifacts_sha256": {name: sha(content) for name, content in exact.items()},
+                  "stock_output_readback": True, "full_chaos_acceptance": False,
+                  "scope": "local_regression_only",
+              })
+          PY
+
+      - name: Seal and verify the bounded Linux artifacts
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/ctcc-offline-chaos-linux"
+          find . -type f \( -name 'source.tar' -o -name 'source-files.json' -o -name 'measurement.json' -o -path './results/*' \) \
+            -print0 | sort -z | xargs -0r sha256sum > results.sha256
+          sha256sum -c --status results.sha256
+
+      - name: Retain exact source and Linux chaos evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ctcc-offline-component-chaos-linux-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/ctcc-offline-chaos-linux/source.tar
+            ${{ runner.temp }}/ctcc-offline-chaos-linux/source-files.json
+            ${{ runner.temp }}/ctcc-offline-chaos-linux/measurement.json
+            ${{ runner.temp }}/ctcc-offline-chaos-linux/results.sha256
+            ${{ runner.temp }}/ctcc-offline-chaos-linux/results/
+          if-no-files-found: error
