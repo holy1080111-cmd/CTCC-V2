@@ -1,0 +1,57 @@
+name: Source58 granted owner inventory diagnostic
+
+on:
+  push:
+    branches: [work/db0058-owner-inventory-acl-diagnostic]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  actual-owner-inventory-acl:
+    if: github.ref == 'refs/heads/work/db0058-owner-inventory-acl-diagnostic'
+    name: Actual DB0055 granted owner catalog
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact validation topic
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify the canonical subject and measure the granted owner catalog refusal
+        shell: bash
+        run: |
+          set -euo pipefail
+          subject=d283c3ea21aefc2343310b05ab3bb19b8a8da49a
+          commit=$(git rev-parse HEAD)
+          test "$commit" = "$GITHUB_SHA"
+          git merge-base --is-ancestor "$subject" "$commit"
+          test "$(git rev-parse "$subject^{tree}")" = 'b3e2d1c78b0ba029c6e611321f7b91cfae1f6fab'
+          test "$(git show "$subject:MANIFEST.sha256" | sha256sum | cut -d ' ' -f 1)" = '0be1f63e070607716ae78b1fdcd0919f26d8589da90c4a6c5da1d8cfb28d8f31'
+          diff -u <(printf '%s\n' \
+            .github/workflows/db0058-owner-inventory-acl-diagnostic.yml MANIFEST.sha256 \
+            scripts/run_retained0017_reference_probe_v1.py tests/integration/test_native_owner_upgrade_0056_v2_pg.py) \
+            <(git diff --name-only "$subject" "$commit")
+          python3 scripts/manifest.py --check
+          tree=$(git rev-parse 'HEAD^{tree}')
+          archive="$RUNNER_TEMP/ctcc-source.tar"
+          git -c core.autocrlf=false -c core.eol=lf archive --format=tar --output="$archive" "$commit"
+          digest=$(sha256sum "$archive" | cut -d ' ' -f 1)
+          options=(--archive "$archive" --archive-sha256 "$digest" --commit "$commit" --tree "$tree"
+            --owner-inventory-acl --output "$RUNNER_TEMP/ctcc-owner-inventory-acl")
+          python3 -m scripts.run_retained0017_reference_probe_v1 "${options[@]}"
+          python3 -m scripts.run_retained0017_reference_probe_v1 "${options[@]}" --verify-only
+      - name: Preserve exact source, case results and disposable cleanup
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ctcc-owner-inventory-acl-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/ctcc-source.tar
+            ${{ runner.temp }}/ctcc-owner-inventory-acl/*.json
+            ${{ runner.temp }}/ctcc-owner-inventory-acl/*.log
+            ${{ runner.temp }}/ctcc-owner-inventory-acl/test-results/*.xml
+          if-no-files-found: error
+          retention-days: 30

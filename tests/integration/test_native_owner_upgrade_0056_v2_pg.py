@@ -352,3 +352,29 @@ async def test_actual0055_v2_and_commonroute_custom_marker_am_refuse_before_head
     finally:
         event.remove(owner.sync_engine, "before_cursor_execute", watch)
     assert opened == []
+
+
+async def test_actual0055_owner_pregrant_observer_refuses_reviewed_runtime_acl(
+    _actual55_v2_lab,
+):
+    """Measure the exact old refusal on the actual granted owner catalog."""
+    from app.core.native_role_preflight_v1 import _exact_existing_acl
+
+    owner, _selected, pins, _prepared = _actual55_v2_lab
+    async with subject._marker_checked_v2(owner, pins) as connection:
+        await _exact_existing_acl(connection, pins.role_names, pins.role_oids[0])
+        raw = await connection.scalar(text(current55.OWNER_CATALOG_SQL))
+        repeated = await connection.scalar(text(current55.OWNER_CATALOG_SQL))
+        assert raw == repeated
+        assert raw["role"]["oid"] == pins.route.owner_oid
+        for section in ("issued", "lineage"):
+            assert raw[section]["server"]["isolation"] == "repeatable read"
+            assert raw[section]["server"]["read_only"] == "on"
+        with pytest.raises(
+            ValueError, match="^native_leverage_configuration55_actual_catalog_changed$"
+        ):
+            current55._observe(
+                raw, owner_mode=True, read_only="on", isolation="repeatable read"
+            )
+        with pytest.raises(current55.Current0055CatalogError):
+            await subject._catalog_v2(connection, pins, "0055", read_only=True)
