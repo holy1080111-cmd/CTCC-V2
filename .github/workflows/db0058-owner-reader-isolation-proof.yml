@@ -1,0 +1,59 @@
+name: Source58 owner reader isolation compatibility
+
+on:
+  push:
+    branches: [work/db0058-owner-reader-isolation-proof]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  owner-reader-isolation:
+    if: github.ref == 'refs/heads/work/db0058-owner-reader-isolation-proof'
+    name: Actual TLS RC owner and writer with owner-only RR
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact diagnostic topic
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Compare real TLS catalogs and verify archived evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          subject=8761dbb2b263ad7981e31c570264094f9c760fa0
+          commit=$(git rev-parse HEAD)
+          test "$commit" = "$GITHUB_SHA"
+          git merge-base --is-ancestor "$subject" "$commit"
+          diff -u <(printf '%s\n' \
+            .github/workflows/db0058-owner-reader-isolation-proof.yml MANIFEST.sha256 \
+            scripts/run_retained0017_reference_probe_v1.py \
+            tests/fixtures/source58_legacy_owner_reader/collector_current_0055_catalog_v1.py.txt \
+            tests/fixtures/source58_legacy_owner_reader/collector_current_0056_inherited_catalog_v1.py.txt \
+            tests/integration/test_source58_owner_reader_isolation_compatibility_pg.py) \
+            <(git diff --name-only "$subject" "$commit")
+          python3 scripts/manifest.py --check
+          tree=$(git rev-parse 'HEAD^{tree}')
+          archive="$RUNNER_TEMP/ctcc-source.tar"
+          git -c core.autocrlf=false -c core.eol=lf archive --format=tar --output="$archive" "$commit"
+          digest=$(sha256sum "$archive" | cut -d ' ' -f 1)
+          options=(--archive "$archive" --archive-sha256 "$digest" --commit "$commit" --tree "$tree"
+            --owner-reader-isolation-compatibility --output "$RUNNER_TEMP/ctcc-owner-reader-isolation")
+          python3 -m scripts.run_retained0017_reference_probe_v1 "${options[@]}"
+          python3 -m scripts.run_retained0017_reference_probe_v1 "${options[@]}" --verify-only
+      - name: Preserve exact source, comparisons and cleanup evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ctcc-owner-reader-isolation-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/ctcc-source.tar
+            ${{ runner.temp }}/ctcc-owner-reader-isolation/*.json
+            ${{ runner.temp }}/ctcc-owner-reader-isolation/*.log
+            ${{ runner.temp }}/ctcc-owner-reader-isolation/test-results/*.xml
+            ${{ runner.temp }}/ctcc-owner-reader-isolation/test-results/*.json
+          if-no-files-found: error
+          retention-days: 30

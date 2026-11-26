@@ -30,18 +30,26 @@ RUNNER = measurement.PROBE_RUNNER
 TEST_MODULE = "tests/integration/test_retained0017_catalog_references_v1_pg.py"
 REPORT = "test-results/retained0017-reference-probe.xml"
 canonical, digest = measurement.canonical, measurement.digest
-UNSCOPED_CASE = (
-    "tests.integration.test_native_owner_upgrade_0056_v2_pg",
-    "test_actual0056_unscoped_fitted_catalog_rejects_permissive_acl",
+READER_CASE = (
+    "tests.integration.test_source58_owner_reader_isolation_compatibility_pg",
+    "test_actual_source58_rc_owner_writer_and_explicit_owner_rr_match_frozen_readers",
 )
-UNSCOPED_NODE = UNSCOPED_CASE[0].replace(".", "/") + ".py::" + UNSCOPED_CASE[1]
-UNSCOPED_REPORT = "test-results/unscoped-fitted56-owner.xml"
-UNSCOPED_SCHEMA = "ctcc.source58.unscoped_fitted56_tls_probe.v1"
-UNSCOPED_SCOPE = "disposable0056_owner_tls_acl_drift_no_external_execution_authority"
-UNSCOPED_SUBJECT = "90f2a714bc31a7833579ee112b64619c31bea5d8"
-UNSCOPED_INPUTS = {
-    "scripts/retained0056_unscoped_fitted_observation_v1.py": "1a8b9bcb33ec5649b102e5a01a38982fbecb7df3e218c765d55f07627f4ef55f",
-    "tests/integration/test_native_owner_upgrade_0056_v2_pg.py": "2b377ff729f64c8a184aa947fd2126feae54375ee3dee2be4e0733c3ff183ea3",
+READER_NODE = READER_CASE[0].replace(".", "/") + ".py::" + READER_CASE[1]
+READER_REPORT = "test-results/owner-reader-isolation.xml"
+READER_MEASUREMENT = "test-results/reader-isolation-compatibility.json"
+READER_SCHEMA = "ctcc.source58.owner_reader_isolation_probe.v1"
+READER_SCOPE = (
+    "disposable0055_0056_tls_legacy_current_comparison_no_execution_authority"
+)
+READER_SUBJECT = "90f2a714bc31a7833579ee112b64619c31bea5d8"
+FROZEN_READER_SOURCE = "93e648fafbd79fa64bad98f6ab8ebede8653c417"
+FROZEN_READERS = {
+    "collector_current_0055_catalog_v1.py": "fa7e80105102a9eca72176c7c9243c604d275020fae37dd4fbd12f7a81d28652",
+    "collector_current_0056_inherited_catalog_v1.py": "d2a489a59510e684b8b2efeea84929aacdd4f3b328a9678fffca78d9b94ea1ca",
+}
+ACTUAL_READERS = {
+    "collector_current_0055_catalog_v1.py": "e27ea4f7ff2577b81d3f6d920436f8054266629846549e074fed9ef1668d9a04",
+    "collector_current_0056_inherited_catalog_v1.py": "7ef3e52af3eefd006a16ef0bc9d274ebf8d8e81917ad90c48994a78d39f1c3f1",
 }
 
 
@@ -51,25 +59,82 @@ def _storage_mode(args):
     return value
 
 
-def _unscoped_mode(args):
-    value = getattr(args, "unscoped_fitted56_owner_acl", False)
+def _reader_mode(args):
+    value = getattr(args, "owner_reader_isolation_compatibility", False)
     need(type(value) is bool and not (value and _storage_mode(args)))
     return value
 
 
-def _unscoped_subject(files):
+def _reader_subject(files):
+    inputs = {"app/domain/" + name: pin for name, pin in ACTUAL_READERS.items()}
+    inputs.update(
+        {
+            "tests/fixtures/source58_legacy_owner_reader/" + name + ".txt": pin
+            for name, pin in FROZEN_READERS.items()
+        }
+    )
+    need(all(files[name]["sha256"] == expected for name, expected in inputs.items()))
+    return {
+        "commit": READER_SUBJECT,
+        "frozen_commit": FROZEN_READER_SOURCE,
+        "file_sha256": inputs,
+    }
+
+
+def _reader_measurement(root):
+    raw = (root / READER_MEASUREMENT).read_bytes()
+    need(0 < len(raw) <= 8192)
+    seen = read_evidence_json(raw)
+    expected = {
+        "schema": "ctcc.source58.owner_reader_isolation_compatibility.v1",
+        "observed_tls_sessions": 8,
+        "frozen_source_commit": FROZEN_READER_SOURCE,
+        "frozen_reader_sha256": FROZEN_READERS,
+        "actual_reader_sha256": ACTUAL_READERS,
+        "execution_authority": False,
+    }
+    need(
+        type(seen) is dict
+        and set(seen) == set(expected) | {"heads"}
+        and raw == canonical(seen)
+    )
     need(
         all(
-            files[name]["sha256"] == expected
-            for name, expected in UNSCOPED_INPUTS.items()
+            type(seen[key]) is type(value) and seen[key] == value
+            for key, value in expected.items()
         )
     )
-    return {"commit": UNSCOPED_SUBJECT, "file_sha256": UNSCOPED_INPUTS}
+    heads = seen["heads"]
+    need(type(heads) is dict and set(heads) == {"0055", "0056"})
+    for row in heads.values():
+        flags = {
+            "legacy_rc_full_observation_exact",
+            "legacy_and_default_rr_refused",
+            "explicit_owner_rr_refuses_rc",
+        }
+        hashes = {
+            "owner_rc_definitions_sha256",
+            "owner_rr_definitions_sha256",
+            "writer_rc_definitions_sha256",
+        }
+        need(
+            type(row) is dict
+            and set(row) == flags | hashes
+            and all(row[name] is True for name in flags)
+        )
+        need(
+            all(
+                type(row[name]) is str and re.fullmatch(r"[a-f0-9]{64}", row[name])
+                for name in hashes
+            )
+        )
+        need(row["owner_rc_definitions_sha256"] == row["owner_rr_definitions_sha256"])
+    return {"measurement_sha256": digest(raw), **seen}
 
 
 def _test_scope(args):
-    if _unscoped_mode(args):
-        return (UNSCOPED_CASE,), (UNSCOPED_NODE,), UNSCOPED_REPORT
+    if _reader_mode(args):
+        return (READER_CASE,), (READER_NODE,), READER_REPORT
     if _storage_mode(args):
         return (
             (*storage.CASES, canonical55.CASE),
@@ -91,7 +156,7 @@ def admit_archive(args):
 
 
 def verify_probe(root, *, args, files):
-    unscoped = _unscoped_mode(args)
+    reader = _reader_mode(args)
     diagnostic = _storage_mode(args)
     state = read_evidence_json((root / "identity.json").read_bytes())
     raw_map = (root / "source-files.json").read_bytes()
@@ -101,20 +166,20 @@ def verify_probe(root, *, args, files):
         and state["tree"] == args.tree
         and state["archive_sha256"] == args.archive_sha256
     )
-    if unscoped:
+    if reader:
         cleanup = read_evidence_json((root / "cleanup.json").read_bytes())
         prefix = "ctcc-final-" + state["run_id"] + "-"
         need(
-            state["schema"] == UNSCOPED_SCHEMA
-            and state["suite"] == "unscoped-fitted56-owner-acl"
-            and state["runner_contract"] == UNSCOPED_SCHEMA
-            and state["validation_scope"] == UNSCOPED_SCOPE
-            and state["database_target"] == "0056"
+            state["schema"] == READER_SCHEMA
+            and state["suite"] == "owner-reader-isolation-compatibility"
+            and state["runner_contract"] == READER_SCHEMA
+            and state["validation_scope"] == READER_SCOPE
+            and state["database_target"] == "0055_and_0056"
             and state["source_contract_head"] == "0058"
             and state["source_files_sha256"] == digest(raw_map)
             and state["manifest_sha256"] == files["MANIFEST.sha256"]["sha256"]
             and state["runner_sha256"] == files[RUNNER]["sha256"]
-            and state["validation_subject"] == _unscoped_subject(files)
+            and state["validation_subject"] == _reader_subject(files)
             and state["build_context"] == "admitted_archive_bytes_v1"
             and state["hermetic_regression"] == "NOT_RUN"
             and state["full_suite_acceptance"] is False
@@ -166,8 +231,9 @@ def verify_probe(root, *, args, files):
         allow_unrelated_skips=False,
     )
     need(report["tests"] == report["passed"] == len(cases) and report["skipped"] == 0)
-    if unscoped:
-        result = report
+    if reader:
+        result = _reader_measurement(root)
+        need(state["reader_compatibility"] == result)
     elif diagnostic:
         result = storage.verify_reports_v1(root, source)
         need(
@@ -193,7 +259,7 @@ def verify_probe(root, *, args, files):
 
 
 def run_probe(args, raw, files, root):
-    unscoped = _unscoped_mode(args)
+    reader = _reader_mode(args)
     diagnostic = _storage_mode(args)
     results = root / "test-results"
     results.mkdir(mode=0o777)
@@ -235,14 +301,14 @@ def run_probe(args, raw, files, root):
         "host_credentials": False,
         "external_order_writes": 0,
     }
-    if unscoped:
+    if reader:
         state.update(
-            schema=UNSCOPED_SCHEMA,
-            suite="unscoped-fitted56-owner-acl",
-            runner_contract=UNSCOPED_SCHEMA,
-            validation_scope=UNSCOPED_SCOPE,
-            database_target="0056",
-            validation_subject=_unscoped_subject(files),
+            schema=READER_SCHEMA,
+            suite="owner-reader-isolation-compatibility",
+            runner_contract=READER_SCHEMA,
+            validation_scope=READER_SCOPE,
+            database_target="0055_and_0056",
+            validation_subject=_reader_subject(files),
             execution_authority=False,
         )
     _write(root / "identity.json", state)
@@ -389,9 +455,12 @@ def run_probe(args, raw, files, root):
         # No upgrade of the admin database to58 is implied. Required cases
         # independently create their own disposable canonical-source DBs.
         cases, nodes, report_path = _test_scope(args)
-        if unscoped:
-            test_stage = "unscoped-fitted56-tests"
-            measurement_environment = ()
+        if reader:
+            test_stage = "owner-reader-isolation-tests"
+            measurement_environment = (
+                "-e",
+                "CTCC_OWNER_READER_ISOLATION_COMPATIBILITY=/validation-results/reader-isolation-compatibility.json",
+            )
         else:
             test_stage = "native-storage-tests" if diagnostic else "reference17-tests"
             measurement_environment = (
@@ -427,12 +496,14 @@ def run_probe(args, raw, files, root):
             report["tests"] == report["passed"] == len(cases) and report["skipped"] == 0
         )
         state["tests"] = report
-        if diagnostic:
+        if reader:
+            state["reader_compatibility"] = _reader_measurement(root)
+        elif diagnostic:
             state["native_storage_components"] = storage.verify_reports_v1(root, state)
             state["canonical55_reference"] = canonical55.verify_reference_v1(
                 root, state, files
             )
-        elif not unscoped:
+        else:
             state["pair"] = measurement.verify_reference_pair(
                 root,
                 source=measurement.source_identity(state, files, mapping.read_bytes()),
@@ -463,8 +534,8 @@ def run_probe(args, raw, files, root):
             },
         )
     verify_probe(root, args=args, files=files)
-    if unscoped:
-        print("UNSCOPED_FITTED56_OWNER_TLS=PASS", flush=True)
+    if reader:
+        print("SOURCE58_OWNER_READER_ISOLATION_TLS=PASS", flush=True)
     else:
         print(
             "NATIVE_STORAGE_CATALOG_DIAGNOSTIC=PASS"
@@ -487,7 +558,7 @@ def main():
     parser.add_argument("--verify-only", action="store_true")
     purposes = parser.add_mutually_exclusive_group()
     purposes.add_argument("--native-storage-diagnostic", action="store_true")
-    purposes.add_argument("--unscoped-fitted56-owner-acl", action="store_true")
+    purposes.add_argument("--owner-reader-isolation-compatibility", action="store_true")
     args = parser.parse_args()
     for value, pattern in (
         (args.commit, r"[a-f0-9]{40}"),
@@ -498,8 +569,8 @@ def main():
     raw, files = admit_archive(args)
     if args.verify_only:
         verify_probe(args.output, args=args, files=files)
-        if _unscoped_mode(args):
-            print("UNSCOPED_FITTED56_OWNER_ARCHIVED_READBACK=PASS", flush=True)
+        if _reader_mode(args):
+            print("SOURCE58_OWNER_READER_ISOLATION_ARCHIVED_READBACK=PASS", flush=True)
         else:
             print(
                 "NATIVE_STORAGE_DIAGNOSTIC_ARCHIVED_READBACK=PASS"
