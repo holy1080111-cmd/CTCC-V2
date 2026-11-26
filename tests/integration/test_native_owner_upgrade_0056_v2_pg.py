@@ -449,3 +449,155 @@ async def test_actual0055_v2_and_commonroute_custom_marker_am_refuse_before_head
     finally:
         event.remove(owner.sync_engine, "before_cursor_execute", watch)
     assert opened == []
+
+
+async def test_actual0055_diagnose_first_granted_owner_preview_failure(
+    _actual55_v2_lab, monkeypatch, record_property
+):
+    """Report the new first fixed gate on a disposable TLS owner, with no raw data."""
+    import inspect
+    import json
+    from collections import Counter
+    from pathlib import Path
+
+    owner, _selected, pins, prepared = _actual55_v2_lab
+    expected = await subject._readonly_inventory_v2(owner, pins, "0055")
+    trace = []
+    refusal_lines = []
+    object_result = {}
+    original_inventory = subject._inventory_v2
+    original_preserved = subject._preserved_v2
+    original_apply = subject._upgrade_exact_0055
+    original_need = subject._need
+    modules = {
+        "native_owner_upgrade_0056_v1.py",
+        "native_owner_granted_catalog_v1.py",
+        "collector_current_0055_catalog_v1.py",
+        "collector_current_0056_inherited_catalog_v1.py",
+        "current0056_fitted_delta_catalog_v1.py",
+        "native_owner_retained_rows_v2.py",
+    }
+
+    def failure(stage, exc):
+        locations = []
+        item = exc.__traceback__
+        while item is not None:
+            basename = Path(item.tb_frame.f_code.co_filename).name
+            if basename in modules:
+                locations.append((basename, item.tb_lineno))
+            item = item.tb_next
+        trace.append((stage, "failed", type(exc).__name__, locations[-6:]))
+
+    def need(condition):
+        if condition is not True:
+            frame = inspect.currentframe().f_back
+            if frame.f_code.co_filename == subject.__file__:
+                refusal_lines.append(frame.f_lineno)
+        original_need(condition)
+
+    def apply(connection, *args):
+        trace.append(("ddl", "started"))
+        try:
+            result = original_apply(connection, *args)
+        except Exception as exc:
+            failure("ddl", exc)
+            raise
+        trace.append(("ddl", "completed"))
+        return result
+
+    async def inventory(connection, read_pins, head, *, read_only):
+        stage = "inventory_" + head
+        trace.append((stage, "started"))
+        try:
+            result = await original_inventory(
+                connection, read_pins, head, read_only=read_only
+            )
+        except Exception as exc:
+            failure(stage, exc)
+            raise
+        trace.append((stage, "completed"))
+        if head == "0056":
+            old = {row[:3]: row[3] for row in expected["objects"]}
+            unreviewed = [
+                row
+                for row in result["objects"]
+                if row[:3] not in old and row[4] is not True
+            ]
+            changed = [
+                row
+                for row in result["objects"]
+                if row[:3] in old and row[3] != old[row[:3]]
+            ]
+            attrs = [(row[1], row[2]) for row in unreviewed if row[0] == "attribute"]
+            indexes = {rel for rel, _attnum in attrs}
+            linked = (
+                await connection.execute(
+                    text("""
+                    SELECT i.indexrelid::bigint, a.attnum::integer
+                    FROM pg_catalog.pg_index i
+                    JOIN pg_catalog.pg_class c ON c.oid=i.indrelid
+                    JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+                    JOIN pg_catalog.pg_attribute a ON a.attrelid=i.indexrelid
+                    WHERE i.indexrelid::bigint=ANY(CAST(:indexes AS bigint[]))
+                      AND n.nspname='public' AND c.relkind='r'
+                      AND c.relname=ANY(CAST(:added AS text[]))
+                      AND a.attnum=ANY(CAST(:attnums AS smallint[]))
+                      AND a.attnum>0 AND NOT a.attisdropped
+                    """),
+                    {
+                        "indexes": sorted(indexes),
+                        "added": sorted(subject._ADDED_TABLES),
+                        "attnums": sorted({number for _, number in attrs}),
+                    },
+                )
+            ).all()
+            linked_pairs = {tuple(row) for row in linked}
+            linked_relations = {row[0] for row in linked_pairs}
+            object_result.update(
+                {
+                    "new_object_kinds_refused": dict(
+                        Counter(row[0] for row in unreviewed)
+                    ),
+                    "prior_object_kinds_changed": dict(
+                        Counter(row[0] for row in changed)
+                    ),
+                    "index_attributes_of_added_table": sum(
+                        item in linked_pairs for item in attrs
+                    ),
+                    "unclassified_index_relations": len(indexes - linked_relations),
+                }
+            )
+        return result
+
+    def preserved(before, after):
+        trace.append(("preserved", "started"))
+        try:
+            result = original_preserved(before, after)
+        except Exception as exc:
+            failure("preserved", exc)
+            raise
+        trace.append(("preserved", "completed"))
+        return result
+
+    with monkeypatch.context() as wrappers:
+        wrappers.setattr(subject, "_need", need)
+        wrappers.setattr(subject, "_upgrade_exact_0055", apply)
+        wrappers.setattr(subject, "_inventory_v2", inventory)
+        wrappers.setattr(subject, "_preserved_v2", preserved)
+        with pytest.raises(subject.NativeOwnerUpgradeRefusal):
+            await subject._commit_once(prepared, pins, owner, expected)
+    assert await subject._readonly_inventory_v2(owner, pins, "0055") == expected
+    assert trace and (refusal_lines or any(row[1] == "failed" for row in trace))
+    record_property(
+        "original_preview_redacted_observation",
+        json.dumps(
+            {
+                "stage_trace": trace,
+                "owner_refusal_source_lines": refusal_lines,
+                "object_delta_counts": object_result,
+                "complete_rollback_actual_readback": True,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+    )
