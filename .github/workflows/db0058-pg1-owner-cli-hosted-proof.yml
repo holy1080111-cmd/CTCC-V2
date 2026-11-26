@@ -1,0 +1,110 @@
+name: DB0058 actual owner CLI and full PostgreSQL component 1
+
+on:
+  push:
+    branches: [work/db0058-pg1-owner-cli-hosted-proof]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  owner-cli-pg1-proof:
+    if: github.ref == 'refs/heads/work/db0058-pg1-owner-cli-hosted-proof'
+    name: Exact source PostgreSQL component 1 with both owner CLI cases
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      CTCC_PG1_SUBJECT: '16e4f88bbc9f2f37a89614b4362b5378dd727a4d'
+      CTCC_PG1_TREE: '02906197543669fb5c278b57bf4927f7b1bfc581'
+      CTCC_PG1_MANIFEST: '75f6c177a4442cbd86f77b35d70256838aee0e961f45c83c3baee4108224796b'
+    steps:
+      - name: Checkout exact diagnostic source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Run complete PostgreSQL component 1 on the exact reviewed subject
+        shell: bash
+        run: |
+          set -euo pipefail
+          workflow=$(git rev-parse HEAD)
+          test "$workflow" = "$GITHUB_SHA"
+          commit="$CTCC_PG1_SUBJECT"
+          tree="$CTCC_PG1_TREE"
+          test "$(git rev-list --parents -n1 "$workflow")" = "$workflow $commit"
+          test "$(git rev-parse "$commit^{tree}")" = "$tree"
+          test "$(git show "$commit:MANIFEST.sha256" | sha256sum | cut -d ' ' -f 1)" = "$CTCC_PG1_MANIFEST"
+          diff -u <(printf '%s\n' '.github/workflows/db0058-pg1-owner-cli-hosted-proof.yml' MANIFEST.sha256) <(git diff --name-only "$commit" "$workflow")
+          python3 -B -m scripts.manifest --check
+          archive="$RUNNER_TEMP/ctcc-source.tar"
+          git -c core.autocrlf=false -c core.eol=lf archive --format=tar --output="$archive" "$commit"
+          digest=$(sha256sum "$archive" | cut -d ' ' -f 1)
+          python3 -m scripts.verify_current0058_full_hermetic \
+            --archive "$archive" --archive-sha256 "$digest" \
+            --commit "$commit" --tree "$tree" \
+            --suite postgres --postgres-component-index 1 \
+            --output "$RUNNER_TEMP/ctcc-owner-cli-pg1-proof"
+
+          python3 -B - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          from scripts import current0058_full_hermetic_contract_v1 as contract
+          from scripts import verify_final_hermetic as shared
+
+          root = Path(os.environ["RUNNER_TEMP"], "ctcc-owner-cli-pg1-proof")
+          identity = json.loads((root / "identity.json").read_bytes())
+          subject = os.environ["CTCC_PG1_SUBJECT"]
+          assert identity["commit"] == subject
+          assert identity["tree"] == os.environ["CTCC_PG1_TREE"]
+          assert identity["manifest_sha256"] == os.environ["CTCC_PG1_MANIFEST"]
+          assert identity["suite"] == "postgres" and identity["postgres_component_index"] == 1
+          assert identity["component_validation"] == "PASS"
+          assert identity["host_credentials"] is identity["host_env"] is identity["trading_acceptance"] is False
+          assert type(identity["external_order_writes"]) is int and identity["external_order_writes"] == 0
+          report, _ = contract.component_report_paths("postgres", 1)
+          measured = shared.verify_pytest_report(
+              root / report, required_cases=contract.required_cases("postgres", 1),
+          )
+          assert measured == identity["tests"] and measured["skipped"] == 0
+          assert len(contract.OWNER0056_CLI_CASES) == 2
+          assert set(contract.OWNER0056_CLI_CASES) <= set(contract.required_cases("postgres", 1))
+          for module, name in contract.OWNER0056_CLI_CASES:
+              assert measured["required_case_passed"][f"{module}::{name}"] == 1
+          document = {
+              "schema": "ctcc.source58.postgres1.owner_cli_cases.v1",
+              "workflow_commit": os.environ["GITHUB_SHA"],
+              "subject_commit": subject,
+              "subject_tree": identity["tree"],
+              "subject_manifest_sha256": identity["manifest_sha256"],
+              "subject_archive_sha256": identity["archive_sha256"],
+              "full_postgres_component_index": 1,
+              "actual_required_cli_cases": [list(case) for case in contract.OWNER0056_CLI_CASES],
+              "original_component_junit": measured,
+              "fixture_only": True,
+              "retained_database_opened": False,
+              "external_order_writes": 0,
+              "execution_authority": False,
+          }
+          with (root / "owner-cli-cases.json").open("x", encoding="utf-8", newline="\n") as out:
+              json.dump(document, out, sort_keys=True)
+              out.write("\n")
+          PY
+
+      - name: Preserve exact diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ctcc-owner-cli-pg1-proof-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/ctcc-source.tar
+            ${{ runner.temp }}/ctcc-owner-cli-pg1-proof/*.json
+            ${{ runner.temp }}/ctcc-owner-cli-pg1-proof/*.log
+            ${{ runner.temp }}/ctcc-owner-cli-pg1-proof/test-results/*.xml
+            ${{ runner.temp }}/ctcc-owner-cli-pg1-proof/test-results/*.json
+            ${{ runner.temp }}/ctcc-owner-cli-pg1-proof/test-results/*.log
+          if-no-files-found: error
+          retention-days: 30

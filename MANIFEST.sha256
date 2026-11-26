@@ -12,6 +12,7 @@ c354add27f645c5d701615e9132d0441e403fbae9ceeb5b32d09706ec81302d9  .github/workfl
 6182f5e2744ce26290891393fd2e191eee120e083105f259878ada606cb6f387  .github/workflows/db0058-owner-regression-probe.yml
 65701c60fdcd6d0a2a08eec64e00546d91458d967674cbb98fc47f281bd0f656  .github/workflows/db0058-paper58-owned-runtime.yml
 8698e56096acc0f88c81ab8c0cfab7856fb936ca03bc0c6eb2233b20bff591e7  .github/workflows/db0058-paper58-structural-reference.yml
+ad60a920b517e5557a967c912d0d7314f394832e41f1ae566a91326bcac47292  .github/workflows/db0058-pg1-owner-cli-hosted-proof.yml
 24f29ce516f04dd594148ae4b618b2a7791a785b6fbe487337c3d2932e20c259  .github/workflows/db0058-retained-owner-regression.yml
 c2e4006403a7642c9ebb24f0e0cc7f1ffb7139160833e751db6b88619d6093f4  .github/workflows/db0058-retained0017-reference-probe.yml
 63d06e61c582e0775c49c6ef3a93e82d33ce92526c4bc40bdde6de57e1a80d3b  .github/workflows/linux-native-clock-observation.yml
