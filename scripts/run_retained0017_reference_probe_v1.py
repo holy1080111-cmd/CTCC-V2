@@ -6,6 +6,7 @@ import argparse
 import re
 from contextlib import ExitStack
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 from scripts import canonical0055_catalog_reference_v1 as canonical55
@@ -42,6 +43,26 @@ OWNED_PAPER_SCOPE = (
 OWNED_PAPER_SUITE = "paper58-fresh-owned-runtime"
 OWNED_PAPER_REPORT = "test-results/paper58-fresh-owned-runtime.xml"
 OWNED_PAPER_ACCEPTANCE = "owned-paper-acceptance.json"
+AUTHORITY_SCHEMA = "ctcc.source58.retained17_direct_authority_tls_probe.v1"
+AUTHORITY_SCOPE = "fresh_tls0017_direct_authority_and_readonly_three_cases"
+AUTHORITY_SUITE = "retained17-direct-authority"
+AUTHORITY_MODULE = "tests.integration.test_retained0017_owner_upgrade_0055_v1_pg"
+AUTHORITY_CASES = (
+    (
+        AUTHORITY_MODULE,
+        "test_actual0017_direct_confirmed_apply_refuses_with_valid_readonly_route",
+    ),
+    (
+        AUTHORITY_MODULE,
+        "test_actual0017_cli_valid_private_pins_read_only_and_confirmed_refusal",
+    ),
+    (
+        AUTHORITY_MODULE,
+        "test_actual0017_upgrade0055_unresolved_legacy_intent_is_retained_and_no_ddl_runs",
+    ),
+)
+AUTHORITY_REPORT = "test-results/retained17-direct-authority.xml"
+AUTHORITY_ARCHIVE = "/ctcc-admitted-test-source.tar"
 canonical, digest = measurement.canonical, measurement.digest
 
 
@@ -72,6 +93,51 @@ def _owned_paper_mode(args):
         and not (value and (_storage_mode(args) or _paper58_mode(args)))
     )
     return value
+
+
+def _authority_mode(args):
+    value = getattr(args, "retained17_authority", False)
+    need(
+        type(value) is bool
+        and not (
+            value
+            and (_storage_mode(args) or _paper58_mode(args) or _owned_paper_mode(args))
+        )
+    )
+    return value
+
+
+def _authority_identity(state, files, source_bytes):
+    need(
+        type(state) is dict and type(files) is dict and source_bytes == canonical(files)
+    )
+    need(
+        state["schema"] == state["runner_contract"] == AUTHORITY_SCHEMA
+        and state["validation_scope"] == AUTHORITY_SCOPE
+        and state["suite"] == AUTHORITY_SUITE
+        and state["source_contract_head"] == "0058"
+        and state["database_target"] == "0017"
+        and state["source_files_sha256"] == digest(source_bytes)
+        and state["manifest_sha256"] == files["MANIFEST.sha256"]["sha256"]
+        and state["runner_sha256"] == files[RUNNER]["sha256"]
+        and state["build_context"] == "admitted_archive_bytes_v1"
+        and state["hermetic_regression"] == "NOT_RUN"
+        and state["full_suite_acceptance"] is state["trading_acceptance"] is False
+        and state["host_credentials"] is state["host_env"] is False
+        and type(state["external_order_writes"]) is int
+        and state["external_order_writes"] == 0
+        and re.fullmatch(r"[a-f0-9]{12}", state["run_id"]) is not None
+    )
+
+
+def bound_authority_fixture_source_v1(identity, files, source_bytes, archive):
+    """Return actual isolated test source identities without a FULL contract."""
+    _authority_identity(identity, files, source_bytes)
+    need(archive == Path(AUTHORITY_ARCHIVE))
+    values = {key: identity[key] for key in ("commit", "tree", "archive_sha256")}
+    _, admitted = admit_archive(SimpleNamespace(archive=archive, **values))
+    need(admitted == files)
+    return {**values, "manifest_sha256": identity["manifest_sha256"]}
 
 
 def _owned_paper_acceptance(state, report):
@@ -105,6 +171,7 @@ def admit_archive(args):
 
 
 def verify_probe(root, *, args, files):
+    authority = _authority_mode(args)
     owned_paper = _owned_paper_mode(args)
     diagnostic = _storage_mode(args)
     paper = _paper58_contract(args)
@@ -118,7 +185,12 @@ def verify_probe(root, *, args, files):
         and state["tree"] == args.tree
         and state["archive_sha256"] == args.archive_sha256
     )
-    if owned_paper:
+    if authority:
+        _authority_identity(state, files, raw_map)
+        network = read_evidence_json((root / "network-inspect.log").read_bytes())
+        image = read_evidence_json((root / "image-identity.log").read_bytes())
+        need(network["Internal"] is True and image["Id"] == state["image_id"])
+    elif owned_paper:
         need(
             state["schema"] == state["runner_contract"] == OWNED_PAPER_SCHEMA
             and state["validation_scope"] == OWNED_PAPER_SCOPE
@@ -173,7 +245,9 @@ def verify_probe(root, *, args, files):
     else:
         source = measurement.source_identity(state, files, raw_map)
     cases = (
-        (OWNED_PAPER_CASE,)
+        AUTHORITY_CASES
+        if authority
+        else (OWNED_PAPER_CASE,)
         if owned_paper
         else paper.CASES
         if paper is not None
@@ -182,7 +256,9 @@ def verify_probe(root, *, args, files):
         else measurement.CASES
     )
     report_name = (
-        OWNED_PAPER_REPORT
+        AUTHORITY_REPORT
+        if authority
+        else OWNED_PAPER_REPORT
         if owned_paper
         else paper.REPORT
         if paper is not None
@@ -197,7 +273,9 @@ def verify_probe(root, *, args, files):
     )
     need(report["tests"] == report["passed"] == len(cases) and report["skipped"] == 0)
     pair = (
-        _owned_paper_acceptance(state, report)
+        report
+        if authority
+        else _owned_paper_acceptance(state, report)
         if owned_paper
         else paper.verify_reference_pair_v1(root, source, files)
         if paper is not None
@@ -214,7 +292,9 @@ def verify_probe(root, *, args, files):
         need(read_evidence_json((root / OWNED_PAPER_ACCEPTANCE).read_bytes()) == pair)
     need(
         state[
-            "owned_paper_runtime"
+            "authority_cases"
+            if authority
+            else "owned_paper_runtime"
             if owned_paper
             else "paper58_reference_pair"
             if paper is not None
@@ -240,11 +320,14 @@ def verify_probe(root, *, args, files):
 
 
 def run_probe(args, raw, files, root):
+    authority = _authority_mode(args)
     diagnostic = _storage_mode(args)
     paper = _paper58_contract(args)
     owned_paper = _owned_paper_mode(args)
     report_name = (
-        OWNED_PAPER_REPORT
+        AUTHORITY_REPORT
+        if authority
+        else OWNED_PAPER_REPORT
         if owned_paper
         else paper.REPORT
         if paper is not None
@@ -321,6 +404,14 @@ def run_probe(args, raw, files, root):
         "host_credentials": False,
         "external_order_writes": 0,
     }
+    if authority:
+        state.update(
+            schema=AUTHORITY_SCHEMA,
+            runner_contract=AUTHORITY_SCHEMA,
+            validation_scope=AUTHORITY_SCOPE,
+            suite=AUTHORITY_SUITE,
+            database_target="0017",
+        )
     _write(root / "identity.json", state)
     run, resources, tls_stack = shared.Run(root, budget_seconds=1800), [], ExitStack()
 
@@ -344,6 +435,14 @@ def run_probe(args, raw, files, root):
     identity_mount = (
         "--mount",
         f"type=bind,src={root / 'identity.json'},dst=/ctcc-run-identity.json,readonly",
+    )
+    authority_archive_mount = (
+        (
+            "--mount",
+            f"type=bind,src={args.archive.resolve(strict=True)},dst={AUTHORITY_ARCHIVE},readonly",
+        )
+        if authority
+        else ()
     )
 
     def container(stage, *argv, mounts=(), extra_environment=(), timeout=300):
@@ -475,13 +574,20 @@ def run_probe(args, raw, files, root):
             *_PYTEST,
             "-q",
             "--junitxml=/validation-results/" + Path(report_name).name,
-            OWNED_PAPER_MODULE + "::" + OWNED_PAPER_CASE[1]
-            if owned_paper
-            else PAPER58_TEST_MODULE
-            if paper is not None
-            else storage.MODULE
-            if diagnostic
-            else TEST_MODULE,
+            *(
+                tuple(
+                    path.replace(".", "/") + ".py::" + case
+                    for path, case in AUTHORITY_CASES
+                )
+                if authority
+                else (OWNED_PAPER_MODULE + "::" + OWNED_PAPER_CASE[1],)
+                if owned_paper
+                else (PAPER58_TEST_MODULE,)
+                if paper is not None
+                else (storage.MODULE,)
+                if diagnostic
+                else (TEST_MODULE,)
+            ),
             *((canonical55.MODULE,) if diagnostic else ()),
             mounts=(
                 "--mount",
@@ -489,6 +595,7 @@ def run_probe(args, raw, files, root):
                 *source_mount,
                 *identity_mount,
                 *tls.pytest_mount,
+                *authority_archive_mount,
             ),
             extra_environment=(
                 *tls.pytest_environment,
@@ -504,14 +611,16 @@ def run_probe(args, raw, files, root):
                         )
                         + "=/validation-results",
                     )
-                    if not owned_paper
+                    if not owned_paper and not authority
                     else ()
                 ),
             ),
             timeout=900,
         )
         cases = (
-            (OWNED_PAPER_CASE,)
+            AUTHORITY_CASES
+            if authority
+            else (OWNED_PAPER_CASE,)
             if owned_paper
             else paper.CASES
             if paper is not None
@@ -528,7 +637,9 @@ def run_probe(args, raw, files, root):
             report["tests"] == report["passed"] == len(cases) and report["skipped"] == 0
         )
         state["tests"] = report
-        if owned_paper:
+        if authority:
+            state["authority_cases"] = report
+        elif owned_paper:
             acceptance = _owned_paper_acceptance(state, report)
             state["owned_paper_runtime"] = acceptance
             _write(root / OWNED_PAPER_ACCEPTANCE, acceptance)
@@ -573,7 +684,9 @@ def run_probe(args, raw, files, root):
         )
     verify_probe(root, args=args, files=files)
     print(
-        "PAPER58_FRESH_OWNED_RUNTIME=PASS"
+        "RETAINED17_DIRECT_AUTHORITY_TLS_DIAGNOSTIC=PASS"
+        if authority
+        else "PAPER58_FRESH_OWNED_RUNTIME=PASS"
         if owned_paper
         else "PAPER58_FRESH_STRUCTURAL_REFERENCE_PAIR=PASS"
         if paper is not None
@@ -599,6 +712,11 @@ def main():
     purposes.add_argument("--native-storage-diagnostic", action="store_true")
     purposes.add_argument("--paper58-structural-reference", action="store_true")
     purposes.add_argument("--paper58-owned-runtime", action="store_true")
+    purposes.add_argument(
+        "--retained17-direct-authority-proof",
+        dest="retained17_authority",
+        action="store_true",
+    )
     args = parser.parse_args()
     for value, pattern in (
         (args.commit, r"[a-f0-9]{40}"),
@@ -610,7 +728,9 @@ def main():
     if args.verify_only:
         verify_probe(args.output, args=args, files=files)
         print(
-            "PAPER58_FRESH_OWNED_RUNTIME_ARCHIVED_READBACK=PASS"
+            "RETAINED17_DIRECT_AUTHORITY_ARCHIVED_READBACK=PASS"
+            if _authority_mode(args)
+            else "PAPER58_FRESH_OWNED_RUNTIME_ARCHIVED_READBACK=PASS"
             if _owned_paper_mode(args)
             else "PAPER58_STRUCTURAL_REFERENCE_ARCHIVED_READBACK=PASS"
             if _paper58_mode(args)
