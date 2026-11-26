@@ -1,0 +1,57 @@
+name: Source58 restricted role callsites
+
+on:
+  push:
+    branches: [work/db0058-restricted-callsite-validation]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  actual-restricted-callsites:
+    if: github.ref == 'refs/heads/work/db0058-restricted-callsite-validation'
+    name: Actual DB0057 and DB0058 restricted transaction callsites
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact validation topic
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify the canonical subject and run only the two restricted route cases
+        shell: bash
+        run: |
+          set -euo pipefail
+          subject=ba55ad5cc8360c6efa150a52df226a1829a1e5e9
+          commit=$(git rev-parse HEAD)
+          test "$commit" = "$GITHUB_SHA"
+          git merge-base --is-ancestor "$subject" "$commit"
+          test "$(git rev-parse "$subject^{tree}")" = '6c6576aa586d46a12b8a8487c5f37a8a45f39334'
+          test "$(git show "$subject:MANIFEST.sha256" | sha256sum | cut -d ' ' -f 1)" = 'c2f6a31d30dac48b7dbce3c1d90e99a7c2a95f6ff00f115eb18b164b79596ee5'
+          diff -u <(printf '%s\n' \
+            .github/workflows/db0058-restricted-callsite-validation.yml MANIFEST.sha256 \
+            scripts/run_retained0017_reference_probe_v1.py) \
+            <(git diff --name-only "$subject" "$commit")
+          python3 scripts/manifest.py --check
+          tree=$(git rev-parse 'HEAD^{tree}')
+          archive="$RUNNER_TEMP/ctcc-source.tar"
+          git -c core.autocrlf=false -c core.eol=lf archive --format=tar --output="$archive" "$commit"
+          digest=$(sha256sum "$archive" | cut -d ' ' -f 1)
+          options=(--archive "$archive" --archive-sha256 "$digest" --commit "$commit" --tree "$tree"
+            --restricted-role-callsites --output "$RUNNER_TEMP/ctcc-restricted-role-callsites")
+          python3 -m scripts.run_retained0017_reference_probe_v1 "${options[@]}"
+          python3 -m scripts.run_retained0017_reference_probe_v1 "${options[@]}" --verify-only
+      - name: Preserve exact source, case results and disposable cleanup
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ctcc-restricted-role-callsites-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/ctcc-source.tar
+            ${{ runner.temp }}/ctcc-restricted-role-callsites/*.json
+            ${{ runner.temp }}/ctcc-restricted-role-callsites/*.log
+            ${{ runner.temp }}/ctcc-restricted-role-callsites/test-results/*.xml
+          if-no-files-found: error
+          retention-days: 30
