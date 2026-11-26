@@ -11,13 +11,18 @@ import subprocess
 import sys
 import traceback
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.pool import NullPool
 
 from app.domain import collector_current_0055_catalog_v1 as current55
 from app.domain import collector_current_0056_inherited_catalog_v1 as current56
 from scripts import native_owner_upgrade_0056_v1 as owner
+from tests.integration import test_canonical0055_catalog_reference_v1_pg as empty55
+from tests.integration import test_gate3_fitted_candidate_custody_pg as tls_lab
 from tests.integration import test_native_owner_upgrade_0056_v2_pg as lab
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
@@ -138,6 +143,7 @@ async def _capture(engine, query, expected_isolation):
         for key in ("issued", "lineage"):
             assert value[key]["server"]["isolation"] == expected_isolation
             assert value[key]["server"]["read_only"] == "on"
+            assert value[key]["server"]["database"] == engine.url.database
         return value
 
 
@@ -168,12 +174,52 @@ def _publish(evidence):
     assert target.read_bytes() == payload
 
 
+@pytest.fixture
+async def _fresh_pregrant_owner():
+    url, tls = tls_lab._isolated_tls_database_config()
+    database = "ctcc_reader_pregrant_" + uuid4().hex[:12]
+    assert (url.username, url.database, url.port) == ("ctcc", "ctcc", 5432)
+    settings = {
+        "poolclass": NullPool,
+        "connect_args": {"ssl": tls},
+        "hide_parameters": True,
+    }
+    admin = create_async_engine(url, **settings)
+    review = create_async_engine(url.set(database=database), **settings)
+    created = False
+    try:
+        async with admin.connect() as connection:
+            await connection.execution_options(isolation_level="AUTOCOMMIT")
+            await connection.exec_driver_sql(
+                f'CREATE DATABASE "{database}" TEMPLATE template0'
+            )
+            created = True
+        async with review.begin() as connection:
+            await connection.run_sync(empty55._upgrade_canonical55)
+        yield review
+    finally:
+        await review.dispose()
+        try:
+            if created:
+                async with admin.connect() as connection:
+                    await connection.execution_options(isolation_level="AUTOCOMMIT")
+                    await connection.exec_driver_sql(f'DROP DATABASE "{database}"')
+        finally:
+            await admin.dispose()
+
+
 async def test_actual_source58_rc_owner_writer_and_explicit_owner_rr_match_frozen_readers(
     _actual55_v2_lab,
+    _fresh_pregrant_owner,
     tmp_path,
 ):
-    engine, selected, _pins, prepared = _actual55_v2_lab
+    granted_owner, selected, _pins, prepared = _actual55_v2_lab
     writer = selected.writer_factory.kw["bind"]
+    assert (
+        granted_owner.url.database
+        == writer.url.database
+        != _fresh_pregrant_owner.url.database
+    )
     snapshot, compat, records = {}, {}, {}
     for head, module, observe_owner, observe_writer in (
         ("0055", current55, current55.observe_actual_owner_catalog, _writer55),
@@ -185,17 +231,18 @@ async def test_actual_source58_rc_owner_writer_and_explicit_owner_rr_match_froze
         ),
     ):
         if head == "0056":
-            async with engine.begin() as connection:
-                await connection.run_sync(owner._upgrade_exact_0055, *prepared[1:])
+            for route in (_fresh_pregrant_owner, granted_owner):
+                async with route.begin() as connection:
+                    await connection.run_sync(owner._upgrade_exact_0055, *prepared[1:])
         raw = {
             "owner_rc": await _capture(
-                engine, module.OWNER_CATALOG_SQL, "read committed"
+                _fresh_pregrant_owner, module.OWNER_CATALOG_SQL, "read committed"
             ),
             "writer_rc": await _capture(
                 writer, module.ACTOR_CATALOG_SQL, "read committed"
             ),
             "owner_rr": await _capture(
-                engine, module.OWNER_CATALOG_SQL, "repeatable read"
+                _fresh_pregrant_owner, module.OWNER_CATALOG_SQL, "repeatable read"
             ),
             "writer_rr": await _capture(
                 writer, module.ACTOR_CATALOG_SQL, "repeatable read"
@@ -238,6 +285,9 @@ async def test_actual_source58_rc_owner_writer_and_explicit_owner_rr_match_froze
     evidence = {
         "schema": "ctcc.source58.owner_reader_isolation_compatibility.v1",
         "observed_tls_sessions": 8,
+        "separate_phase_databases": True,
+        "owner_acl_phase": "pregrant",
+        "writer_acl_phase": "granted",
         "frozen_source_commit": "93e648fafbd79fa64bad98f6ab8ebede8653c417",
         "frozen_reader_sha256": OLD,
         "actual_reader_sha256": NEW,

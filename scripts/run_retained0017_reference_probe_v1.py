@@ -88,6 +88,9 @@ def _reader_measurement(root):
     expected = {
         "schema": "ctcc.source58.owner_reader_isolation_compatibility.v1",
         "observed_tls_sessions": 8,
+        "separate_phase_databases": True,
+        "owner_acl_phase": "pregrant",
+        "writer_acl_phase": "granted",
         "frozen_source_commit": FROZEN_READER_SOURCE,
         "frozen_reader_sha256": FROZEN_READERS,
         "actual_reader_sha256": ACTUAL_READERS,
