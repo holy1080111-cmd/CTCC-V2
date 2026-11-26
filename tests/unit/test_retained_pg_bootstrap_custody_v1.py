@@ -13,11 +13,11 @@ import pytest
 from scripts import retained_pg_bootstrap_custody_v1 as subject
 
 
-@pytest.mark.parametrize("error", subject._FRESH_TERMINAL_ERRORS)
-def test_fresh_supervisor_carries_only_exact_terminal_failure_frame(error):
-    stdout = subject._fresh_failure_stdout_v1(error.status)
+@pytest.mark.parametrize("error", subject._OWNED_TERMINAL_ERRORS)
+def test_owned_supervisor_carries_only_exact_terminal_failure_frame(error):
+    stdout = subject._owned_failure_stdout_v1(error.status)
     with pytest.raises(error, match=error.status):
-        subject._raise_fresh_supervisor_terminal_v1(
+        subject._raise_owned_supervisor_terminal_v1(
             SimpleNamespace(returncode=2, stdout=stdout, stderr=b"")
         )
     for outcome in (
@@ -26,11 +26,75 @@ def test_fresh_supervisor_carries_only_exact_terminal_failure_frame(error):
         SimpleNamespace(returncode=2, stdout=stdout + b"private", stderr=b""),
         SimpleNamespace(
             returncode=2,
-            stdout=subject._fresh_failure_stdout_v1("REFUSED"),
+            stdout=subject._owned_failure_stdout_v1("REFUSED"),
             stderr=b"",
         ),
     ):
-        assert subject._raise_fresh_supervisor_terminal_v1(outcome) is None
+        assert subject._raise_owned_supervisor_terminal_v1(outcome) is None
+
+
+@pytest.mark.parametrize(
+    ("confirmation", "settings", "admitted"),
+    (
+        (None, None, True),
+        (None, "a" * 64, True),
+        (subject._PRESERVED_CONFIRMATION, "a" * 64, True),
+        (subject._PRESERVED_CONFIRMATION, None, False),
+        (True, "a" * 64, False),
+    ),
+)
+def test_preserved_request_only_discovers_the_settings_pin_in_plan_mode(
+    tmp_path, monkeypatch, confirmation, settings, admitted
+):
+    packet = {
+        "schema": "ctcc.retained_pg.preserved_owner_request.v1",
+        "confirmation": confirmation,
+        "files": {
+            name: str(tmp_path / name)
+            for name in subject.RetainedBootstrapFilesV1.__dataclass_fields__
+        },
+        "pins": {
+            "retained": {
+                "preserved_backup_sha256": subject.PRESERVED_BACKUP_SHA256,
+                "source_commit": "a" * 40,
+                "source_tree": "b" * 40,
+                "source_archive_sha256": "c" * 64,
+                "route": {"source_manifest_sha256": "d" * 64},
+                "expected_catalog_sha256": None,
+            },
+            "maintenance_settings_sha256": settings,
+        },
+    }
+    monkeypatch.setattr(
+        subject, "_private_bytes", lambda *_: subject._canonical(packet)
+    )
+    if admitted:
+        assert subject._read_request(tmp_path / "request")[0] == packet
+    else:
+        with pytest.raises(subject.RetainedBootstrapRefused):
+            subject._read_request(tmp_path / "request")
+
+
+def test_preserved_plan_lease_cannot_claim_write_or_switch_to_fixture(monkeypatch):
+    record = SimpleNamespace(
+        phase=subject._Phase.READY,
+        origin=subject._Origin.PRESERVED,
+        engine=object(),
+        preserved_apply_confirmed=False,
+    )
+    seen = []
+    monkeypatch.setattr(subject, "_guard", lambda: None)
+    monkeypatch.setattr(subject, "_record", lambda _owner: record)
+    monkeypatch.setattr(subject, "_journal", lambda _record, phase: seen.append(phase))
+    for fixture in (False, True):
+        with pytest.raises(subject.RetainedBootstrapRefused):
+            subject._claim_owned_apply_v1(object(), fixture=fixture)
+    assert seen == [] and record.phase is subject._Phase.READY
+    record.preserved_apply_confirmed = True
+    subject._claim_owned_apply_v1(object())
+    with pytest.raises(subject.RetainedBootstrapRefused):
+        subject._claim_owned_apply_v1(object())
+    assert seen == [subject._Phase.CLAIMED]
 
 
 def test_private_maintenance_config_pins_lock_capacity_and_existing_limits(

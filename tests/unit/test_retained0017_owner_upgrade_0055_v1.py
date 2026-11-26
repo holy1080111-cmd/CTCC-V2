@@ -501,6 +501,45 @@ def test_native55_retained_readback_pins_private_owner_snapshot_isolation(monkey
 
 
 @pytest.mark.asyncio
+async def test_owned_preserved_plan_performs_two_reads_without_claiming_write(
+    monkeypatch,
+):
+    from scripts import retained_pg_bootstrap_custody_v1 as custody
+
+    seen = []
+    owned = object()
+    pins = _declared_retained_pins()
+
+    async def dispose():
+        seen.append("dispose")
+
+    engine = SimpleNamespace(dispose=dispose)
+
+    async def read(value, actual_pins, *, _custody):
+        assert value is engine and actual_pins is pins and _custody is owned
+        seen.append("read")
+        return {"before": "same"}
+
+    def forbid(*_args, **_kwargs):
+        pytest.fail("read-only plan attempted to commit")
+
+    monkeypatch.setattr(subject, "_commit_once", forbid)
+    monkeypatch.setattr(subject, "_prepared_owned_v1", lambda *_: (None, None))
+    monkeypatch.setattr(
+        subject, "create_async_engine", lambda *_args, **_kwargs: engine
+    )
+    monkeypatch.setattr(subject, "_readonly_before", read)
+    monkeypatch.setattr(custody, "_bind_engine_v1", lambda *_: seen.append("bind"))
+    result = await subject._run_owned_0017_to_0055_v1(
+        owned, pins, source_archive_file=object(), confirmation=None
+    )
+    assert seen == ["bind", "read", "read", "dispose"]
+    assert result["independent_readbacks"] == 2
+    assert result["maintenance_settings_sha256"] == pins.maintenance_settings_sha256
+    assert result["migration_performed"] is result["execution_authority"] is False
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("phase", (1, 2))
 async def test_every_precommit_rehearsal_or_final_failure_rolls_back_without_commit(
     monkeypatch, phase

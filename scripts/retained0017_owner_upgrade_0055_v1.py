@@ -249,7 +249,7 @@ def _need(value, code="retained0017_upgrade0055_refused"):
 @dataclass(frozen=True, slots=True, repr=False)
 class Retained0017UpgradePinsV1:
     retained: original.RetainedOwnerPins0017V1
-    maintenance_settings_sha256: str
+    maintenance_settings_sha256: str | None
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -803,9 +803,9 @@ async def _commit_once(engine, pins, prepared, expected, *, _custody=None):
     else:
         from scripts import retained_pg_bootstrap_custody_v1 as custody
 
-        # Only the separately produced FRESH fixture path is enabled here.
-        # The public PRESERVED entry retains its unconditional preconnect deny.
-        custody._claim_owned_fixture_apply_v1(_custody)
+        custody._claim_owned_apply_v1(
+            _custody, fixture=type(pins) is _FreshUpgradePinsV1
+        )
     attempted = committed = False
     try:
         async with engine.connect() as connection:
@@ -895,16 +895,22 @@ async def _commit_once(engine, pins, prepared, expected, *, _custody=None):
         raise Retained0017UpgradeRefused("retained0017_upgrade0055_refused") from None
 
 
-def _prepared_owned_fixture_v1(owned, pins, source_archive_file):
-    """Private actual-FRESH route; no DSN file, fake password or report adoption."""
+def _prepared_owned_v1(owned, pins, source_archive_file):
+    """Only the live lease selects the TLS owner and database route."""
     from contextlib import redirect_stdout
 
     from scripts import native_owner_route_preflight_0056_v1 as route
     from scripts import retained_pg_bootstrap_custody_v1 as custody
 
     _require_reference_seal()
-    url, tls = custody._owned_route_v1(owned, pins, fixture=True)
-    _checked_fresh_pins_v1(pins)
+    fixture = type(pins) is _FreshUpgradePinsV1
+    if fixture:
+        _checked_fresh_pins_v1(pins)
+    else:
+        _need(type(pins) is Retained0017UpgradePinsV1)
+        original._checked_pins(pins.retained)
+        _need(original._digest(pins.maintenance_settings_sha256))
+    url, tls = custody._owned_route_v1(owned, pins, fixture=fixture)
     with redirect_stdout(io.StringIO()):
         source = route._source_for_profile(route.profiles.DB0058)
     _need(
@@ -937,14 +943,22 @@ def _prepared_owned_fixture_v1(owned, pins, source_archive_file):
 
 
 async def _exercise_owned_fresh_0017_to_0055_v1(owned, pins, *, source_archive_file):
-    """Same canonical DDL/retention core, solely on actual minted FRESH custody.
+    _need(type(pins) is _FreshUpgradePinsV1)
+    return await _run_owned_0017_to_0055_v1(
+        owned, pins, source_archive_file=source_archive_file, confirmation=None
+    )
 
-    This private test purpose cannot authorize the public preserved DB entry.
-    No bool/callback/result can substitute the same-task live opaque producer.
-    """
+
+async def _run_owned_0017_to_0055_v1(owned, pins, *, source_archive_file, confirmation):
+    """Owned source plan or one commit with two independent readbacks."""
     from scripts import retained_pg_bootstrap_custody_v1 as custody
 
-    prepared = _prepared_owned_fixture_v1(owned, pins, source_archive_file)
+    fixture = type(pins) is _FreshUpgradePinsV1
+    _need(
+        confirmation is None
+        or (not fixture and type(confirmation) is str and confirmation == CONFIRMATION)
+    )
+    prepared = _prepared_owned_v1(owned, pins, source_archive_file)
     engine = create_async_engine(
         prepared[0],
         poolclass=NullPool,
@@ -961,10 +975,23 @@ async def _exercise_owned_fresh_0017_to_0055_v1(owned, pins, *, source_archive_f
         async with asyncio.timeout(600):
             first = await _readonly_before(engine, pins, _custody=owned)
             second = await _readonly_before(engine, pins, _custody=owned)
-            _need(first == second)
+            _need(first == second, "retained0017_upgrade0055_independent_before_differ")
+            if not fixture and confirmation is None:
+                return {
+                    "database_head": "0017",
+                    "snapshot_sha256": baseline.sha(baseline.canonical(first)),
+                    "maintenance_settings_sha256": pins.maintenance_settings_sha256,
+                    "source17_bootstrap_catalog_verified": True,
+                    "independent_readbacks": 2,
+                    "migration_performed": False,
+                    "preserved_backup_lineage_verified": True,
+                    "schema_upgrade_authorized": False,
+                    "exchange_flat": None,
+                    "account_complete": False,
+                    "execution_authority": False,
+                }
             _need(
-                _prepared_owned_fixture_v1(owned, pins, source_archive_file)[2]
-                == prepared[2]
+                _prepared_owned_v1(owned, pins, source_archive_file)[2] == prepared[2]
             )
             before, final = await _commit_once(
                 engine, pins, prepared, first, _custody=owned
@@ -998,7 +1025,7 @@ async def _exercise_owned_fresh_0017_to_0055_v1(owned, pins, *, source_archive_f
                 "emergency_stop": True,
                 "restart_latch_required": True,
                 "control_revision": 0,
-                "preserved_backup_lineage_verified": False,
+                "preserved_backup_lineage_verified": not fixture,
                 "schema_upgrade_authorized": False,
                 "exchange_flat": None,
                 "account_complete": False,
@@ -1006,14 +1033,14 @@ async def _exercise_owned_fresh_0017_to_0055_v1(owned, pins, *, source_archive_f
             }
     except (Retained0017UpgradeCommitUnknown, Retained0017UpgradeReadbackRequired):
         raise
-    except BaseException:  # noqa: BLE001 -- no private DB values from failed fixture acceptance.
+    except BaseException:  # noqa: BLE001 -- no private DB values from failed owned acceptance.
         custody._mark_owned_unknown_v1(owned)
         if committed:
             raise Retained0017UpgradeReadbackRequired(
                 "retained0017_upgrade0055_committed_readback_required"
             ) from None
         raise Retained0017UpgradeRefused(
-            "retained0017_upgrade0055_fresh_custody_refused"
+            "retained0017_upgrade0055_owned_custody_refused"
         ) from None
     finally:
         already_failed = sys.exc_info()[0] is not None
@@ -1021,8 +1048,12 @@ async def _exercise_owned_fresh_0017_to_0055_v1(owned, pins, *, source_archive_f
             await engine.dispose()
         except BaseException:  # noqa: BLE001 -- never replace commit-unknown with a cleanup error.
             if not already_failed:
-                raise Retained0017UpgradeReadbackRequired(
-                    "retained0017_upgrade0055_cleanup_readback_required"
+                if committed:
+                    raise Retained0017UpgradeReadbackRequired(
+                        "retained0017_upgrade0055_cleanup_readback_required"
+                    ) from None
+                raise Retained0017UpgradeRefused(
+                    "retained0017_upgrade0055_owned_cleanup_refused"
                 ) from None
 
 

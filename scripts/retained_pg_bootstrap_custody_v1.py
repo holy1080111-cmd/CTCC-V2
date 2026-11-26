@@ -27,7 +27,7 @@ import threading
 import time
 import uuid
 from contextlib import asynccontextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from enum import Enum
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -64,6 +64,7 @@ SOURCE17_PREFIX_SHA256 = (
 )
 PRESERVED_DOMAIN = b"ctcc.retained_pg.cold_preserved_8ef.v1\x00"
 FRESH_FIXTURE_DOMAIN = b"ctcc.retained_pg.cold_canonical17_fixture.v1\x00"
+_PRESERVED_CONFIRMATION = "UPGRADE PRESERVED CTCC DB0017 TO STOPPED DB0055"
 BOOTSTRAP_SECONDS = 60
 OWNER_SECONDS = 600  # Existing owner API budget, unrelated to trading clocks.
 CLEANUP_SECONDS = 20
@@ -109,11 +110,13 @@ class RetainedBootstrapReadbackRequired(RetainedBootstrapRefused):
     status = "COMMITTED_READBACK_REQUIRED"
 
 
-_FRESH_TERMINAL_ERRORS = (
+_OWNED_TERMINAL_ERRORS = (
     RetainedBootstrapCommitUnknown,
     RetainedBootstrapReadbackRequired,
 )
 _FRESH_SUCCESS_STATUS = "FRESH_CANONICAL17_COLD_TO_STOPPED0055_VERIFIED"
+_PRESERVED_PLAN_STATUS = "PRESERVED_COLD_0017_READ_ONLY_ELIGIBILITY_VERIFIED"
+_PRESERVED_UPGRADE_STATUS = "PRESERVED_COLD_0017_TO_STOPPED0055_VERIFIED"
 
 
 def _need(value, code="retained_pg_bootstrap_refused"):
@@ -305,7 +308,9 @@ class OwnedFreshCanonical17ColdV1:
 @dataclass(slots=True)
 class _LiveRecord:
     owner: OwnedRetainedBootstrapV1
+    pins: Any
     origin: _Origin
+    preserved_apply_confirmed: bool
     phase: _Phase
     process_id: int
     thread_id: int
@@ -1555,6 +1560,7 @@ def _claim_owned_apply_v1(owner, *, fixture=False):
     _need(value.phase is _Phase.READY and value.engine is not None)
     _need(type(fixture) is bool)
     _need(value.origin is (_Origin.FRESH_FIXTURE if fixture else _Origin.PRESERVED))
+    _need(fixture or value.preserved_apply_confirmed is True)
     _journal(value, _Phase.CLAIMED)
     value.phase = _Phase.CLAIMED
 
@@ -1579,10 +1585,6 @@ def _advance_owned_apply_v1(owner, phase):
     value.phase = target
 
 
-def _claim_owned_fixture_apply_v1(owner):
-    _claim_owned_apply_v1(owner, fixture=True)
-
-
 def _mark_owned_unknown_v1(owner):
     # This boundary deliberately does not perform another external operation.
     # Cancellation, deadline expiry or server death still burns the record.
@@ -1596,6 +1598,7 @@ def _owned_route_v1(owner, pins, *, fixture=False):
     value = _record(owner)
     _need(
         value.phase is _Phase.READY
+        and pins is value.pins
         and value.origin is (_Origin.FRESH_FIXTURE if fixture else _Origin.PRESERVED)
     )
     p = _source_pin_object(pins).route
@@ -1967,15 +1970,27 @@ async def _capture_current_bootstrap_v1(
             _need(observed[9] is True and observed[10] in ("TLSv1.2", "TLSv1.3"))
             raw = await baseline.capture_catalog17_v1(connection)
             bootstrap.require_bootstrap_catalog17_v2(raw)
-            return observed[8], lock_profile
+            return (
+                observed[8],
+                lock_profile,
+                raw["actor_physical"]["maintenance_settings_sha256"],
+            )
         finally:
             await transaction.rollback()
 
 
-async def _owned_bootstrap_generator_v1(files, pins, origin):
+async def _owned_bootstrap_generator_v1(files, pins, origin, *, confirmation=None):
     """Fixed genuine cold-copy factory. No supplied listener, checker or result."""
     _linux()
     _need(type(files) is RetainedBootstrapFilesV1 and type(origin) is _Origin)
+    _need(
+        confirmation is None
+        or (
+            origin is _Origin.PRESERVED
+            and type(confirmation) is str
+            and confirmation == _PRESERVED_CONFIRMATION
+        )
+    )
     _need(
         sys.flags.isolated == 1
         and sys.flags.no_site == 0
@@ -2000,6 +2015,10 @@ async def _owned_bootstrap_generator_v1(files, pins, origin):
     if origin is _Origin.PRESERVED:
         _need(type(pins) is owner_api.Retained0017UpgradePinsV1)
         owner_api.original._checked_pins(_source_pin_object(pins))
+        _need(
+            owner_api.original._digest(pins.maintenance_settings_sha256)
+            or (confirmation is None and pins.maintenance_settings_sha256 is None)
+        )
     else:
         owner_api._checked_fresh_pins_v1(pins)
     source = _source_pins(pins)
@@ -2168,11 +2187,22 @@ async def _owned_bootstrap_generator_v1(files, pins, origin):
                 },
                 hide_parameters=True,
             )
-            started, lock_profile = await _capture_current_bootstrap_v1(
+            (
+                started,
+                lock_profile,
+                observed_settings,
+            ) = await _capture_current_bootstrap_v1(
                 engine,
                 _source_pin_object(pins).route,
                 cluster_name=cluster_name,
                 system_identifier_sha256=system_identifier,
+            )
+            if pins.maintenance_settings_sha256 is None:
+                _need(origin is _Origin.PRESERVED and confirmation is None)
+                pins = replace(pins, maintenance_settings_sha256=observed_settings)
+            _need(
+                pins.maintenance_settings_sha256 == observed_settings,
+                "retained_pg_maintenance_settings_pin_mismatch",
             )
             await engine.dispose()
             engine = None
@@ -2182,7 +2212,9 @@ async def _owned_bootstrap_generator_v1(files, pins, origin):
             lease = object.__new__(OwnedRetainedBootstrapV1)
             record = _LiveRecord(
                 owner=lease,
+                pins=pins,
                 origin=origin,
+                preserved_apply_confirmed=confirmation is not None,
                 phase=_Phase.READY,
                 process_id=os.getpid(),
                 thread_id=threading.get_ident(),
@@ -2752,7 +2784,10 @@ def _read_request(path):
         and set(value) == {"schema", "files", "pins", "confirmation"}
     )
     _need(value["schema"] == "ctcc.retained_pg.preserved_owner_request.v1")
-    _need(value["confirmation"] == "UPGRADE PRESERVED CTCC DB0017 TO STOPPED DB0055")
+    _need(
+        value["confirmation"] is None
+        or value["confirmation"] == _PRESERVED_CONFIRMATION
+    )
     _need(
         type(value["files"]) is dict
         and set(value["files"]) == set(RetainedBootstrapFilesV1.__dataclass_fields__)
@@ -2769,6 +2804,11 @@ def _read_request(path):
     pins = value["pins"]
     _need(
         type(pins) is dict and set(pins) == {"retained", "maintenance_settings_sha256"}
+    )
+    settings = pins["maintenance_settings_sha256"]
+    _need(
+        (type(settings) is str and _HEX.fullmatch(settings) is not None)
+        or (settings is None and value["confirmation"] is None)
     )
     retained = pins["retained"]
     _need(
@@ -2886,14 +2926,14 @@ def _require_child_runtime_visibility_v1(rootfs, runtime, vendor_manifest):
         ) from None
 
 
-def _fresh_failure_stdout_v1(status):
+def _owned_failure_stdout_v1(status):
     return _canonical({"status": status, "execution_authority": False}) + b"\n"
 
 
-def _raise_fresh_supervisor_terminal_v1(outcome):
+def _raise_owned_supervisor_terminal_v1(outcome):
     if outcome.returncode == 2 and outcome.stderr == b"":
-        for error in _FRESH_TERMINAL_ERRORS:
-            if outcome.stdout == _fresh_failure_stdout_v1(error.status):
+        for error in _OWNED_TERMINAL_ERRORS:
+            if outcome.stdout == _owned_failure_stdout_v1(error.status):
                 raise error(error.status) from None
 
 
@@ -3036,8 +3076,7 @@ def _run_fixed_supervisor_v1(request, files, source, origin):
         _write_private(outer / "supervisor.stdout.private", outcome.stdout)
         _write_private(outer / "supervisor.stderr.private", outcome.stderr)
     finally:
-        if origin is _Origin.FRESH_FIXTURE:
-            _raise_fresh_supervisor_terminal_v1(outcome)
+        _raise_owned_supervisor_terminal_v1(outcome)
     _need(
         outcome.returncode == 0
         and len(outcome.stdout) <= 65536
@@ -3046,8 +3085,14 @@ def _run_fixed_supervisor_v1(request, files, source, origin):
     )
     result = json.loads(outcome.stdout)
     _need(type(result) is dict and result.get("execution_authority") is False)
-    if origin is _Origin.FRESH_FIXTURE:
-        _need(result.get("status") == _FRESH_SUCCESS_STATUS)
+    expected_status = (
+        _FRESH_SUCCESS_STATUS
+        if origin is _Origin.FRESH_FIXTURE
+        else _PRESERVED_PLAN_STATUS
+        if request["confirmation"] is None
+        else _PRESERVED_UPGRADE_STATUS
+    )
+    _need(result.get("status") == expected_status)
     return result
 
 
@@ -3066,6 +3111,45 @@ def run_fresh_canonical17_acceptance_supervisor_v1(request_file):
     return _run_fixed_supervisor_v1(request, resources, source, _Origin.FRESH_FIXTURE)
 
 
+def _completed_owned_data_v1(owned, origin, *, committed):
+    completed = _COMPLETED_DATA.pop(id(owned), None)
+    phase = _Phase.READBACK_ONLY if committed else _Phase.READY
+    _need(type(completed) is dict and completed["origin"] == origin.value)
+    _need(
+        completed["phase_before_close"] == phase.value
+        and completed["commit_attempts"] == int(committed)
+        and completed["journal_steps"] == (7 if committed else 1)
+    )
+    _need(
+        all(
+            completed[name] is True
+            for name in (
+                "cold_source_unchanged_verified",
+                "distinct_working_copy_verified",
+                "owned_server_fast_shutdown_verified",
+            )
+        )
+    )
+    return {
+        name: value
+        for name, value in completed.items()
+        if name not in ("phase_before_close", "journal_steps")
+    }
+
+
+def _raise_owned_terminal_v1(error, *, committed):
+    from scripts import retained0017_owner_upgrade_0055_v1 as owner_api
+
+    if type(error) is owner_api.Retained0017UpgradeCommitUnknown:
+        raise RetainedBootstrapCommitUnknown(
+            "retained_pg_owned_commit_unknown_do_not_retry"
+        ) from None
+    if committed or type(error) is owner_api.Retained0017UpgradeReadbackRequired:
+        raise RetainedBootstrapReadbackRequired(
+            "retained_pg_owned_committed_readback_required"
+        ) from None
+
+
 async def _execute_owned_request_v1(request, files):
     from scripts import retained0017_owner_plan_v1 as original
     from scripts import retained0017_owner_upgrade_0055_v1 as owner_api
@@ -3076,12 +3160,33 @@ async def _execute_owned_request_v1(request, files):
         original.RetainedOwnerPins0017V1(**{**retained, "route": route}),
         request["pins"]["maintenance_settings_sha256"],
     )
-    async with begin_owned_preserved_pg_bootstrap_v1(files, pins):
-        # Until the reviewed owner hook and real positive transaction fixture
-        # land, this original unconditional fence remains the only outcome.
-        # A successful cold copy/TLS/catalog receipt cannot bypass it.
-        owner_api._require_apply_lineage()
-        raise RetainedBootstrapRefused("retained_pg_owner_custody_wiring_pending")
+    confirmation = request["confirmation"]
+    committed = False
+    try:
+        async with asynccontextmanager(_owned_bootstrap_generator_v1)(
+            files, pins, _Origin.PRESERVED, confirmation=confirmation
+        ) as owned:
+            _guard()
+            result = await owner_api._run_owned_0017_to_0055_v1(
+                owned,
+                _record(owned).pins,
+                source_archive_file=Path(files.source_archive_file),
+                confirmation=confirmation,
+            )
+            committed = result["migration_performed"] is True
+            _need(committed is (confirmation is not None))
+        completed = _completed_owned_data_v1(
+            owned, _Origin.PRESERVED, committed=committed
+        )
+    except BaseException as error:
+        _raise_owned_terminal_v1(error, committed=committed)
+        raise
+    return {
+        **result,
+        **completed,
+        "schema": "ctcc.retained_pg.preserved_owner_result.v1",
+        "status": _PRESERVED_UPGRADE_STATUS if committed else _PRESERVED_PLAN_STATUS,
+    }
 
 
 async def _execute_fresh_acceptance_v1(resources, source):
@@ -3095,47 +3200,15 @@ async def _execute_fresh_acceptance_v1(resources, source):
                     owned, pins, source_archive_file=Path(resources.source_archive_file)
                 )
                 committed = True
-            completed = _COMPLETED_DATA.pop(id(owned), None)
-            _need(
-                type(completed) is dict
-                and completed["origin"] == _Origin.FRESH_FIXTURE.value
+            completed = _completed_owned_data_v1(
+                owned, _Origin.FRESH_FIXTURE, committed=True
             )
-            _need(
-                completed["phase_before_close"] == _Phase.READBACK_ONLY.value
-                and completed["commit_attempts"] == 1
-                and completed["journal_steps"] == 7
-            )
-            _need(
-                all(
-                    completed[name] is True
-                    for name in (
-                        "cold_source_unchanged_verified",
-                        "distinct_working_copy_verified",
-                        "owned_server_fast_shutdown_verified",
-                    )
-                )
-            )
-    except owner_api.Retained0017UpgradeCommitUnknown:
-        raise RetainedBootstrapCommitUnknown(
-            "retained_pg_fresh_commit_unknown_do_not_retry"
-        ) from None
-    except owner_api.Retained0017UpgradeReadbackRequired:
-        raise RetainedBootstrapReadbackRequired(
-            "retained_pg_fresh_committed_readback_required"
-        ) from None
-    except BaseException:
-        if committed:
-            raise RetainedBootstrapReadbackRequired(
-                "retained_pg_fresh_committed_readback_required"
-            ) from None
+    except BaseException as error:
+        _raise_owned_terminal_v1(error, committed=committed)
         raise
     return {
         **result,
-        **{
-            name: value
-            for name, value in completed.items()
-            if name not in ("phase_before_close", "journal_steps")
-        },
+        **completed,
         "schema": "ctcc.retained_pg.fresh_acceptance_result.v1",
         "status": _FRESH_SUCCESS_STATUS,
         "preserved_pg_inputs_read": 0,
@@ -3160,7 +3233,7 @@ def _supervisor_fresh_main_v1():
         import traceback
 
         error = type(failure)
-        status = error.status if error in _FRESH_TERMINAL_ERRORS else "REFUSED"
+        status = error.status if error in _OWNED_TERMINAL_ERRORS else "REFUSED"
         try:
             _write_private(
                 Path("/run/fresh-acceptance-exception-chain.private.json"),
@@ -3173,7 +3246,7 @@ def _supervisor_fresh_main_v1():
         except BaseException:  # noqa: BLE001 -- absent diagnostics cannot turn refusal into acceptance.
             if status == "REFUSED":
                 return 2
-        print(_fresh_failure_stdout_v1(status).decode("ascii"), end="")
+        print(_owned_failure_stdout_v1(status).decode("ascii"), end="")
         return 2
 
 
@@ -3197,6 +3270,8 @@ def _supervisor_main_v1():
         # database/role name, SQL content or connection data crosses stdout.
         import traceback
 
+        error = type(failure)
+        status = error.status if error in _OWNED_TERMINAL_ERRORS else "REFUSED"
         try:
             _write_private(
                 Path("/run/supervisor-exception-chain.private.json"),
@@ -3207,6 +3282,7 @@ def _supervisor_main_v1():
                 traceback.format_exc().encode("utf-8"),
             )
         except BaseException:  # noqa: BLE001 -- failure to retain diagnostics remains a hard refusal.
-            return 2
-        print('{"status":"REFUSED","execution_authority":false}')
+            if status == "REFUSED":
+                return 2
+        print(_owned_failure_stdout_v1(status).decode("ascii"), end="")
         return 2
