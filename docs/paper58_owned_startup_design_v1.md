@@ -51,9 +51,11 @@ or a financial/native actor observer. It audits table and inherited column
 rights, grant options, schema/database rights, sequences, APP function EXECUTE,
 membership and ownership, default/parameter ACLs, and all applicable stored
 setting scopes. It emits stored-setting **names**, never their values. Stock
-driver/introspection EXECUTE is not blanket-revoked: stock pg_catalog function
-ACLs are compared with their initial pg_init_privs/native defaults, while
-pg_control_system must remain unavailable to Paper.
+driver and introspection ACLs match their initial `pg_init_privs` or native
+defaults. The single reviewed hardening is an exact bootstrap-owner-only ACL
+on `pg_catalog.pg_control_system()` in the dedicated Paper database. Both
+the owner and restricted readbacks verify this ACL. The restricted connection
+also checks that its effective EXECUTE is absent.
 
 These components return DATA with schema/Paper/startup/execution authority
 false. A synthetically matching privilege matrix remains DATA. It cannot

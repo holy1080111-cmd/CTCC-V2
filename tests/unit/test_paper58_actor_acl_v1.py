@@ -126,6 +126,7 @@ def _synthetic_inventory(policy):
             )
         },
         "pg_control_system_execute": False,
+        "pg_control_system_acl_owner_only": True,
     }
 
 
@@ -178,6 +179,7 @@ def test_complete_synthetic_inventory_is_data_only_and_keeps_real_proofs_pending
         "app_execute",
         "app_grant_option",
         "pg_control_execute",
+        "pg_control_acl_drift",
         "stock_override",
         "membership",
         "ownership",
@@ -236,6 +238,8 @@ def test_missing_or_additional_effective_rights_and_metadata_deny(
         ] = True
     elif mutation == "pg_control_execute":
         document["pg_control_system_execute"] = True
+    elif mutation == "pg_control_acl_drift":
+        document["pg_control_system_acl_owner_only"] = False
     elif mutation == "stock_override":
         document["stock_function_acl_override_edges"].append([1, "pg_read_file"])
     elif mutation == "membership":
@@ -279,16 +283,25 @@ def test_missing_or_additional_effective_rights_and_metadata_deny(
         document["application_function_count"] += 1
     else:
         document["explicit_table_acl_edges"].pop()
-    with pytest.raises(acl.Paper58ActorAclRefused):
+    with pytest.raises(acl.Paper58ActorAclRefused) as refused:
         acl._compare_restricted_actor_inventory(document, expected_policy)
+    assert refused.value.category in acl._INVENTORY_FIELDS
+    assert str(refused.value) == "paper58_actor_acl_refused"
+    if mutation == "pg_control_execute":
+        assert refused.value.category == "pg_control_system_execute"
+    elif mutation == "pg_control_acl_drift":
+        assert refused.value.category == "pg_control_system_acl_owner_only"
+    elif mutation == "stock_override":
+        assert refused.value.category == "stock_function_acl_override_edges"
 
 
 @pytest.mark.parametrize("index", range(7))
 def test_every_actor_role_flag_is_exact(expected_policy, index):
     document = _synthetic_inventory(expected_policy)
     document["actor"]["flags"][index] = not acl.ACTOR_FLAGS[index]
-    with pytest.raises(acl.Paper58ActorAclRefused):
+    with pytest.raises(acl.Paper58ActorAclRefused) as refused:
         acl._compare_restricted_actor_inventory(document, expected_policy)
+    assert refused.value.category == "actor"
 
 
 def test_actual_public_schema_owner_drives_grantor_not_the_superuser_name(

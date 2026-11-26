@@ -16,7 +16,36 @@ def _need(value):
         raise Paper58ActorAclRefused("paper58_actor_inventory_refused") from None
 
 
-ACTOR_INVENTORY_SQL = r"""
+CONTROL_ACL_SQL = r"""
+WITH control AS (
+ SELECT p.oid,p.proacl,
+  pg_catalog.acldefault('f'::pg_catalog."char",p.proowner) AS stock_acl,
+  ARRAY[pg_catalog.makeaclitem(p.proowner,p.proowner,'EXECUTE',false)] AS owner_acl,
+  i.initprivs
+ FROM pg_catalog.pg_proc p
+ LEFT JOIN pg_catalog.pg_init_privs i ON i.classoid='pg_catalog.pg_proc'::pg_catalog.regclass
+  AND i.objoid=p.oid AND i.objsubid=0
+ WHERE p.oid=3441 AND p.pronamespace='pg_catalog'::pg_catalog.regnamespace
+  AND p.proname='pg_control_system' AND p.pronargs=0 AND p.prokind='f'
+  AND p.proowner=10 AND p.prolang=12 AND p.prosrc='pg_control_system'
+  AND p.prorettype='pg_catalog.record'::pg_catalog.regtype
+  AND p.provolatile='v' AND NOT p.prosecdef AND p.proconfig IS NULL
+  AND (i.privtype IS NULL OR i.privtype IN ('i','e'))
+)
+SELECT c.oid,
+ pg_catalog.array_dims(c.proacl) IS NOT DISTINCT FROM '[1:1]'
+  AND c.proacl IS NOT DISTINCT FROM c.owner_acl AS owner_only,
+ COALESCE(c.proacl,c.stock_acl) IS DISTINCT FROM COALESCE(c.initprivs,c.stock_acl) AS changed_from_initial,
+ EXISTS (SELECT 1 FROM pg_catalog.aclexplode(COALESCE(c.initprivs,c.stock_acl)) a
+  WHERE a.grantee=0 AND a.privilege_type='EXECUTE') AS initial_public_execute,
+ EXISTS (SELECT 1 FROM pg_catalog.aclexplode(COALESCE(c.proacl,c.stock_acl)) a
+  WHERE a.grantee=0 AND a.privilege_type='EXECUTE') AS public_execute
+FROM control c WHERE COALESCE(c.initprivs,c.stock_acl) IN (c.stock_acl,c.owner_acl)
+"""
+
+
+ACTOR_INVENTORY_SQL = (
+    r"""
 WITH a AS (
  SELECT r.* FROM pg_catalog.pg_roles r WHERE r.rolname=current_user
 ), db AS (
@@ -39,6 +68,10 @@ WITH a AS (
  SELECT p FROM pg_catalog.unnest(ARRAY['SELECT','INSERT','UPDATE','REFERENCES']::pg_catalog.text[]) p
 ), sp AS (
  SELECT p FROM pg_catalog.unnest(ARRAY['SELECT','UPDATE','USAGE']::pg_catalog.text[]) p
+), control_acl AS (
+"""
+    + CONTROL_ACL_SQL
+    + r"""
 )
 SELECT pg_catalog.jsonb_build_object(
  'schema','ctcc.paper58.restricted_actor_privilege_inventory.v1',
@@ -172,14 +205,17 @@ SELECT pg_catalog.jsonb_build_object(
   WHERE p.pronamespace='pg_catalog'::pg_catalog.regnamespace
    AND (i.privtype NOT IN ('i','e') OR
     COALESCE(p.proacl,pg_catalog.acldefault('f'::pg_catalog."char",p.proowner))
-     IS DISTINCT FROM COALESCE(i.initprivs,pg_catalog.acldefault('f'::pg_catalog."char",p.proowner)))),
+     IS DISTINCT FROM COALESCE(i.initprivs,pg_catalog.acldefault('f'::pg_catalog."char",p.proowner)))
+   AND NOT EXISTS(SELECT 1 FROM control_acl c WHERE c.oid=p.oid AND c.owner_only)),
   '[]'::pg_catalog.jsonb),
+ 'pg_control_system_acl_owner_only',(SELECT c.owner_only FROM control_acl c),
  'pg_control_system_execute',(SELECT pg_catalog.bool_or(
    pg_catalog.has_function_privilege(a.oid,p.oid,'EXECUTE'))
   FROM pg_catalog.pg_proc p WHERE p.pronamespace='pg_catalog'::pg_catalog.regnamespace
    AND p.proname='pg_control_system' AND p.pronargs=0)
 ) FROM a CROSS JOIN db CROSS JOIN pub
 """
+)
 
 
 async def capture_restricted_actor_inventory_data_v1(connection):

@@ -25,6 +25,7 @@ from app.paper.engine import PaperBroker
 from app.paper.execution_service import PaperExecutionService
 from scripts.paper58_actor_acl_v1 import (
     _NAME,
+    Paper58ActorAclRefused,
     require_restricted_actor_inventory_data_v1,
 )
 from scripts.paper58_actor_inventory_sql_v1 import (
@@ -56,6 +57,8 @@ def _startup_failure(stage, error):
             if len(name) <= 80 and name.isascii() and name.isidentifier()
             else "Exception"
         )
+        if isinstance(error, Paper58ActorAclRefused) and error.category is not None:
+            kinds.append(error.category)
         if isinstance(error, DBAPIError):
             state = getattr(error.orig, "sqlstate", None)
             if (

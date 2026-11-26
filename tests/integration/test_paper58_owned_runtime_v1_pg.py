@@ -10,6 +10,7 @@ from sqlalchemy import text
 
 from app.api.paper58_owned_http_v1 import build_owned_paper58_app_v1
 from app.core.owned_paper58_runtime_v1 import Paper58RuntimeRefused
+from scripts.paper58_actor_inventory_sql_v1 import CONTROL_ACL_SQL
 from scripts.paper58_owner_preflight_v1 import (
     capture_fresh_unpinned_preprovision_owner_v1,
 )
@@ -23,7 +24,7 @@ _BASE = f"http://127.0.0.1:{_PORT}"
 
 
 @pytest.fixture
-async def _fresh58(_canonical_fresh55):
+async def _fresh58(_canonical_fresh55, record_property):
     owner, _ = _canonical_fresh55
     await original._native55_predecessor(owner)
     async with owner.begin() as connection:
@@ -42,6 +43,20 @@ async def _fresh58(_canonical_fresh55):
         assert measured["preprovision_catalog_matches"] is True
     actor = f"ctcc_paper58_ci_{uuid4().hex[:16]}"
     async with owner.begin() as connection:
+        before = (await connection.execute(text(CONTROL_ACL_SQL))).mappings().one()
+        assert before["changed_from_initial"] is False
+        assert before["public_execute"] is before["initial_public_execute"]
+        assert type(before["public_execute"]) is bool
+        await connection.exec_driver_sql(
+            "REVOKE EXECUTE ON FUNCTION pg_catalog.pg_control_system() FROM PUBLIC"
+        )
+        after = (await connection.execute(text(CONTROL_ACL_SQL))).mappings().one()
+        assert after["changed_from_initial"] is before["public_execute"]
+        assert after["owner_only"] is True and after["public_execute"] is False
+        record_property(
+            "native_control_public_execute_before", before["public_execute"]
+        )
+        record_property("native_control_public_execute_after", after["public_execute"])
         await connection.exec_driver_sql(
             f'CREATE ROLE "{actor}" LOGIN NOINHERIT NOSUPERUSER NOCREATEROLE '
             "NOCREATEDB NOREPLICATION NOBYPASSRLS"

@@ -7,6 +7,7 @@ from scripts import paper58_catalog_reference_v1 as reference
 from scripts import paper58_owner_preflight_v1 as owner
 from scripts import paper58_source_coverage_v1 as source
 from scripts.paper58_actor_acl_v1 import _NAME, _false_authority, _need
+from scripts.paper58_actor_inventory_sql_v1 import CONTROL_ACL_SQL
 
 SCHEMA = "ctcc.paper58.fresh_unpinned_postprovision_acl_overlay_data.v1"
 PURPOSE = "fresh_canonical58_unpinned_owner_after_exact_paper_acl_provisioning"
@@ -271,4 +272,25 @@ SELECT (SELECT pg_catalog.count(*)=161 AND pg_catalog.bool_and(
         )
         is True
     )
-    return document, projected, matched | measurement
+    control = (await connection.execute(text(CONTROL_ACL_SQL))).mappings().one_or_none()
+    _need(
+        control is not None
+        and control["oid"] == 3441
+        and control["owner_only"] is True
+        and control["public_execute"] is False
+        and type(control["initial_public_execute"]) is bool
+        and control["changed_from_initial"] is control["initial_public_execute"],
+        "pg_control_system_acl_owner_only",
+    )
+    return (
+        document,
+        projected,
+        matched
+        | measurement
+        | {
+            "stock_control_system_owner_only": True,
+            "stock_control_system_public_revoke_required": control[
+                "initial_public_execute"
+            ],
+        },
+    )

@@ -29,6 +29,42 @@ TABLE_PRIVILEGES = (
 )
 COLUMN_PRIVILEGES = ("SELECT", "INSERT", "UPDATE", "REFERENCES")
 SEQUENCE_PRIVILEGES = ("SELECT", "UPDATE", "USAGE")
+_INVENTORY_FIELDS = frozenset(
+    {
+        "schema",
+        "profile",
+        "actor",
+        "database_privileges",
+        "database_grant_options",
+        "public_schema_privileges",
+        "public_schema_grant_options",
+        "table_privileges",
+        "table_grant_options",
+        "column_privileges",
+        "column_grant_options",
+        "sequence_privileges",
+        "sequence_grant_options",
+        "application_function_execute",
+        "application_function_grant_options",
+        "explicit_table_acl_edges",
+        "explicit_database_acl_edges",
+        "explicit_schema_acl_edges",
+        "explicit_column_acl_edges",
+        "role_membership_edges",
+        "ownership_edges",
+        "default_acl_edges",
+        "parameter_acl_edges",
+        "role_settings",
+        "database_settings",
+        "database_role_settings",
+        "global_settings",
+        "stock_function_acl_override_edges",
+        "pg_control_system_execute",
+        "pg_control_system_acl_owner_only",
+        "actor_shared_acl_edges",
+        "application_function_count",
+    }
+)
 _NAME = re.compile(r"[a-z_][a-z0-9_]{0,62}\Z", re.ASCII)
 
 # PostgreSQL17 documents MAINTAIN separately from ordinary CRUD, and table
@@ -40,10 +76,20 @@ _NAME = re.compile(r"[a-z_][a-z0-9_]{0,62}\Z", re.ASCII)
 class Paper58ActorAclRefused(ValueError):
     """No catalog identifiers or credentials are included in a refusal."""
 
+    def __init__(self, message, *, category=None):
+        super().__init__(message)
+        self.category = (
+            category
+            if type(category) is str and category in _INVENTORY_FIELDS
+            else None
+        )
 
-def _need(value):
+
+def _need(value, category=None):
     if value is not True:
-        raise Paper58ActorAclRefused("paper58_actor_acl_refused") from None
+        raise Paper58ActorAclRefused(
+            "paper58_actor_acl_refused", category=category
+        ) from None
 
 
 def _false_authority():
@@ -155,6 +201,7 @@ def fresh_unpinned_actor_policy_data_v1(preprovision_catalog, *, actor_oid, acto
             "database": ["TEMPORARY"],
             "public_schema": ["CREATE"],
             "application_functions": ["EXECUTE"],
+            "stock_pg_control_system": ["EXECUTE"],
         },
         "grant_options": False,
         "role_memberships": [],
@@ -162,20 +209,20 @@ def fresh_unpinned_actor_policy_data_v1(preprovision_catalog, *, actor_oid, acto
         "sequence_grants": [],
         "application_function_grants": [],
         "parameter_grants": [],
-        "stock_driver_builtin_acl_policy": "exact_initial_pg_init_privs_or_native_default",
+        "stock_driver_builtin_acl_policy": "exact_initial_acl_except_owner_only_control_system",
         "pg_control_system_execute": False,
         "bootstrap_owner_continuation_accepted": False,
         **_false_authority(),
     }
 
 
-def _matrix(actual, expected):
-    _need(type(actual) is dict and set(actual) == set(expected))
+def _matrix(actual, expected, category):
+    _need(type(actual) is dict and set(actual) == set(expected), category)
     for name, flags in expected.items():
         row = actual[name]
-        _need(type(row) is dict and set(row) == set(flags))
-        _need(all(type(value) is bool for value in row.values()))
-        _need(row == flags)
+        _need(type(row) is dict and set(row) == set(flags), category)
+        _need(all(type(value) is bool for value in row.values()), category)
+        _need(row == flags, category)
 
 
 def require_restricted_actor_inventory_data_v1(
@@ -195,44 +242,8 @@ def require_restricted_actor_inventory_data_v1(
 
 def _compare_restricted_actor_inventory(document, policy):
     normalizer._plain(document)
-    _need(type(document) is dict)
-    _need(
-        set(document)
-        == {
-            "schema",
-            "profile",
-            "actor",
-            "database_privileges",
-            "database_grant_options",
-            "public_schema_privileges",
-            "public_schema_grant_options",
-            "table_privileges",
-            "table_grant_options",
-            "column_privileges",
-            "column_grant_options",
-            "sequence_privileges",
-            "sequence_grant_options",
-            "application_function_execute",
-            "application_function_grant_options",
-            "explicit_table_acl_edges",
-            "explicit_database_acl_edges",
-            "explicit_schema_acl_edges",
-            "explicit_column_acl_edges",
-            "role_membership_edges",
-            "ownership_edges",
-            "default_acl_edges",
-            "parameter_acl_edges",
-            "role_settings",
-            "database_settings",
-            "database_role_settings",
-            "global_settings",
-            "stock_function_acl_override_edges",
-            "pg_control_system_execute",
-            "actor_shared_acl_edges",
-            "application_function_count",
-        }
-    )
-    _need(document["schema"] == INVENTORY_SCHEMA)
+    _need(type(document) is dict and set(document) == _INVENTORY_FIELDS, "schema")
+    _need(document["schema"] == INVENTORY_SCHEMA, "schema")
     profile = document["profile"]
     _need(
         type(profile) is dict
@@ -248,7 +259,8 @@ def _compare_restricted_actor_inventory(document, policy):
             "timezone",
             "server_version",
             "tls",
-        }
+        },
+        "profile",
     )
     _need(
         profile
@@ -263,33 +275,38 @@ def _compare_restricted_actor_inventory(document, policy):
             "timezone": "UTC",
             "server_version": "170011",
             "tls": True,
-        }
+        },
+        "profile",
     )
-    _need(type(profile["tls"]) is bool and profile["tls"] is True)
-    _need(type(profile["database_oid"]) is int)
+    _need(type(profile["tls"]) is bool and profile["tls"] is True, "profile")
+    _need(type(profile["database_oid"]) is int, "profile")
     actor = document["actor"]
-    _need(type(actor) is dict and set(actor) == {"oid", "name", "flags"})
-    _need(type(actor["oid"]) is int and actor["oid"] == policy["actor_oid"])
-    _need(actor["name"] == policy["actor"])
-    _need(type(actor["flags"]) is list and len(actor["flags"]) == 7)
-    _need(all(type(flag) is bool for flag in actor["flags"]))
-    _need(tuple(actor["flags"]) == ACTOR_FLAGS)
+    _need(type(actor) is dict and set(actor) == {"oid", "name", "flags"}, "actor")
+    _need(type(actor["oid"]) is int and actor["oid"] == policy["actor_oid"], "actor")
+    _need(actor["name"] == policy["actor"], "actor")
+    _need(type(actor["flags"]) is list and len(actor["flags"]) == 7, "actor")
+    _need(all(type(flag) is bool for flag in actor["flags"]), "actor")
+    _need(tuple(actor["flags"]) == ACTOR_FLAGS, "actor")
 
     _matrix(
         {"database": document["database_privileges"]},
         {"database": {"CONNECT": True, "CREATE": False, "TEMPORARY": False}},
+        "database_privileges",
     )
     _matrix(
         {"database": document["database_grant_options"]},
         {"database": {"CONNECT": False, "CREATE": False, "TEMPORARY": False}},
+        "database_grant_options",
     )
     _matrix(
         {"public": document["public_schema_privileges"]},
         {"public": {"USAGE": True, "CREATE": False}},
+        "public_schema_privileges",
     )
     _matrix(
         {"public": document["public_schema_grant_options"]},
         {"public": {"USAGE": False, "CREATE": False}},
+        "public_schema_grant_options",
     )
     table_flags = {
         table: {
@@ -298,15 +315,18 @@ def _compare_restricted_actor_inventory(document, policy):
         }
         for table in policy["columns"]
     }
-    _matrix(document["table_privileges"], table_flags)
+    _matrix(document["table_privileges"], table_flags, "table_privileges")
     _matrix(
         document["table_grant_options"],
         {table: dict.fromkeys(TABLE_PRIVILEGES, False) for table in policy["columns"]},
+        "table_grant_options",
     )
-    _need(type(document["column_privileges"]) is dict)
-    _need(type(document["column_grant_options"]) is dict)
-    _need(set(document["column_privileges"]) == set(policy["columns"]))
-    _need(set(document["column_grant_options"]) == set(policy["columns"]))
+    for key in ("column_privileges", "column_grant_options"):
+        _need(
+            type(document[key]) is dict
+            and set(document[key]) == set(policy["columns"]),
+            key,
+        )
     for table, columns in policy["columns"].items():
         _matrix(
             document["column_privileges"][table],
@@ -317,10 +337,12 @@ def _compare_restricted_actor_inventory(document, policy):
                 }
                 for column in columns
             },
+            "column_privileges",
         )
         _matrix(
             document["column_grant_options"][table],
             {column: dict.fromkeys(COLUMN_PRIVILEGES, False) for column in columns},
+            "column_grant_options",
         )
     for key in ("sequence_privileges", "sequence_grant_options"):
         _matrix(
@@ -329,16 +351,27 @@ def _compare_restricted_actor_inventory(document, policy):
                 name: dict.fromkeys(SEQUENCE_PRIVILEGES, False)
                 for name in policy["sequences"]
             },
+            key,
         )
     for key in ("application_function_execute", "application_function_grant_options"):
         row = document[key]
-        _need(type(row) is dict and set(row) == set(policy["application_functions"]))
-        _need(all(value is False for value in row.values()))
-    _need(type(document["application_function_count"]) is int)
+        _need(
+            type(row) is dict and set(row) == set(policy["application_functions"]), key
+        )
+        _need(all(value is False for value in row.values()), key)
     _need(
-        document["application_function_count"] == len(policy["application_functions"])
+        type(document["application_function_count"]) is int,
+        "application_function_count",
     )
-    _need(document["pg_control_system_execute"] is False)
+    _need(
+        document["application_function_count"] == len(policy["application_functions"]),
+        "application_function_count",
+    )
+    _need(document["pg_control_system_execute"] is False, "pg_control_system_execute")
+    _need(
+        document["pg_control_system_acl_owner_only"] is True,
+        "pg_control_system_acl_owner_only",
+    )
 
     expected_table_edges = sorted(
         [name, privilege, policy["owner_oid"], policy["actor_oid"], False]
@@ -351,13 +384,16 @@ def _compare_restricted_actor_inventory(document, policy):
         "explicit_schema_acl_edges",
     ):
         edges = document[key]
-        _need(type(edges) is list)
+        _need(type(edges) is list, key)
         for edge in edges:
-            _need(type(edge) is list and len(edge) == 5)
-            _need(type(edge[0]) is str and type(edge[1]) is str)
-            _need(type(edge[2]) is int and type(edge[3]) is int)
-            _need(type(edge[4]) is bool and edge[4] is False)
-    _need(document["explicit_table_acl_edges"] == expected_table_edges)
+            _need(type(edge) is list and len(edge) == 5, key)
+            _need(type(edge[0]) is str and type(edge[1]) is str, key)
+            _need(type(edge[2]) is int and type(edge[3]) is int, key)
+            _need(type(edge[4]) is bool and edge[4] is False, key)
+    _need(
+        document["explicit_table_acl_edges"] == expected_table_edges,
+        "explicit_table_acl_edges",
+    )
     _need(
         document["explicit_database_acl_edges"]
         == [
@@ -368,7 +404,8 @@ def _compare_restricted_actor_inventory(document, policy):
                 policy["actor_oid"],
                 False,
             ]
-        ]
+        ],
+        "explicit_database_acl_edges",
     )
     _need(
         document["explicit_schema_acl_edges"]
@@ -380,15 +417,22 @@ def _compare_restricted_actor_inventory(document, policy):
                 policy["actor_oid"],
                 False,
             ]
-        ]
+        ],
+        "explicit_schema_acl_edges",
     )
     shared = document["actor_shared_acl_edges"]
-    _need(type(shared) is list)
+    _need(type(shared) is list, "actor_shared_acl_edges")
     for edge in shared:
-        _need(type(edge) is list and len(edge) == 7)
-        _need(all(type(edge[index]) is int for index in (0, 2, 3, 5)))
-        _need(all(type(edge[index]) is str for index in (1, 4, 6)))
-    _need(sorted(shared) == policy["actor_shared_acl_edges"])
+        _need(type(edge) is list and len(edge) == 7, "actor_shared_acl_edges")
+        _need(
+            all(type(edge[index]) is int for index in (0, 2, 3, 5)),
+            "actor_shared_acl_edges",
+        )
+        _need(
+            all(type(edge[index]) is str for index in (1, 4, 6)),
+            "actor_shared_acl_edges",
+        )
+    _need(sorted(shared) == policy["actor_shared_acl_edges"], "actor_shared_acl_edges")
     for key in (
         "explicit_column_acl_edges",
         "role_membership_edges",
@@ -401,7 +445,7 @@ def _compare_restricted_actor_inventory(document, policy):
         "global_settings",
         "stock_function_acl_override_edges",
     ):
-        _need(document[key] == [])
+        _need(document[key] == [], key)
     return {
         "schema": MATCH_SCHEMA,
         "purpose": owner.PURPOSE,
