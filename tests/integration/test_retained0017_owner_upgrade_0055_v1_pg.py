@@ -56,18 +56,28 @@ async def _canonical_upgrade17_lab(tmp_path):
     # install the missing literal schema proof on behalf of this test.
     subject._require_reference_seal()
     url, tls = _isolated_tls_database_config()
-    name = "ctcc_upgrade17_" + uuid4().hex[:12]
+    nonce = uuid4().hex[:12]
+    name, owner_name = "ctcc_upgrade17_" + nonce, "ctcc_upgrade17_owner_" + nonce
     admin = create_async_engine(
         url, poolclass=NullPool, connect_args={"ssl": tls}, hide_parameters=True
     )
-    owner, created = None, False
+    owner, created, role_created = None, False, False
     try:
         async with admin.connect() as connection:
             await connection.execution_options(isolation_level="AUTOCOMMIT")
-            await connection.exec_driver_sql('CREATE DATABASE "' + name + '"')
+            # Frozen0050 requires an actual superowner. A named role with a
+            # newly allocated OID retains the reviewed catalog ownership edges.
+            await connection.exec_driver_sql(
+                f'CREATE ROLE "{owner_name}" LOGIN SUPERUSER NOINHERIT NOCREATEDB '
+                "NOCREATEROLE NOREPLICATION NOBYPASSRLS"
+            )
+            role_created = True
+            await connection.exec_driver_sql(
+                f'CREATE DATABASE "{name}" OWNER "{owner_name}" TEMPLATE template0'
+            )
             created = True
         owner = create_async_engine(
-            url.set(database=name),
+            url.set(database=name, username=owner_name),
             poolclass=NullPool,
             connect_args={"ssl": tls},
             hide_parameters=True,
@@ -89,6 +99,7 @@ async def _canonical_upgrade17_lab(tmp_path):
                 {"id": audit_id},
             )
             actor = tuple((await connection.execute(subject._PROFILE_SQL)).one())
+            assert actor[0] == owner_name and actor[4] >= 16384
             settings = await connection.scalar(
                 subject._SETTINGS_HASH,
                 {"owner_oid": actor[4], "database_oid": actor[5]},
@@ -149,14 +160,45 @@ async def _canonical_upgrade17_lab(tmp_path):
         if owner is not None:
             await owner.dispose()
         try:
-            if created:
+            if created or role_created:
                 async with admin.connect() as connection:
                     await connection.execution_options(isolation_level="AUTOCOMMIT")
-                    await connection.exec_driver_sql(
-                        'DROP DATABASE "' + name + '" WITH (FORCE)'
-                    )
+                    if created:
+                        await connection.exec_driver_sql(
+                            f'DROP DATABASE "{name}" WITH (FORCE)'
+                        )
+                    if role_created:
+                        await connection.exec_driver_sql(f'DROP ROLE "{owner_name}"')
         finally:
             await admin.dispose()
+
+
+async def test_actual0017_direct_confirmed_apply_refuses_with_valid_readonly_route(
+    _canonical_upgrade17_lab,
+):
+    owner, pins, _prepared, arguments, _audit, _private = _canonical_upgrade17_lab
+    before = await subject.upgrade_preserved_owner_0017_to_0055_v1(pins, **arguments)
+    assert before["status"] == "READ_ONLY_ELIGIBILITY_DATA"
+    assert before["database_head"] == "0017"
+    assert before["migration_performed"] is before["execution_authority"] is False
+    assert before["schema_upgrade_authorized"] is False
+    assert before["exchange_flat"] is None
+    with pytest.raises(
+        subject.Retained0017UpgradeRefused,
+        match=r"^retained0017_upgrade0055_apply_lineage_pending$",
+    ):
+        await subject.upgrade_preserved_owner_0017_to_0055_v1(
+            pins, confirmation=subject.CONFIRMATION, **arguments
+        )
+    after = await subject.upgrade_preserved_owner_0017_to_0055_v1(pins, **arguments)
+    assert after == before
+    async with owner.connect() as connection:
+        assert (
+            await connection.scalar(
+                text("SELECT version_num FROM public.alembic_version")
+            )
+            == "0017"
+        )
 
 
 async def test_actual0017_upgrade0055_genuine_outer_rehearsal_commit_and_two_readbacks(
@@ -338,10 +380,14 @@ async def test_actual0017_upgrade0055_unresolved_legacy_intent_is_retained_and_n
             ),
             {"sha": "a" * 64},
         )
-    with pytest.raises(subject.Retained0017UpgradeRefused):
-        await subject.upgrade_preserved_owner_0017_to_0055_v1(
-            pins, confirmation=subject.CONFIRMATION, **arguments
-        )
+    with pytest.raises(
+        ValueError, match=r"^native_legacy_live_uncertain_or_tracked_exposure$"
+    ):
+        await subject._readonly_before(owner, pins)
+    with pytest.raises(
+        subject.Retained0017UpgradeRefused, match=r"^retained0017_upgrade0055_refused$"
+    ):
+        await subject.upgrade_preserved_owner_0017_to_0055_v1(pins, **arguments)
     async with owner.connect() as connection:
         assert (
             await connection.scalar(
@@ -359,7 +405,7 @@ async def test_actual0017_upgrade0055_unresolved_legacy_intent_is_retained_and_n
         )
 
 
-async def test_actual0017_upgrade0055_cli_genuine_private_pins_and_source_archive(
+async def test_actual0017_cli_valid_private_pins_read_only_and_confirmed_refusal(
     _canonical_upgrade17_lab,
 ):
     owner, pins, _prepared, arguments, _audit, private = _canonical_upgrade17_lab
@@ -370,7 +416,7 @@ async def test_actual0017_upgrade0055_cli_genuine_private_pins_and_source_archiv
     assert subject._load_pins(pins_file, subject.baseline.sha(raw)) == pins
     import sys
 
-    process = await asyncio.create_subprocess_exec(
+    command = (
         sys.executable,
         "-B",
         "-m",
@@ -385,29 +431,48 @@ async def test_actual0017_upgrade0055_cli_genuine_private_pins_and_source_archiv
         str(arguments["ca_file"]),
         "--source-archive-file",
         str(arguments["source_archive_file"]),
-        "--confirm",
-        subject.CONFIRMATION,
-        cwd=subject.ROOT,
-        env={
-            "PATH": os.environ["PATH"],
-            "PYTHONDONTWRITEBYTECODE": "1",
-            "PYTHONNOUSERSITE": "1",
-        },
-        stdin=asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
     )
-    try:
-        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=600)
-    except BaseException:
-        if process.returncode is None:
-            process.kill()
-            await process.wait()
-        raise
-    assert process.returncode == 0, (process.returncode, stdout[-1000:], stderr[-1000:])
-    result = subject.read_evidence_json(stdout)
-    assert result["database_head"] == "0055" and result["execution_authority"] is False
-    assert owner.url.host.encode() not in stdout + stderr
+
+    async def run_cli(*options):
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            *options,
+            cwd=subject.ROOT,
+            env={
+                "PATH": os.environ["PATH"],
+                "PYTHONDONTWRITEBYTECODE": "1",
+                "PYTHONNOUSERSITE": "1",
+            },
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=600)
+        except BaseException:
+            if process.returncode is None:
+                process.kill()
+                await process.wait()
+            raise
+        assert not stderr
+        assert owner.url.host.encode() not in stdout
+        assert str(arguments["owner_dsn_file"]).encode() not in stdout
+        return process.returncode, subject.read_evidence_json(stdout)
+
+    code, observed = await run_cli()
+    assert code == 0 and observed["status"] == "READ_ONLY_ELIGIBILITY_DATA"
+    assert observed["database_head"] == "0017"
+    assert observed["migration_performed"] is observed["execution_authority"] is False
+    code, observed = await run_cli("--confirm", subject.CONFIRMATION)
+    assert code == 2
+    assert observed == {"status": "REFUSED", "execution_authority": False}
+    async with owner.connect() as connection:
+        assert (
+            await connection.scalar(
+                text("SELECT version_num FROM public.alembic_version")
+            )
+            == "0017"
+        )
 
 
 @pytest.mark.parametrize(
