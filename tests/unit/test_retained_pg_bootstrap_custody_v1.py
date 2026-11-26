@@ -141,6 +141,14 @@ def test_stopped55_request_is_a_distinct_read_only_purpose(tmp_path, monkeypatch
     packet["confirmation"] = subject._PRESERVED_CONFIRMATION
     with pytest.raises(subject.RetainedBootstrapRefused):
         subject._read_stopped55_request(tmp_path / "request")
+    packet["schema"] = "ctcc.retained_pg.stopped0055_negative_stop_request.v1"
+    packet["eligibility"] = {"file": str(tmp_path / "eligibility"), "sha256": "f" * 64}
+    with pytest.raises(subject.RetainedBootstrapRefused):
+        subject._read_stopped55_request(tmp_path / "request", apply=True)
+    packet["confirmation"] = subject._STOPPED55_NEGATIVE_CONFIRMATION
+    assert (
+        subject._read_stopped55_request(tmp_path / "request", apply=True)[0] == packet
+    )
 
 
 def test_stopped55_reader_purpose_cannot_claim_either_write_origin(monkeypatch):
@@ -155,6 +163,67 @@ def test_stopped55_reader_purpose_cannot_claim_either_write_origin(monkeypatch):
     for fixture in (False, True):
         with pytest.raises(subject.RetainedBootstrapRefused):
             subject._claim_owned_apply_v1(object(), fixture=fixture)
+
+
+def test_stopped55_negative_attempt_reservation_is_no_clobber_across_output_paths(
+    tmp_path, monkeypatch
+):
+    packet = _stopped55_request(tmp_path)
+    packet["eligibility"] = {"file": str(tmp_path / "eligibility"), "sha256": "f" * 64}
+    namespace = tmp_path / "authorized-operation-attempts"
+    monkeypatch.setattr(subject, "_STOPPED55_NEGATIVE_LAUNCHES", str(namespace))
+    monkeypatch.setattr(subject, "_private_parent", lambda path: None)
+
+    def write(path, raw):
+        with path.open("xb") as stream:
+            stream.write(raw)
+
+    monkeypatch.setattr(subject, "_write_private", write)
+    subject._reserve_stopped55_negative_launch_v1(packet, "a" * 64)
+    (marker,) = namespace.iterdir()
+    saved = marker.read_bytes()
+    packet["files"]["private_output_parent"] = str(tmp_path / "changed")
+    with pytest.raises(FileExistsError):
+        subject._reserve_stopped55_negative_launch_v1(packet, "a" * 64)
+    assert marker.read_bytes() == saved
+
+
+def test_stopped55_negative_lease_has_one_commit_phase_and_exact_pin(monkeypatch):
+    lease, engine = object(), object()
+    pins = SimpleNamespace(reviewed_snapshot_sha256="a" * 64)
+    record = SimpleNamespace(
+        origin=subject._Origin.STOPPED55_NEGATIVE,
+        phase=subject._Phase.READY,
+        engine=engine,
+        pins=pins,
+        postmaster_started=object(),
+        operation_id="f" * 32,
+        commit_attempts=0,
+    )
+    seen = []
+    monkeypatch.setattr(subject, "_guard", lambda: None)
+    monkeypatch.setattr(subject, "_record", lambda _owner: record)
+    monkeypatch.setattr(subject, "_journal", lambda _record, phase: seen.append(phase))
+    with pytest.raises(subject.RetainedBootstrapRefused):
+        subject._claim_stopped55_negative_v1(lease, engine, pins, "b" * 64)
+    with pytest.raises(subject.RetainedBootstrapRefused):
+        subject._claim_stopped55_negative_v1(lease, object(), pins, "a" * 64)
+    assert (
+        subject._claim_stopped55_negative_v1(lease, engine, pins, "a" * 64).hex
+        == "f" * 32
+    )
+    subject._advance_stopped55_negative_v1(lease, subject._Phase.COMMIT_ATTEMPTED)
+    with pytest.raises(subject.RetainedBootstrapRefused):
+        subject._claim_stopped55_negative_v1(lease, engine, pins, "a" * 64)
+    subject._advance_stopped55_negative_v1(lease, subject._Phase.READBACK_ONLY)
+    with pytest.raises(subject.RetainedBootstrapRefused):
+        subject._advance_stopped55_negative_v1(lease, subject._Phase.COMMIT_ATTEMPTED)
+    assert record.commit_attempts == 1
+    assert seen == [
+        subject._Phase.CLAIMED,
+        subject._Phase.COMMIT_ATTEMPTED,
+        subject._Phase.READBACK_ONLY,
+    ]
 
 
 def test_private_maintenance_config_pins_lock_capacity_and_existing_limits(

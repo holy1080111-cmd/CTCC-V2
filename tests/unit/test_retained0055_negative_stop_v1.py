@@ -81,6 +81,19 @@ async def test_stopped_copy_plan_reads_continuity_twice_and_reports_no_mutation(
     assert result["mutation_performed"] is result["execution_authority"] is False
 
 
+@pytest.mark.asyncio
+async def test_negative_stop_copy_receipt_cannot_substitute_for_live_custody():
+    from scripts import retained_pg_bootstrap_custody_v1 as custody
+
+    class Engine:
+        def connect(self):
+            pytest.fail("unowned negative Stop tried to open a connection")
+
+    receipt = {"phase": "ready", "commit_attempts": 0, "verified": True}
+    with pytest.raises(custody.RetainedBootstrapRefused):
+        await subject._write_once(Engine(), _pins(), object(), {}, _custody=receipt)
+
+
 def _catalog():
     # Declared minimal typed DATA. Complete source/profile admission remains
     # upstream and genuine PostgreSQL acceptance is a separate pending suite.
