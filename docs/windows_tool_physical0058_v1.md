@@ -142,6 +142,22 @@ reports `ready`. The dashboard and Paper token use the same installation
 binding as the recovered service. Stop with `Ctrl+C` before reopening or
 reinstalling.
 
+## Offline fault checks
+
+Run the component checker from a reviewed checkout with the Windows CPython
+3.12 validation lock and the exact source project installed in that isolated
+environment. Use a short build directory when installing the source wheel so
+the Windows wheel builder can create deeply nested module paths.
+
+```powershell
+& $ValidationPython -B -m scripts.verify_offline_chaos_subset_v1 --archive $SourceTar --archive-sha256 $VerifiedSourceTarSha256 --output $NewEvidenceDirectory
+```
+
+Use the independently verified TAR digest. The checker verifies the source and
+installed package inventory, runs the fixed Windows cases on loopback, and
+publishes a report, JUnit and SHA256SUMS. The report records
+`scope=local_regression_only` and `full_chaos_acceptance=false`.
+
 ## Upgrade, activation and rollback
 
 `Upgrade` is `Stage` into a different version directory. It neither changes a
