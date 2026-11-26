@@ -271,8 +271,21 @@ def test_private_reviewed_inputs_are_closed_and_independently_hash_pinned(
         value["route"]["database_head"] = "0058"
     raw = subject._canonical(value)
     path = root / "reviewed-pins.json"
-    path.write_bytes(raw)
-    path.chmod(0o600)
+    if os.name == "nt":
+        from app.trade_evidence.native_private_root_v2 import (
+            _open_new_windows_private_evidence_file,
+        )
+        from app.trade_evidence.storage import _windows_root
+
+        # A new file under an elevated Windows runner can otherwise be owned
+        # by Administrators even when the disposable parent is user-owned.
+        with _windows_root(root) as opened:
+            fd = _open_new_windows_private_evidence_file(opened, path.name)
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(raw)
+    else:
+        path.write_bytes(raw)
+        path.chmod(0o600)
     if change == "none":
         assert subject._load_pins(path, subject._sha(raw)) == _pins()
     else:
