@@ -329,6 +329,34 @@ WITH relations AS (
  WHERE n.nspname='public'
 ), new_data AS (
  SELECT c.oid,c.reltype FROM relations c WHERE c.relname=ANY(CAST(:added_tables AS pg_catalog.text[]))
+), fitted_key_specs(index_name,table_name,column_name,constraint_kind) AS (
+ VALUES ('pk_gate3_fitted_candidate_bindings','gate3_fitted_candidate_bindings','seal_sha256','p'),
+        ('uq_gate3_fitted_candidate_bindings_binding_sha256','gate3_fitted_candidate_bindings','binding_sha256','u'),
+        ('pk_gate3_fitted_candidate_acks','gate3_fitted_candidate_acks','seal_sha256','p'),
+        ('pk_gate3_fitted_candidate_evaluations','gate3_fitted_candidate_evaluations','seal_sha256','p')
+), fitted_index_attributes AS (
+ SELECT ix.oid,x.attnum
+ FROM fitted_key_specs spec
+ JOIN relations t ON t.relname::pg_catalog.text=spec.table_name
+ JOIN new_data d ON d.oid=t.oid
+ JOIN pg_catalog.pg_index i ON i.indrelid=t.oid
+ JOIN relations ix ON ix.oid=i.indexrelid AND ix.relname::pg_catalog.text=spec.index_name
+ JOIN pg_catalog.pg_constraint k ON k.conindid=ix.oid AND k.conrelid=t.oid
+ JOIN pg_catalog.pg_attribute a ON a.attrelid=t.oid AND a.attnum=i.indkey[0]
+ JOIN pg_catalog.pg_attribute x ON x.attrelid=ix.oid AND x.attnum=1
+ WHERE ix.relkind='i' AND ix.relam=403 AND ix.relowner=t.relowner
+   AND k.conname::pg_catalog.text=spec.index_name
+   AND k.contype::pg_catalog.text=spec.constraint_kind
+   AND k.convalidated AND NOT k.condeferrable AND NOT k.condeferred
+   AND k.conkey=ARRAY[a.attnum]
+   AND a.attnum>0 AND NOT a.attisdropped AND NOT x.attisdropped
+   AND a.attname::pg_catalog.text=spec.column_name AND x.attname=a.attname
+   AND a.atttypid=1043 AND a.atttypmod=68 AND a.attnotnull
+   AND i.indisunique AND i.indisvalid AND i.indisready AND i.indislive AND i.indimmediate
+   AND i.indisprimary=(spec.constraint_kind='p')
+   AND NOT i.indisexclusion AND NOT i.indnullsnotdistinct
+   AND i.indnatts=1 AND i.indnkeyatts=1 AND i.indoption[0]=0
+   AND i.indcollation[0]=a.attcollation AND i.indexprs IS NULL AND i.indpred IS NULL
 ), objects AS (
  SELECT 'relation' AS kind,c.oid::pg_catalog.int8 AS oid,0 AS member,
  pg_catalog.to_jsonb(c)-ARRAY['relpages','reltuples','relallvisible','relfrozenxid','relminmxid'] AS value
@@ -361,6 +389,7 @@ SELECT kind,oid,member,pg_catalog.encode(pg_catalog.sha256(
  WHEN 'relation' THEN EXISTS(SELECT 1 FROM new_data d WHERE d.oid=objects.oid)
    OR EXISTS(SELECT 1 FROM pg_catalog.pg_index i JOIN new_data d ON d.oid=i.indrelid WHERE i.indexrelid=objects.oid)
  WHEN 'attribute' THEN EXISTS(SELECT 1 FROM new_data d WHERE d.oid=objects.oid)
+   OR EXISTS(SELECT 1 FROM fitted_index_attributes a WHERE a.oid=objects.oid AND a.attnum=objects.member)
  WHEN 'default' THEN EXISTS(SELECT 1 FROM pg_catalog.pg_attrdef a JOIN new_data d ON d.oid=a.adrelid WHERE a.oid=objects.oid)
  WHEN 'constraint' THEN EXISTS(SELECT 1 FROM pg_catalog.pg_constraint k JOIN new_data d ON d.oid=k.conrelid WHERE k.oid=objects.oid)
  WHEN 'trigger' THEN EXISTS(SELECT 1 FROM pg_catalog.pg_trigger t WHERE t.oid=objects.oid AND (

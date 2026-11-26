@@ -220,6 +220,38 @@ async def test_actual0055_v2_rehearsal_rollback_then_commit_preserves_all_rows_a
     assert await subject._role_observation_v2(selected, owner, pins, "0056") == actors
     assert len(final["relations"]) - len(before["relations"]) == 3
     assert final["snapshot"]["sequence_state"] == before["snapshot"]["sequence_state"]
+    async with owner.connect() as connection, connection.begin():
+        for setting in subject._OWNER_SETTINGS:
+            await connection.exec_driver_sql(setting)
+        trial = await connection.begin_nested()
+        try:
+            # Keep the expected fitted name and unique constraint kind but
+            # bind it to the wrong actual column. Only the sanctioned key's
+            # attribute can belong to the migration delta.
+            await connection.exec_driver_sql(
+                "ALTER TABLE public.gate3_fitted_candidate_bindings "
+                "DROP CONSTRAINT uq_gate3_fitted_candidate_bindings_binding_sha256, "
+                "ADD CONSTRAINT uq_gate3_fitted_candidate_bindings_binding_sha256 "
+                "UNIQUE(seal_sha256)"
+            )
+            wrong_index = await connection.scalar(
+                text(
+                    "SELECT 'public.uq_gate3_fitted_candidate_bindings_binding_sha256'"
+                    "::pg_catalog.regclass::pg_catalog.int8"
+                )
+            )
+            altered = await subject._inventory_v2(
+                connection, pins, "0056", read_only=False
+            )
+            assert [
+                row[4]
+                for row in altered["objects"]
+                if row[:3] == ("attribute", wrong_index, 1)
+            ] == [False]
+            with pytest.raises(subject.NativeOwnerUpgradeRefusal):
+                subject._preserved_v2(before, altered)
+        finally:
+            await trial.rollback()
     with pytest.raises(subject.NativeOwnerUpgradeRefusal):
         await subject._commit_once(prepared, pins, owner, before)
     assert await subject._readonly_inventory_v2(owner, pins, "0056") == final
