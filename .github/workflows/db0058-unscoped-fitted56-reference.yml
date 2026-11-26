@@ -1,8 +1,8 @@
-name: Source58 independent DB0056 bootstrap fitted references
+name: Source58 DB0056 bootstrap fitted references with reviewed owner index changes
 
 on:
   push:
-    branches: [work/db0058-unscoped-fitted56-reference]
+    branches: [work/db0058-unscoped-fitted56-reference-owner-index]
   workflow_dispatch:
 
 permissions:
@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   measure:
-    if: github.ref == 'refs/heads/work/db0058-unscoped-fitted56-reference'
+    if: github.ref == 'refs/heads/work/db0058-unscoped-fitted56-reference-owner-index'
     name: Actual fresh bootstrap reference ${{ matrix.reference }}
     runs-on: ubuntu-24.04
     timeout-minutes: 35
@@ -31,15 +31,18 @@ jobs:
           CTCC_REFERENCE_LABEL: ${{ matrix.reference }}
         run: |
           set -euo pipefail
-          subject=8761dbb2b263ad7981e31c570264094f9c760fa0
+          subject=ec95ea2157bda36f5ec5573f89bc5aad0541011b
           commit=$(git rev-parse HEAD)
           test "$commit" = "$GITHUB_SHA"
           git merge-base --is-ancestor "$subject" "$commit"
           diff -u <(printf '%s\n' \
             .github/workflows/db0058-unscoped-fitted56-reference.yml MANIFEST.sha256 \
-            scripts/retained0056_fitted_reference_pair_v1.py scripts/run_retained0017_reference_probe_v1.py \
-            tests/integration/test_retained0056_fitted_reference_pair_v1_pg.py) \
+            scripts/native_owner_granted_catalog_v1.py scripts/native_owner_upgrade_0056_v1.py) \
             <(git diff --name-only "$subject" "$commit")
+          printf '%s\n' \
+            '5ff2c622b8bb6e3f11e8b9c3a14917e82eaca476e9343f6f51fc267226e75af1  scripts/native_owner_granted_catalog_v1.py' \
+            '38ff34d9e06b3b73fb3a0b85b6f8c6c7d524bbc209a0dbc5af6e516c32cd7391  scripts/native_owner_upgrade_0056_v1.py' \
+            | sha256sum --check --strict
           python3 scripts/manifest.py --check
           tree=$(git rev-parse 'HEAD^{tree}')
           archive="$RUNNER_TEMP/ctcc-source.tar"
@@ -64,7 +67,7 @@ jobs:
           retention-days: 30
 
   compare:
-    if: github.ref == 'refs/heads/work/db0058-unscoped-fitted56-reference'
+    if: github.ref == 'refs/heads/work/db0058-unscoped-fitted56-reference-owner-index'
     needs: measure
     name: Independently replay and compare both fitted references
     runs-on: ubuntu-24.04
@@ -110,6 +113,18 @@ jobs:
           assert states[0]['commit'] == commit and states[0]['tree'] == tree
           assert states[0]['run_id'] != states[1]['run_id']
           pair = ref.compare(*[(root / ref.MEASUREMENT).read_bytes() for root in roots], manifest=states[0]['manifest_sha256'])
+          verified_original_values = {
+              'structural_sha256': '49ede7fd3777b0512f131f8c1ae9a788432d607b4d35fcb9f1ccb9895bb27631',
+              'logical_dependency_sha256': 'd32e7e840377317720a4e1eeedd135e51540a6fc3b22c64713bdf2fe9328d506',
+              'role_catalog_sha256': 'eb10581de5ef346272f84f871e8d024764e5a31fcea3f94abfdb49cc3466968f',
+              'fitted_dependency_count': 150,
+          }
+          assert all(pair[key] == value for key, value in verified_original_values.items())
+          original_clusters = {
+              '66c9f56168e59149640f2f886bd3801d479205580dd0fb73c4086fcbcb55f534',
+              'ff28addde39f69096f90268e742db9a29ba2a8c55661225f019b5eea4497eb6c',
+          }
+          assert all(row['measurement']['cluster_system_identifier_sha256'] not in original_clusters for row in pair['references'])
           data = ref.canonical({**pair, 'validation_source': {key: states[0][key] for key in fields}})
           with Path(output).open('xb') as stream:
               assert stream.write(data) == len(data)
