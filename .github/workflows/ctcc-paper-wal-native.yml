@@ -1,0 +1,382 @@
+name: Native Paper WAL replay on a disposable copy
+
+on:
+  push:
+    branches: [work/native-paper-wal-0b65959-linux]
+
+permissions:
+  contents: read
+
+jobs:
+  wal-copy:
+    if: github.ref == 'refs/heads/work/native-paper-wal-0b65959-linux'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      SUBJECT: '0b659591076f168fe42d1be6bd784e4c986b0626'
+      CUSTODY_COMMIT: 'd847b9976048c5eca8d2a0e803b0c29c5fcbef2e'
+      CUSTODY_SHA: '51453d2edcaf7734d9569b2d0504960b239f8f0ceddf3861ce24a8a182e15af1'
+      PG_BUNDLE: 'N397-validation-wsl-pg-authenticity-20261121'
+    steps:
+      - name: Check out the validation overlay
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Admit exact source and overlay bytes
+        id: admit
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          [[ $RUNNER_ENVIRONMENT == github-hosted && $GITHUB_EVENT_NAME == push && $EUID != 0 ]]
+          [[ $GITHUB_REF == refs/heads/work/native-paper-wal-0b65959-linux ]]
+          [[ $(uname -sm) == 'Linux x86_64' ]]
+          private=$(mktemp -d -- "$RUNNER_TEMP/ctcc-paper-wal.XXXXXXXX")
+          /usr/bin/python3 -I -S -B - "$private" <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+          import sys
+
+          def need(condition):
+              if not condition:
+                  raise SystemExit("paper_wal_overlay_refused")
+
+          def git(*args):
+              return subprocess.check_output(["/usr/bin/git", *args], stderr=subprocess.DEVNULL)
+
+          def blob(commit, name, limit):
+              entry = git("ls-tree", "-z", commit, "--", name).decode("ascii")
+              match = re.fullmatch(r"100(?:644|755) blob ([a-f0-9]{40})\t([^\0]+)\0", entry)
+              need(match is not None and match[2] == name)
+              need(0 < int(git("cat-file", "-s", match[1])) <= limit)
+              return git("cat-file", "blob", match[1])
+
+          private = Path(sys.argv[1])
+          support = private / "support"
+          subject, head = os.environ["SUBJECT"], os.environ["GITHUB_SHA"]
+          custody_commit, custody_sha = os.environ["CUSTODY_COMMIT"], os.environ["CUSTODY_SHA"]
+          prefix = "ci-validation/paper-wal"
+          workflow = ".github/workflows/ctcc-paper-wal-native.yml"
+          leaf = "scripts/retained_pg_bootstrap_custody_v1.py"
+          need(git("rev-list", "--parents", "-n", "1", "HEAD").decode("ascii").split() == [head, subject])
+          git("merge-base", "--is-ancestor", custody_commit, subject)
+          custody = blob(custody_commit, leaf, 512 * 1024)
+          need(len(custody) == 137370 and hashlib.sha256(custody).hexdigest() == custody_sha)
+
+          pg = "validation-results/" + os.environ["PG_BUNDLE"]
+          python = "validation-results/N434-pinned-linux-python-runtime-20261121"
+          fixed = {
+              "download_pinned_public_oci.py": "fe53bb76c16ab0c0e376ebfaa52b745331f9f0f2cbcc9a75d9e284b6d2e4d914",
+              "paper_wal_cold_copy.py": "e078f2409c1b24f0d520aca7813d2597d6f30458d196b755f3971b1fb4ab7785",
+              "verify_paper_wal_copy_linux.py": "bfd8e93b639c36cccd7621e6e96f874dc13dec6b11160032edbdb39b24246bb0",
+              "paper_wal_control.py": "16d3d5165ef01e545b3c1c6c6bcdc6c2ceb40df178f5494948d1ff53377aa4e3",
+          }
+          for directory, rows in (
+              (pg, {
+                  "materialize_ci_rootfs.py": "4cea19f3e77b972cb0e788707722b0438339b59c25bbcfda1410b4ce9e649ad6",
+                  "PINNED_OCI_COMPRESSED_CHAIN_VERIFIED.json": "db011a08d441d48ad1841d9d28dbd6671756dcdc6d56e549fce62fbb9715f605",
+                  "PINNED_OCI_ALL_DIFFIDS_VERIFIED.json": "a07a704812da6def0876d42771477cc826340ea5e81ef3e8f08e75284b6a7a6e",
+                  "PINNED_OCI_VIRTUAL_ROOTFS_INVENTORY.json": "603f68e5f1059ea01a25ecc0a79a0f7f041b4640a24f5f16fcc3b3b40524f382",
+              }),
+              (python, {
+                  "materialize_private_pinned_python_rootfs_v1.py": "da5f4d976f4a961bce6b7adc8c108b0e5f66f8ec48487770494fd50d018d77ba",
+                  "PINNED_OCI_COMPRESSED_CHAIN_VERIFIED.json": "1bd7dc416b79ce021934b361c0d5ca41da0ddbfeb01f82f8147c7edda8b62ce2",
+                  "PINNED_OCI_ALL_DIFFIDS_VERIFIED.json": "1aeb49a7ec1749a7d403fa5cbfebe0b44eefe550da34d7842afef63c78722074",
+                  "PINNED_OCI_VIRTUAL_ROOTFS_INVENTORY.json": "9b79bfd725a69bbf9ae2d386c3219f5110ffbc2efa5e4b7435552043c87c0a6a",
+              }),
+          ):
+              fixed.update((f"{directory}/{name}", digest) for name, digest in rows.items())
+          for directory, digests in (
+              (pg, (
+                  "f02121de6f74d30d8a94cd1d9584125e2178d7e6c377d8130112d4e52d867995",
+                  "aa90e97ee862e558111d34cfb8b2c4bec768c2b039fb791341686928560263b3",
+              )),
+              (python, (
+                  "2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9",
+                  "44ff437bba879d4941b710a369a8f19266aea34b29002807f0c487fabc9eec9b",
+              )),
+          ):
+              fixed.update((f"{directory}/public-assets/sha256-{digest}.json", digest) for digest in digests)
+          scripts = ("paper_wal_cold_copy.py", "verify_paper_wal_copy_linux.py", "paper_wal_control.py")
+          need(all(fixed[name] not in {"0" * 64, "f" * 64, "e" * 64} for name in scripts))
+          members = set(fixed)
+          expected = {workflow} | {f"{prefix}/{name}" for name in members | {"SHA256SUMS"}}
+          diff = git("diff", "--no-renames", "--name-status", "-z", subject, head).decode("ascii").split("\0")
+          need(diff.pop() == "" and len(diff) == 2 * len(expected))
+          need(set(diff[::2]) == {"A"} and set(diff[1::2]) == expected)
+          need(Path(workflow).read_bytes() == blob(head, workflow, 32768))
+
+          sums = blob(head, f"{prefix}/SHA256SUMS", 4096)
+          need(sums.endswith(b"\n") and b"\r" not in sums)
+          pins = {}
+          for line in sums.decode("ascii").splitlines():
+              match = re.fullmatch(r"([a-f0-9]{64})  ([A-Za-z0-9_./-]+)", line)
+              need(match is not None and match[2] in members and match[2] not in pins)
+              pins[match[2]] = match[1]
+          need(list(pins) == sorted(members) and all(pins[name] == digest for name, digest in fixed.items()))
+
+          def stage(path, raw):
+              path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+              with path.open("xb") as stream:
+                  stream.write(raw)
+              need(path.read_bytes() == raw)
+
+          for name, digest in pins.items():
+              raw = blob(head, f"{prefix}/{name}", 4 * 1024 * 1024)
+              need(hashlib.sha256(raw).hexdigest() == digest)
+              stage(support / name, raw)
+          stage(private / "retained_pg_bootstrap_custody_v1.py", custody)
+          stage(private / "script-pins", ("\n".join(pins[name] for name in scripts) + "\n").encode("ascii"))
+          PY
+          printf 'private=%s\n' "$private" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch pinned public OCI layers without elevation
+        shell: bash
+        env:
+          PRIVATE: ${{ steps.admit.outputs.private }}
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          [[ $EUID != 0 && $PRIVATE == "$RUNNER_TEMP"/ctcc-paper-wal.* ]]
+          /usr/bin/env -i PATH=/usr/bin:/bin /usr/bin/python3 -I -S -B \
+            "$PRIVATE/support/download_pinned_public_oci.py" "$PRIVATE/support" \
+            > "$PRIVATE/fetch.stdout" 2> "$PRIVATE/fetch.stderr"
+
+      - name: Materialize PostgreSQL and verify WAL replay on the disposable copy
+        shell: bash
+        env:
+          PRIVATE: ${{ steps.admit.outputs.private }}
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          [[ $PRIVATE == "$RUNNER_TEMP"/ctcc-paper-wal.* ]]
+          mapfile -t scripts < "$PRIVATE/script-pins"
+          [[ ${#scripts[@]} == 3 ]]
+          for pin in "${scripts[@]}"; do [[ $pin =~ ^[a-f0-9]{64}$ ]]; done
+          outer=()
+          for name in mnt net ipc pid; do outer+=("$(readlink "/proc/self/ns/$name")"); done
+          trap 'printf "::error::Disposable Paper WAL-copy validation failed\n" >&2' ERR
+          cd "$PRIVATE"
+          run_status=0
+          sudo -n /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C LANG=C \
+            /usr/bin/unshare --mount --net --ipc --pid --fork --kill-child=SIGKILL --mount-proc --propagation private \
+            /usr/bin/bash -s -- "$PRIVATE" "$PG_BUNDLE" "$CUSTODY_SHA" "${scripts[@]}" "${outer[@]}" \
+            > "$PRIVATE/harness.json" 2> "$PRIVATE/harness.stderr" <<'ISOLATED' || run_status=$?
+          set -Eeuo pipefail
+          umask 077
+          [[ $# == 10 && $EUID == 0 && $$ == 1 ]]
+          input=$1 pg_name=$2 custody_sha=$3 copy_sha=$4 harness_sha=$5 control_sha=$6
+          shift 6
+          for name in mnt net ipc pid; do
+            [[ $(readlink "/proc/self/ns/$name") != "$1" ]]
+            shift
+          done
+          /usr/bin/python3 -I -S -B -c 'import socket,sys; sys.exit(socket.if_nameindex() != [(1, "lo")])'
+          mount -t tmpfs -o size=2G,mode=0700,nosuid,nodev tmpfs /root
+          [[ $(stat -f -c %T /root) == tmpfs && $(stat -c '%u:%g:%a' /root) == 0:0:700 ]]
+          mkdir -m 0700 /root/work
+          cd /root/work
+          /usr/bin/python3 -I -S -B - "$input" "$pg_name" "$custody_sha" "$copy_sha" "$harness_sha" "$control_sha" <<'PY'
+          import gzip
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import stat
+          import sys
+
+          incoming, bundle, custody_sha, copy_sha, harness_sha, control_sha = sys.argv[1:]
+          incoming = Path(incoming)
+          support = incoming / "support"
+          pg_in = support / "validation-results" / bundle
+          pg = Path("/root/work/pg")
+          pg.mkdir(mode=0o700)
+          assets = pg / "public-assets"
+          assets.mkdir(mode=0o700)
+
+          def need(condition):
+              if not condition:
+                  raise SystemExit("isolated_paper_wal_inputs_refused")
+
+          def copy_bounded(source, target, expected, limit):
+              need(source.resolve(strict=True) == source)
+              digest = hashlib.sha256()
+              size = 0
+              fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+              with os.fdopen(fd, "rb") as stream, target.open("xb") as output:
+                  info = os.fstat(stream.fileno())
+                  need(stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and 0 < info.st_size <= limit)
+                  while block := stream.read(min(1024 * 1024, limit + 1 - size)):
+                      size += len(block)
+                      need(size <= limit)
+                      digest.update(block)
+                      output.write(block)
+              need(size == info.st_size and digest.hexdigest() == expected)
+
+          for source, target, digest, limit in (
+              (incoming, Path("retained_pg_bootstrap_custody_v1.py"), custody_sha, 512 * 1024),
+              (support, Path("paper_wal_cold_copy.py"), copy_sha, 65536),
+              (support, Path("verify_paper_wal_copy_linux.py"), harness_sha, 65536),
+              (support, Path("paper_wal_control.py"), control_sha, 65536),
+              (pg_in, pg / "materialize_ci_rootfs.py", "4cea19f3e77b972cb0e788707722b0438339b59c25bbcfda1410b4ce9e649ad6", 65536),
+              (pg_in, pg / "PINNED_OCI_ALL_DIFFIDS_VERIFIED.json", "a07a704812da6def0876d42771477cc826340ea5e81ef3e8f08e75284b6a7a6e", 524288),
+              (pg_in, pg / "PINNED_OCI_VIRTUAL_ROOTFS_INVENTORY.json", "603f68e5f1059ea01a25ecc0a79a0f7f041b4640a24f5f16fcc3b3b40524f382", 4194304),
+          ):
+              copy_bounded(source / target.name, target, digest, limit)
+
+          receipt = json.loads((pg / "PINNED_OCI_ALL_DIFFIDS_VERIFIED.json").read_bytes())
+          need(len(receipt["layers"]) == 10)
+          for index, layer in enumerate(receipt["layers"]):
+              compressed = layer["compressed_digest"].removeprefix("sha256:")
+              diff_id = layer["diff_id"].removeprefix("sha256:")
+              need(all(re.fullmatch(r"[a-f0-9]{64}", digest) is not None for digest in (compressed, diff_id)))
+              tar_name = f"layer-{index}.tar"
+              length = layer["uncompressed_bytes"]
+              need(layer["layer"] == index and layer["tar_file"] == tar_name and 0 < length <= 512 * 1024 * 1024)
+              blob = assets / f"sha256-{compressed}.blob"
+              copy_bounded(pg_in / "public-assets" / blob.name, blob, compressed, 128 * 1024 * 1024)
+              digest = hashlib.sha256()
+              size = 0
+              with gzip.open(blob, "rb") as stream, (assets / tar_name).open("xb") as output:
+                  while block := stream.read(min(1024 * 1024, length + 1 - size)):
+                      size += len(block)
+                      need(size <= length)
+                      digest.update(block)
+                      output.write(block)
+              need(size == length and digest.hexdigest() == diff_id)
+          PY
+          /usr/bin/python3 -I -S -B /root/work/pg/materialize_ci_rootfs.py > /root/work/materializer.log 2>&1
+          exec /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LANG=C LC_ALL=C \
+            /usr/bin/python3 -I -S -B /root/work/verify_paper_wal_copy_linux.py \
+            --custody /root/work/retained_pg_bootstrap_custody_v1.py \
+            --inventory /root/work/pg/PINNED_OCI_VIRTUAL_ROOTFS_INVENTORY.json \
+            --pg-root /root/ctcc-ci-pg17-f02121de-a07a7048-20261121/rootfs \
+            --copy-sha256 "$copy_sha" --control-sha256 "$control_sha"
+          ISOLATED
+          if (( run_status != 0 )); then
+            /usr/bin/python3 -I -S -B - "$PRIVATE/harness.stderr" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          phases = {
+              "admission", "measured_public_inputs", "new_isolated_fixture", "initializing_test_cluster",
+              "committing_test_rows", "immediate_test_shutdown", "confirming_dirty_control",
+              "verifying_cold_copy", "replaying_wal_on_copy", "reopening_recovered_copy", "rechecking_unchanged_source",
+          }
+          with Path(sys.argv[1]).open("rb") as stream:
+              raw = stream.read(8193)
+          phase = "runner_or_envelope"
+          if 0 < len(raw) <= 8192 and raw.endswith(b"\n") and raw.count(b"\n") == 1:
+              try:
+                  failure = json.loads(raw.decode("ascii"))
+                  if (
+                      type(failure) is dict and set(failure) == {"schema", "status", "phase", "execution_authority"}
+                      and failure["schema"] == "ctcc.validation.paper_wal_copy_native.v1" and failure["status"] == "REFUSED"
+                      and failure["execution_authority"] is False and type(failure["phase"]) is str
+                      and failure["phase"] in phases
+                  ):
+                      phase = failure["phase"]
+              except (UnicodeError, ValueError):
+                  pass
+          print(f"::error::Disposable Paper WAL-copy validation refused at {phase}")
+          PY
+            exit "$run_status"
+          fi
+
+      - name: Verify and stage the compact lab receipt
+        shell: bash
+        env:
+          PRIVATE: ${{ steps.admit.outputs.private }}
+          PUBLISH: ${{ runner.temp }}/ctcc-paper-wal-native-result.json
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          /usr/bin/python3 -I -S -B - "$PRIVATE" "$PUBLISH" <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import stat
+          import sys
+
+          def need(condition):
+              if not condition:
+                  raise SystemExit("paper_wal_receipt_refused")
+
+          def unique(pairs):
+              value = dict(pairs)
+              need(len(value) == len(pairs))
+              return value
+
+          def canonical(value):
+              return (json.dumps(value, sort_keys=True, ensure_ascii=True, separators=(",", ":"), allow_nan=False) + "\n").encode("ascii")
+
+          private, publish = (Path(arg) for arg in sys.argv[1:])
+          fd = os.open(private / "harness.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+          with os.fdopen(fd, "rb") as stream:
+              info = os.fstat(stream.fileno())
+              need(stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and 0 < info.st_size <= 8192)
+              raw = stream.read(8193)
+          need(len(raw) == info.st_size)
+          report = json.loads(raw.decode("ascii"), object_pairs_hook=unique)
+          need(type(report) is dict and canonical(report) == raw)
+          copy_sha, harness_sha, control_sha = (private / "script-pins").read_text(encoding="ascii").splitlines()
+          expected = {
+              "schema": "ctcc.validation.paper_wal_copy_native.v1",
+              "status": "PASS_DISPOSABLE_PG17_WAL_REPLAY_ON_COPY",
+              "source_commit": os.environ["CUSTODY_COMMIT"],
+              "custody_sha256": os.environ["CUSTODY_SHA"],
+              "copy_sha256": copy_sha,
+              "control_sha256": control_sha,
+              "pg_image": "sha256:f02121de6f74d30d8a94cd1d9584125e2178d7e6c377d8130112d4e52d867995",
+              "pg_inventory_sha256": "603f68e5f1059ea01a25ecc0a79a0f7f041b4640a24f5f16fcc3b3b40524f382",
+              "pg_tree_sha256": "a4413022a5e18d5c8b4e3221be80bd7d21aa13c85093ae1adb7e01423da78556",
+              "initial_cluster_state": "in production",
+              "final_cluster_state": "shut down",
+              "committed_rows_verified": 2,
+              "independent_native_readbacks": 2,
+              "wal_redo_observed": True,
+              "preexisting_operator_data_read": False,
+              "execution_authority": False,
+          }
+          generated = {
+              "origin_before_sha256", "origin_after_sha256",
+              "working_copy_before_sha256", "system_identifier_sha256",
+          }
+          need(set(report) == set(expected) | generated)
+          need(all(type(report[key]) is type(value) and report[key] == value for key, value in expected.items()))
+          need(all(type(report[key]) is str and re.fullmatch(r"[a-f0-9]{64}", report[key]) for key in generated))
+          need(report["origin_before_sha256"] == report["origin_after_sha256"] == report["working_copy_before_sha256"])
+          receipt = canonical({
+              "schema": "ctcc.validation.hosted_paper_wal_copy.v1",
+              "subject_parent": os.environ["SUBJECT"],
+              "custody_commit": os.environ["CUSTODY_COMMIT"],
+              "custody_sha256": os.environ["CUSTODY_SHA"],
+              "copy_sha256": copy_sha,
+              "harness_sha256": harness_sha,
+              "control_sha256": control_sha,
+              "harness_result": report,
+              "execution_authority": False,
+          })
+          with publish.open("xb") as output:
+              output.write(receipt)
+              output.flush()
+              os.fsync(output.fileno())
+          need(publish.read_bytes() == receipt)
+          PY
+
+      - name: Upload the verified lab receipt
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ctcc-paper-wal-native-0b65959-linux
+          path: ${{ runner.temp }}/ctcc-paper-wal-native-result.json
+          if-no-files-found: error
+          retention-days: 14
