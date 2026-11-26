@@ -30,6 +30,11 @@ def test_original_closed_public_graph_has_no_runtime_or_order_authority():
         (q.public.journal, "_replay_semantics"),
         (q.public.journal, "_packet_join"),
         (q.public.projection, "project_global_public_market_snapshot_v2"),
+        (q.public.projection, "_project_global_market_v2"),
+        (q.public, "_audit"),
+        (q.public, "_copy_locally_replayed_candle_series"),
+        (q.public, "_project"),
+        (q.math, "_source"),
         (q.public.candles, "validate_collected_candles"),
         (q.public.auxiliary, "validate_collected_market_aux"),
         (q.public.websocket, "validate_collected_ws_reference"),
@@ -113,6 +118,27 @@ def test_prepared_candle_consumer_code_change_is_denied(monkeypatch):
 
     def foreign(_state):
         raise AssertionError("foreign prepared candle consumer executed")
+
+    monkeypatch.setattr(original, "__code__", foreign.__code__)
+    with pytest.raises(NativeSourceClosureError):
+        q._NATIVE_GUARD()
+
+
+@pytest.mark.parametrize(
+    "module,name",
+    [
+        (q.public.projection, "_project_global_market_v2"),
+        (q.public, "_copy_locally_replayed_candle_series"),
+        (q.math, "_source"),
+    ],
+    ids=lambda value: getattr(value, "__name__", value),
+)
+def test_exact_replay_projection_code_change_is_denied(monkeypatch, module, name):
+    q._NATIVE_GUARD()
+    original = getattr(module, name)
+
+    def foreign(*_args, **_kwargs):
+        raise AssertionError("foreign raw replay projection executed")
 
     monkeypatch.setattr(original, "__code__", foreign.__code__)
     with pytest.raises(NativeSourceClosureError):

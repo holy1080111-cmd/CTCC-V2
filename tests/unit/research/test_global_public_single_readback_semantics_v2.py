@@ -151,6 +151,18 @@ def test_live_audit_metadata_uses_same_one_full_validator_and_exact_old_inventor
     assert result[4:7] == live._inventory(directory)
     assert result[3] is result[0].packet
     assert result[0].execution_authority is False
+    assert result[-1] is None
+    packet = result[3]
+    at = packet.completed_at
+
+    # A caller-created packet still goes through the original checked path.
+    tampered = packet.model_copy(deep=True)
+    stored = tampered.candles.frames[0].confirmed[0]
+    object.__setattr__(stored, "confirmed", False)
+    with pytest.raises(ValueError, match="frame_source_reconstruction_mismatch"):
+        live.projection.project_global_public_market_snapshot_v2(
+            tampered, evaluated_at=at
+        )
 
 
 @pytest.mark.parametrize("changed", ("authority", "raw_body"))

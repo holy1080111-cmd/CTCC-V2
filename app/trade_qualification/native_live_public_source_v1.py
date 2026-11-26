@@ -497,13 +497,46 @@ def _audit(raw_root, *, root_identity, plan_sha256, journal_sha256, params, not_
         production._FrozenGlobalRawV2(readback.raw_files)
     )
     _need(transport._native_recheck_root_identity(raw_root) == root_identity)
-    return replayed, plan, summary, packet, files, inventory_sha256, size, tuple(starts)
-
-
-def _project(packet, *, report_id, at):
-    market, _following_funding = projection.project_global_public_market_snapshot_v2(
-        packet, evaluated_at=at
+    # This packet is the fresh result of the full local raw read and validator.
+    # Keep detached domain rows within this synchronous audit and projection.
+    series = (
+        _copy_locally_replayed_candle_series(packet)
+        if params.public_policy_sha256 == STAGED_POLICY_SHA256
+        else None
     )
+    return (
+        replayed,
+        plan,
+        summary,
+        packet,
+        files,
+        inventory_sha256,
+        size,
+        tuple(starts),
+        series,
+    )
+
+
+def _copy_locally_replayed_candle_series(packet):
+    """Data-only copy from this caller's complete raw replay."""
+    return {
+        frame.timeframe: [
+            candles.Candle.model_validate(candles._plain(row), strict=True)
+            for row in frame.confirmed
+        ]
+        for frame in packet.candles.frames
+    }
+
+
+def _project(packet, *, report_id, at, replayed_series=None):
+    if replayed_series is None:
+        market, _following_funding = (
+            projection.project_global_public_market_snapshot_v2(packet, evaluated_at=at)
+        )
+    else:
+        market, _following_funding = projection._project_global_market_v2(
+            packet, evaluated_at=at, series=replayed_series
+        )
     _need(
         projection.matches_global_public_market_identity_v2(
             market, packet.instrument_id
@@ -667,7 +700,17 @@ async def capture_owned_live_public_v1(request, *, key):
                 params=params,
                 not_before=not_before,
             )
-            replayed, plan, _summary, packet, files, inventory_pin, size, starts = audit
+            (
+                replayed,
+                plan,
+                _summary,
+                packet,
+                files,
+                inventory_pin,
+                size,
+                starts,
+                _series,
+            ) = audit
             _need(packet.packet_json == captured.packet.packet_json)
             state["expires_at"] = min(params.expires_at, replayed.invocation_expires_at)
             state["expires_monotonic_ns"] = min(
@@ -676,7 +719,9 @@ async def capture_owned_live_public_v1(request, *, key):
             )
             finished = _current(state)
             _project(
-                packet, report_id=params.report_id, at=utc_from_ns(finished["utc_ns"])
+                packet,
+                report_id=params.report_id,
+                at=utc_from_ns(finished["utc_ns"]),
             )
             receipt = canonical(
                 {
@@ -922,7 +967,7 @@ async def complete_owned_live_post_g12_public_v2(stage, *, key):
         params=params,
         not_before=state["not_before"],
     )
-    replayed, plan, _summary, packet, files, inventory_pin, size, starts = audit
+    replayed, plan, _summary, packet, files, inventory_pin, size, starts, series = audit
     _need(packet.packet_json == captured.packet.packet_json)
     state["expires_at"] = min(params.expires_at, replayed.invocation_expires_at)
     state["expires_monotonic_ns"] = min(
@@ -930,7 +975,12 @@ async def complete_owned_live_post_g12_public_v2(stage, *, key):
         plan["invocation_started"]["monotonic_ns"] + 30_000_000_000,
     )
     finished = _current(state)
-    _project(packet, report_id=params.report_id, at=utc_from_ns(finished["utc_ns"]))
+    _project(
+        packet,
+        report_id=params.report_id,
+        at=utc_from_ns(finished["utc_ns"]),
+        replayed_series=series,
+    )
     packet_sha256 = packet.bundle_sha256
     receipt = canonical(
         {
@@ -1020,7 +1070,7 @@ def _replay_owned_live_public_v1(owner, *, key):
                 params=params,
                 not_before=state["not_before"],
             )
-            _, _, _, packet, files, inventory_pin, _, _ = audit
+            _, _, _, packet, files, inventory_pin, _, _, series = audit
             _need(
                 packet.bundle_sha256 == state["packet_sha256"]
                 and inventory_pin == state["inventory_sha256"]
@@ -1028,7 +1078,10 @@ def _replay_owned_live_public_v1(owner, *, key):
             stamp = _current(state)
             at = utc_from_ns(stamp["utc_ns"])
             market, quote, reference = _project(
-                packet, report_id=params.report_id, at=at
+                packet,
+                report_id=params.report_id,
+                at=at,
+                replayed_series=series,
             )
         return LivePublicEvaluationV1(
             params.invocation,

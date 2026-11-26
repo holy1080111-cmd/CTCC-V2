@@ -61,6 +61,10 @@ def project_global_public_market_snapshot_v2(
     packet: raw.GlobalPublicComponentPacketV1, *, evaluated_at: datetime
 ) -> tuple[MarketSnapshot, datetime]:
     """Project a reopened raw packet and retain its following funding forecast."""
+    return _project_global_market_v2(packet, evaluated_at=evaluated_at, series=None)
+
+
+def _project_global_market_v2(packet, *, evaluated_at, series):
     instrument_id = packet.instrument_id
     ticker_raw, mark_raw, funding_raw = packet.quote.provenance
     ticker = _parse_ticker(ticker_raw, instrument_id)
@@ -78,7 +82,10 @@ def project_global_public_market_snapshot_v2(
         received_at=funding_raw.received_at,
         completed_at=funding_raw.completed_at,
     )
-    series = {frame.timeframe: list(frame.candles) for frame in packet.candles.frames}
+    if series is None:
+        series = {
+            frame.timeframe: list(frame.candles) for frame in packet.candles.frames
+        }
     quality = {
         bar: inspect_candles_at(rows, bar, current_time=evaluated_at)
         for bar, rows in series.items()
