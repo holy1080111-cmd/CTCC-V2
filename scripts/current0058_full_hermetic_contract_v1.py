@@ -118,6 +118,7 @@ OWNER0056_V2_CASES = tuple(
     for name in (
         "test_actual0056_unscoped_fitted_catalog_rejects_permissive_acl",
         "test_actual0055_v2_rehearsal_rollback_then_commit_preserves_all_rows_and42_grants",
+        "test_actual0055_v2_extra_lineage_acl_refuses_before_maintenance_row_reads",
         *(
             "test_actual0055_v2_rehearsal_or_final_exception_rolls_back_catalog_rows_and_acl["
             + phase
