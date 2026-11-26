@@ -3833,7 +3833,8 @@ async def test_actual0056_restricted_writer_creates_only_exact_stopped_genesis(
     witness = await observe_restricted_native_roles_0056_witness_v1(
         factories, source=_SOURCE_ROOT
     )
-    account = SimpleNamespace(expected_uid="730001")
+    synthetic_uid_prefix = "9" * 17
+    account = SimpleNamespace(expected_uid=synthetic_uid_prefix + "1")
     selection = SimpleNamespace(source_roles_0056=witness, scope_config=account)
     from app.domain import native_database_profile_v1 as profiles
 
@@ -3865,7 +3866,7 @@ async def test_actual0056_restricted_writer_creates_only_exact_stopped_genesis(
     assert reopened.armed is reopened.execution_authority is False
 
     # Legitimate prior stop from another purpose is explicitly out of scope.
-    account.expected_uid = "730002"
+    account.expected_uid = synthetic_uid_prefix + "2"
     scope = ControlScope("demo", account.expected_uid)
     owner_repository = DemoControlRepository(
         owner_factory, clock=lambda: datetime.now(UTC)
