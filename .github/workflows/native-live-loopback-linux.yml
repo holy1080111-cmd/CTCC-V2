@@ -1,0 +1,355 @@
+name: Native Live Linux Docker TLS loopback timing cases
+
+on:
+  push:
+    branches: [work/native-live-loopback-indicators-6a079d5-linux]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  exact-native-loopback:
+    if: github.ref == 'refs/heads/work/native-live-loopback-indicators-6a079d5-linux'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      CTCC_TIMING_SUBJECT: '6a079d5dcdab540701f8394fc8ca50fc8b001f7d'
+      CTCC_TIMING_TREE: 'c271bbb1553e48f89496a6bce91ab39121d1f8ed'
+      CTCC_TIMING_MANIFEST: '713bff656ebac2dd690264ebdbd9a0c13820d651b76257627aee5f081486d91f'
+    steps:
+      - name: Check out the validation-only workflow topic
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Admit exact archive and run three unchanged Linux loopback cases
+        shell: bash
+        run: |
+          set -euo pipefail
+          result="$RUNNER_TEMP/ctcc-native-live-linux-loopback"
+          mkdir "$result"
+          export CTCC_TIMING_RESULT="$result"
+          python3 -B -m scripts.manifest --check
+          git -c core.autocrlf=false -c core.eol=lf archive \
+            --format=tar --output="$result/source.tar" "$CTCC_TIMING_SUBJECT"
+          python3 -B - <<'PY'
+          import hashlib
+          import json
+          import os
+          import subprocess
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+          from types import SimpleNamespace
+
+          from scripts import verify_final_hermetic as shared
+          from scripts.current0058_full_hermetic_contract_v1 import canonical
+          from scripts.verify_current0055_hermetic import (
+              _COPIED_SOURCE,
+              _PYTEST,
+              _isolated_client,
+          )
+          from scripts.verify_current0058_full_hermetic import admit_archive
+
+
+          def sha(value):
+              return hashlib.sha256(value).hexdigest()
+
+
+          def git(*args):
+              return subprocess.check_output(["git", *args], text=True).strip()
+
+
+          def write(name, value):
+              (root / name).write_text(json.dumps(value, sort_keys=True) + "\n", encoding="utf-8")
+
+
+          def require(condition, code):
+              if condition is not True:
+                  raise ValueError(code)
+
+
+          root = Path(os.environ["CTCC_TIMING_RESULT"])
+          subject = os.environ["CTCC_TIMING_SUBJECT"]
+          tree = os.environ["CTCC_TIMING_TREE"]
+          manifest = os.environ["CTCC_TIMING_MANIFEST"]
+          topic = git("rev-parse", "HEAD")
+          workflow = ".github/workflows/native-live-loopback-linux.yml"
+          changed = git("diff", "--name-only", subject, topic).splitlines()
+          require(
+              topic == os.environ["GITHUB_SHA"]
+              and sorted(changed) == [workflow, "MANIFEST.sha256"]
+              and git("merge-base", subject, topic) == subject
+              and git("rev-parse", f"{subject}^{{tree}}") == tree,
+              "loopback_linux_exact_topic_refused",
+          )
+          archive = root / "source.tar"
+          args = SimpleNamespace(
+              archive=archive, commit=subject, tree=tree, archive_sha256=sha(archive.read_bytes())
+          )
+          raw, files = admit_archive(args)
+          require(
+              files["MANIFEST.sha256"]["sha256"] == manifest, "loopback_linux_manifest_changed"
+          )
+          source_map = root / "source-files.json"
+          source_map.write_bytes(canonical(files))
+          source_map.chmod(0o444)
+          results = root / "results"
+          results.mkdir(mode=0o777)
+          results.chmod(0o777)
+          test_file = "tests/unit/test_native_live_physical_callgraph_v1.py"
+          module = test_file.removesuffix(".py").replace("/", ".")
+          fn = "test_original_staged_worker_real_vendor_loopback_first_post_budget"
+          parameter_ids = ("native_elapsed", "observed_call_counts", "stale_instrument_refused")
+          test_names = tuple(f"{fn}[{parameter}]" for parameter in parameter_ids)
+          nodes = tuple(f"{test_file}::{name}" for name in test_names)
+          identity = {
+              "schema": "ctcc.native_live.linux_docker_loopback_subject.v1",
+              "subject_commit": subject,
+              "subject_tree": tree,
+              "subject_manifest_sha256": manifest,
+              "workflow_commit": topic,
+              "workflow_sha256": sha(Path(workflow).read_bytes()),
+              "subject_archive_sha256": args.archive_sha256,
+              "source_files_sha256": sha(source_map.read_bytes()),
+              "test_source_sha256": files[test_file]["sha256"],
+              "dependency_lock_sha256": files["requirements/validation-linux-py312.lock"][
+                  "sha256"
+              ],
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "runner_image_version": os.environ.get("ImageVersion"),
+              "runtime_network": "none",
+              "host_credentials": False,
+              "configured_runtime_acceptance": False,
+              "external_order_writes": 0,
+          }
+          write("source-identity.json", identity)
+          run = shared.Run(root / "results", budget_seconds=1750)
+          image = f"ctcc-native-loopback:{subject[:12]}-{identity['run_id']}"
+          result_mount = ("--mount", f"type=bind,src={results},dst=/validation-results")
+          source_mount = (
+              "--mount",
+              f"type=bind,src={source_map},dst=/ctcc-source-files.json,readonly",
+          )
+          isolated = (
+              "run",
+              "--rm",
+              "--network=none",
+              "--read-only",
+              "--tmpfs=/tmp:rw,nosuid,nodev,mode=1777",
+              "--security-opt=no-new-privileges:true",
+          )
+          built = False
+          with _isolated_client(root):
+              try:
+                  run.command(
+                      "build",
+                      [
+                          "docker",
+                          "build",
+                          "--no-cache",
+                          "--build-arg",
+                          f"CTCC_SOURCE_COMMIT={subject}",
+                          "--build-arg",
+                          f"CTCC_SOURCE_TREE={tree}",
+                          "-t",
+                          image,
+                          "-",
+                      ],
+                      input_bytes=raw,
+                      timeout=1200,
+                  )
+                  built = True
+                  run.command(
+                      "image-inspect",
+                      ["docker", "image", "inspect", image, "--format", "{{json .}}"],
+                      timeout=30,
+                  )
+                  image_info = json.loads((results / "image-inspect.log").read_bytes())
+                  labels = image_info["Config"]["Labels"]
+                  require(
+                      labels["org.opencontainers.image.revision"] == subject
+                      and labels["org.ctcc.source.tree"] == tree
+                      and image_info["Config"]["User"] == "ctcc",
+                      "loopback_linux_exact_image_refused",
+                  )
+                  image_id = image_info["Id"]
+                  require(
+                      image_id.startswith("sha256:") and len(image_id) == 71,
+                      "loopback_linux_image_id_invalid",
+                  )
+                  identity["image_id"] = image_id
+                  write("source-identity.json", identity)
+                  run.command(
+                      "source-copy",
+                      [
+                          "docker",
+                          *isolated,
+                          *source_mount,
+                          image_id,
+                          "python",
+                          "-B",
+                          "-c",
+                          _COPIED_SOURCE,
+                          identity["source_files_sha256"],
+                      ],
+                      timeout=90,
+                  )
+                  run.command(
+                      "dependency",
+                      [
+                          "docker",
+                          *isolated,
+                          image_id,
+                          "python",
+                          "-B",
+                          "-m",
+                          "scripts.verify_dependency_lock",
+                          "--target",
+                          "linux",
+                      ],
+                      timeout=90,
+                  )
+                  run.command(
+                      "openssl", ["docker", *isolated, image_id, "openssl", "version"], timeout=45
+                  )
+                  run.command(
+                      "pytest",
+                      [
+                          "docker",
+                          *isolated,
+                          *result_mount,
+                          "-e",
+                          "ENVIRONMENT=test",
+                          "-e",
+                          "TRADING_MODE=analysis_only",
+                          image_id,
+                          *_PYTEST,
+                          "-o",
+                          "junit_family=xunit1",
+                          "--junitxml=/validation-results/linux-junit.xml",
+                          *nodes,
+                      ],
+                      timeout=240,
+                  )
+                  junit = results / "linux-junit.xml"
+                  measured = shared.verify_pytest_report(
+                      junit, required_cases=tuple((module, name) for name in test_names)
+                  )
+                  require(
+                      measured["tests"] == measured["passed"] == len(nodes)
+                      and measured["skipped"] == 0,
+                      "loopback_linux_exact_test_counts",
+                  )
+                  shared.verify_selected_junit_nodes(
+                      junit, list(nodes), expected_sha256=measured["sha256"]
+                  )
+                  by_name = {
+                      case.get("name"): case
+                      for case in ET.fromstring(junit.read_bytes()).iter("testcase")
+                  }
+                  cases = []
+                  for parameter, name in zip(parameter_ids, test_names, strict=True):
+                      original = json.loads(
+                          by_name[name].find("properties/property").get("value")
+                      )
+                      require(
+                          original["source_venue_order_writes"]
+                          == original["actual_database_connections"]
+                          == original["blocked_database_connect_attempts"]
+                          == 0
+                          and original["operator_live_arm"]
+                          is original["execution_authority"]
+                          is original["configured_runtime_acceptance"]
+                          is False,
+                          "loopback_linux_fixture_scope_changed",
+                      )
+                      account = original["native_account_completed"]["monotonic_ns"]
+                      oldest_quote = min(
+                          item["monotonic_ns"] for item in original["native_quote_arrivals"]
+                      )
+                      first = original["first_local_post_byte"]
+                      if parameter == "stale_instrument_refused":
+                          require(
+                              first is None
+                              and original["local_synthetic_http_posts"]
+                              == original["accepted_local_tls_connections"]
+                              == 0
+                              and original["failure_fixed_code"]
+                              == "native_live_post_g12_cancelled",
+                              "loopback_linux_stale_guard_refused",
+                          )
+                      else:
+                          require(
+                              first is not None
+                              and original["local_synthetic_http_posts"]
+                              == original["accepted_local_tls_connections"]
+                              == 1
+                              and original["entry_original_wire_accepted_bytes"] == 779
+                              and original["physical_response_validated"] is True
+                              and original["synthetic_sql_disarm_successor_read_back"] is True
+                              and original["physical_phase"] == "spent"
+                              and 0 < first["monotonic_ns"] - account < 5_000_000_000
+                              and 0 < first["monotonic_ns"] - oldest_quote < 5_000_000_000,
+                              "loopback_linux_fresh_wire_refused",
+                          )
+                      cases.append(
+                          {
+                              "node": parameter,
+                              "fixture_posts": original["local_synthetic_http_posts"],
+                              "wire_bytes": original["entry_original_wire_accepted_bytes"],
+                              "failure_code": original["failure_fixed_code"],
+                              "account_to_first_ns": None
+                              if first is None
+                              else first["monotonic_ns"] - account,
+                              "oldest_quote_to_first_ns": None
+                              if first is None
+                              else first["monotonic_ns"] - oldest_quote,
+                          }
+                      )
+                  write(
+                      "test-measurement.json",
+                      {
+                          "subject_commit": subject,
+                          "image_id": image_id,
+                          "passed_count": len(cases),
+                          "junit_sha256": measured["sha256"],
+                          "cases": cases,
+                          "configured_runtime_acceptance": False,
+                          "external_order_writes": 0,
+                      },
+                  )
+              finally:
+                  try:
+                      if built:
+                          run.command(
+                              "cleanup-image", ["docker", "image", "rm", image], timeout=45
+                          )
+                  finally:
+                      write("steps.json", run.steps)
+          PY
+
+      - name: Seal the source and bounded loopback artifacts
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/ctcc-native-live-linux-loopback"
+          find . -type f \( -name 'source.tar' -o -name 'source-identity.json' -o -name 'source-files.json' -o -name 'steps.json' -o -name 'test-measurement.json' -o -path './results/*' \) \
+            -print0 | sort -z | xargs -0r sha256sum > results.sha256
+
+      - name: Retain exact source and synthetic Linux loopback evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ctcc-native-live-loopback-linux-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/ctcc-native-live-linux-loopback/source.tar
+            ${{ runner.temp }}/ctcc-native-live-linux-loopback/source-identity.json
+            ${{ runner.temp }}/ctcc-native-live-linux-loopback/source-files.json
+            ${{ runner.temp }}/ctcc-native-live-linux-loopback/steps.json
+            ${{ runner.temp }}/ctcc-native-live-linux-loopback/test-measurement.json
+            ${{ runner.temp }}/ctcc-native-live-linux-loopback/results.sha256
+            ${{ runner.temp }}/ctcc-native-live-linux-loopback/results/
+          if-no-files-found: error
