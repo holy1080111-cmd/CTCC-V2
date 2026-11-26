@@ -1,0 +1,309 @@
+name: Native startup trust Linux filesystem cases
+
+on:
+  push:
+    branches: [work/native-startup-filesystem-linux-validation]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  exact-native-startup-filesystem:
+    if: github.ref == 'refs/heads/work/native-startup-filesystem-linux-validation'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      CTCC_STARTUP_FILESYSTEM_SUBJECT: 'a4a88d608c45cd975f9579ea364b49ff01b15ced'
+      CTCC_STARTUP_FILESYSTEM_TREE: 'd6612fd7fd945e5ea363b89ad9021acb023eb46e'
+      CTCC_STARTUP_FILESYSTEM_MANIFEST: '0dfefc69db71aebd82d7a93aa3a877a4da71a30c1212d601c17d75b414281901'
+    steps:
+      - name: Check out the validation-only workflow topic
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Admit the exact archive and run two unchanged Linux filesystem cases
+        shell: bash
+        run: |
+          set -euo pipefail
+          result="$RUNNER_TEMP/ctcc-native-startup-filesystem-linux"
+          mkdir "$result"
+          export CTCC_STARTUP_FILESYSTEM_RESULT="$result"
+          python3 -B -m scripts.manifest --check
+          git -c core.autocrlf=false -c core.eol=lf archive \
+            --format=tar --output="$result/source.tar" "$CTCC_STARTUP_FILESYSTEM_SUBJECT"
+          python3 -B - <<'PY'
+          import hashlib
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+          from types import SimpleNamespace
+
+          from scripts import verify_final_hermetic as shared
+          from scripts.current0058_full_hermetic_contract_v1 import canonical
+          from scripts.verify_current0055_hermetic import (
+              _COPIED_SOURCE,
+              _PYTEST,
+              _isolated_client,
+          )
+          from scripts.verify_current0058_full_hermetic import admit_archive
+
+
+          def sha(value):
+              return hashlib.sha256(value).hexdigest()
+
+
+          def git(*args):
+              return subprocess.check_output(["git", *args], text=True).strip()
+
+
+          def write(name, value):
+              (root / name).write_text(json.dumps(value, sort_keys=True) + "\n", encoding="utf-8")
+
+
+          def require(condition, code):
+              if condition is not True:
+                  raise ValueError(code)
+
+
+          root = Path(os.environ["CTCC_STARTUP_FILESYSTEM_RESULT"])
+          subject = os.environ["CTCC_STARTUP_FILESYSTEM_SUBJECT"]
+          tree = os.environ["CTCC_STARTUP_FILESYSTEM_TREE"]
+          manifest = os.environ["CTCC_STARTUP_FILESYSTEM_MANIFEST"]
+          topic = git("rev-parse", "HEAD")
+          workflow = ".github/workflows/native-startup-filesystem-linux.yml"
+          changed = git("diff", "--name-only", subject, topic).splitlines()
+          require(
+              topic == os.environ["GITHUB_SHA"]
+              and sorted(changed) == [workflow, "MANIFEST.sha256"]
+              and git("rev-list", "--parents", "-n1", topic).split() == [topic, subject]
+              and git("rev-parse", f"{subject}^{{tree}}") == tree,
+              "startup_filesystem_linux_exact_topic_refused",
+          )
+          archive = root / "source.tar"
+          args = SimpleNamespace(
+              archive=archive, commit=subject, tree=tree, archive_sha256=sha(archive.read_bytes())
+          )
+          raw, files = admit_archive(args)
+          require(
+              files["MANIFEST.sha256"]["sha256"] == manifest, "startup_filesystem_linux_manifest_changed"
+          )
+          source_map = root / "source-files.json"
+          source_map.write_bytes(canonical(files))
+          source_map.chmod(0o444)
+          results = root / "results"
+          results.mkdir(mode=0o755)
+          tests = (
+              (
+                  "tests/unit/test_native_startup_trust_0056_v1.py",
+                  "test_real_linux_directory_descriptors_with_nonroot_child",
+              ),
+              (
+                  "tests/unit/test_install_native_startup_trust_0056_v1.py",
+                  "test_linux_install_is_single_link_and_reopens_as_nonroot_without_replacement",
+              ),
+          )
+          required_cases = tuple(
+              (path.removesuffix(".py").replace("/", "."), name)
+              for path, name in tests
+          )
+          nodes = tuple(f"{path}::{name}" for path, name in tests)
+          identity = {
+              "schema": "ctcc.native_startup.linux_filesystem_subject.v1",
+              "subject_commit": subject,
+              "subject_tree": tree,
+              "subject_manifest_sha256": manifest,
+              "workflow_commit": topic,
+              "workflow_sha256": sha(Path(workflow).read_bytes()),
+              "subject_archive_sha256": args.archive_sha256,
+              "source_files_sha256": sha(source_map.read_bytes()),
+              "test_sources_sha256": {path: files[path]["sha256"] for path, _ in tests},
+              "container_test_user": "0",
+              "container_test_capabilities": ["SYS_CHROOT", "SETGID", "SETUID"],
+              "docker_image_default_user": "ctcc",
+              "dependency_lock_sha256": files["requirements/validation-linux-py312.lock"][
+                  "sha256"
+              ],
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "runner_image_version": os.environ.get("ImageVersion"),
+              "runtime_network": "none",
+              "host_credentials": False,
+              "configured_runtime_acceptance": False,
+              "external_order_writes": 0,
+          }
+          write("source-identity.json", identity)
+          run = shared.Run(root / "results", budget_seconds=1750)
+          image = f"ctcc-native-startup-filesystem:{subject[:12]}-{identity['run_id']}"
+          result_mount = ("--mount", f"type=bind,src={results},dst=/validation-results")
+          source_mount = (
+              "--mount",
+              f"type=bind,src={source_map},dst=/ctcc-source-files.json,readonly",
+          )
+          isolated = (
+              "run",
+              "--rm",
+              "--network=none",
+              "--read-only",
+              "--tmpfs=/tmp:rw,nosuid,nodev,mode=1777",
+              "--security-opt=no-new-privileges:true",
+          )
+          built = False
+          with _isolated_client(root):
+              try:
+                  run.command(
+                      "build",
+                      [
+                          "docker",
+                          "build",
+                          "--no-cache",
+                          "--build-arg",
+                          f"CTCC_SOURCE_COMMIT={subject}",
+                          "--build-arg",
+                          f"CTCC_SOURCE_TREE={tree}",
+                          "-t",
+                          image,
+                          "-",
+                      ],
+                      input_bytes=raw,
+                      timeout=1200,
+                  )
+                  built = True
+                  run.command(
+                      "image-inspect",
+                      ["docker", "image", "inspect", image, "--format", "{{json .}}"],
+                      timeout=30,
+                  )
+                  image_info = json.loads((results / "image-inspect.log").read_bytes())
+                  labels = image_info["Config"]["Labels"]
+                  require(
+                      labels["org.opencontainers.image.revision"] == subject
+                      and labels["org.ctcc.source.tree"] == tree
+                      and image_info["Config"]["User"] == "ctcc",
+                      "startup_filesystem_linux_exact_image_refused",
+                  )
+                  image_id = image_info["Id"]
+                  require(
+                      image_id.startswith("sha256:") and len(image_id) == 71,
+                      "startup_filesystem_linux_image_id_invalid",
+                  )
+                  identity["image_id"] = image_id
+                  write("source-identity.json", identity)
+                  run.command(
+                      "source-copy",
+                      [
+                          "docker",
+                          *isolated,
+                          *source_mount,
+                          image_id,
+                          "python",
+                          "-B",
+                          "-c",
+                          _COPIED_SOURCE,
+                          identity["source_files_sha256"],
+                      ],
+                      timeout=90,
+                  )
+                  run.command(
+                      "dependency",
+                      [
+                          "docker",
+                          *isolated,
+                          image_id,
+                          "python",
+                          "-B",
+                          "-m",
+                          "scripts.verify_dependency_lock",
+                          "--target",
+                          "linux",
+                      ],
+                      timeout=90,
+                  )
+                  run.command(
+                      "pytest",
+                      [
+                          "docker",
+                          *isolated,
+                          "--user",
+                          "0",
+                          "--cap-drop=ALL",
+                          "--cap-add=SYS_CHROOT",
+                          "--cap-add=SETGID",
+                          "--cap-add=SETUID",
+                          *result_mount,
+                          "-e",
+                          "ENVIRONMENT=test",
+                          "-e",
+                          "TRADING_MODE=analysis_only",
+                          image_id,
+                          *_PYTEST,
+                          "-o",
+                          "junit_family=xunit1",
+                          "--basetemp=/tmp/ctcc-startup-filesystem",
+                          "--junitxml=/validation-results/linux-junit.xml",
+                          *nodes,
+                      ],
+                      timeout=240,
+                  )
+                  junit = results / "linux-junit.xml"
+                  measured = shared.verify_pytest_report(
+                      junit, required_cases=required_cases
+                  )
+                  require(
+                      measured["tests"] == measured["passed"] == len(nodes)
+                      and measured["skipped"] == 0,
+                      "startup_filesystem_linux_exact_test_counts",
+                  )
+                  shared.verify_selected_junit_nodes(
+                      junit, list(nodes), expected_sha256=measured["sha256"]
+                  )
+                  write(
+                      "test-measurement.json",
+                      {
+                          "subject_commit": subject,
+                          "subject_tree": tree,
+                          "image_id": image_id,
+                          "case_nodeids": list(nodes),
+                          "passed_count": measured["passed"],
+                          "skipped_count": measured["skipped"],
+                          "junit_sha256": measured["sha256"],
+                          "installed_host_trust_changed": False,
+                          "configured_runtime_acceptance": False,
+                          "external_order_writes": 0,
+                      },
+                  )
+              finally:
+                  try:
+                      if built:
+                          run.command(
+                              "cleanup-image", ["docker", "image", "rm", image], timeout=45
+                          )
+                  finally:
+                      write("steps.json", run.steps)
+          PY
+
+      - name: Seal the source and bounded filesystem artifacts
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/ctcc-native-startup-filesystem-linux"
+          find . -type f \( -name 'source.tar' -o -name 'source-identity.json' -o -name 'source-files.json' -o -name 'steps.json' -o -name 'test-measurement.json' -o -path './results/*' \) \
+            -print0 | sort -z | xargs -0r sha256sum > results.sha256
+
+      - name: Retain exact source and disposable Linux filesystem evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ctcc-native-live-loopback-linux-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/ctcc-native-startup-filesystem-linux/source.tar
+            ${{ runner.temp }}/ctcc-native-startup-filesystem-linux/source-identity.json
+            ${{ runner.temp }}/ctcc-native-startup-filesystem-linux/source-files.json
+            ${{ runner.temp }}/ctcc-native-startup-filesystem-linux/steps.json
+            ${{ runner.temp }}/ctcc-native-startup-filesystem-linux/test-measurement.json
+            ${{ runner.temp }}/ctcc-native-startup-filesystem-linux/results.sha256
+            ${{ runner.temp }}/ctcc-native-startup-filesystem-linux/results/
+          if-no-files-found: error
