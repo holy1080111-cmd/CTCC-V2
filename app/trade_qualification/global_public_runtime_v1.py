@@ -144,7 +144,19 @@ class GlobalPublicComponentPacketV1(QualificationModel):
         return value
 
     @model_validator(mode="after")
+    def _replay_validated_fields(self):
+        # Pydantic has just reconstructed every nested candle page, frame,
+        # and bundle, including when an existing DTO was supplied.
+        self._require_packet_scope()
+        return self._replay_component_bindings()
+
     def replay(self):
+        """Replay a supplied packet outside the Pydantic field validator."""
+        self._require_packet_scope()
+        candles.validate_collected_candles(self.candles)
+        return self._replay_component_bindings()
+
+    def _require_packet_scope(self):
         if (
             self.global_route_sha256 != journal.GLOBAL_ROUTE_SHA256
             or self.policy_sha256 != public._digest(self.policy)
@@ -153,7 +165,8 @@ class GlobalPublicComponentPacketV1(QualificationModel):
             <= timedelta(seconds=self.policy.total_timeout_seconds)
         ):
             raise GlobalPublicCaptureError("global_public_packet_scope_invalid")
-        candles.validate_collected_candles(self.candles)
+
+    def _replay_component_bindings(self):
         aux.validate_collected_market_aux(self.market_aux)
         ws.validate_collected_ws_reference(self.ws)
         if (

@@ -66,6 +66,11 @@ def test_replaced_public_source_callback_is_denied_before_invocation(
     "cls,name",
     [
         (q.public.production.GlobalPublicComponentPacketV1, "replay"),
+        (q.public.production.GlobalPublicComponentPacketV1, "_replay_validated_fields"),
+        (
+            q.public.production.GlobalPublicComponentPacketV1,
+            "_replay_component_bindings",
+        ),
         (q.public.production.GlobalQuoteEvidenceV1, "replay"),
         (q.public.production._FrozenGlobalRawV2, "read"),
     ],
@@ -127,6 +132,7 @@ def test_prepared_candle_consumer_code_change_is_denied(monkeypatch):
 @pytest.mark.parametrize(
     "module,name",
     [
+        (q.public.production.GlobalPublicComponentPacketV1, "_replay_validated_fields"),
         (q.public.projection, "_project_global_market_v2"),
         (q.public, "_copy_locally_replayed_candle_series"),
         (q.math, "_source"),
@@ -141,5 +147,22 @@ def test_exact_replay_projection_code_change_is_denied(monkeypatch, module, name
         raise AssertionError("foreign raw replay projection executed")
 
     monkeypatch.setattr(original, "__code__", foreign.__code__)
+    with pytest.raises(NativeSourceClosureError):
+        q._NATIVE_GUARD()
+
+
+@pytest.mark.parametrize(
+    "cls",
+    [
+        q.public.production.GlobalPublicComponentPacketV1,
+        q.public.candles.CollectedCandles,
+        q.public.candles.FrameCapture,
+        q.public.candles.CandlePage,
+    ],
+    ids=lambda value: value.__name__,
+)
+def test_changed_compiled_candle_validator_is_denied(monkeypatch, cls):
+    q._NATIVE_GUARD()
+    monkeypatch.setattr(cls, "__pydantic_validator__", object())
     with pytest.raises(NativeSourceClosureError):
         q._NATIVE_GUARD()
