@@ -21,6 +21,17 @@ After installing and configuring a reviewed Windows release, double-click
 profile, exact package and new local process before opening the page. It does
 not configure an account or supply trading authorization.
 
+## Windows analysis and Paper
+
+The installed `d847b997` candidate has completed native Windows backend start,
+saved-snapshot import and owned shutdown. Manual Paper has also completed real
+local PostgreSQL 0058 connectivity, a simulated fill, persisted ledger readback
+across a restart and owned shutdown. Use the
+[Windows Paper setup](docs/windows_tool_physical0058_v1.md#persistent-paper-on-windows)
+with a dedicated fresh Paper database. Give every profile its own private
+settings and stop the current tool before launching another from the same
+installation. Demo and Live require their own account and runtime acceptance.
+
 ## Use CTCC analysis with a saved market snapshot
 
 The [Windows offline viewer](docs/offline_snapshot_only_windows.md) opens saved
