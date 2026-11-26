@@ -100,8 +100,20 @@ async def _canonical_upgrade17_lab(tmp_path):
                 )
             )
         identity, files, source_map = measurement._read_hermetic_inputs()
-        source = measurement.source_identity(identity, files, source_map)
         archive = Path("/ctcc-admitted-test-source.tar")
+        if (
+            identity.get("runner_contract")
+            == "ctcc.source58.retained17_preload_tls_probe.v1"
+        ):
+            from scripts.run_retained0017_reference_probe_v1 import (
+                bound_preload_fixture_source_v1,
+            )
+
+            source = bound_preload_fixture_source_v1(
+                identity, files, source_map, archive
+            )
+        else:
+            source = measurement.source_identity(identity, files, source_map)
         assert (
             archive.is_file()
             and subject.baseline.sha(archive.read_bytes()) == identity["archive_sha256"]

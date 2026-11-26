@@ -1,0 +1,74 @@
+name: Source58 retained DB0017 startup preload denial proof
+
+on:
+  push:
+    branches: [work/db0058-retained17-preload-proof]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    if: github.ref == 'refs/heads/work/db0058-retained17-preload-proof'
+    name: Actual fresh TLS DB0017 startup denial for both preload settings
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact validation topic
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify unchanged N489 test bodies and measure both cases
+        shell: bash
+        run: |
+          set -euo pipefail
+          subject=995bfd8c095f510feedb9b536dfe01b90e8f25b4
+          commit=$(git rev-parse HEAD)
+          test "$commit" = "$GITHUB_SHA"
+          git merge-base --is-ancestor "$subject" "$commit"
+          diff -u <(printf '%s\n' \
+            .github/workflows/db0058-retained17-preload-proof.yml MANIFEST.sha256 \
+            scripts/run_retained0017_reference_probe_v1.py \
+            tests/integration/test_retained0017_owner_upgrade_0055_v1_pg.py) \
+            <(git diff --name-only "$subject" "$commit")
+          python3 - "$subject" <<'PY'
+          import ast
+          from pathlib import Path
+          import subprocess
+          import sys
+
+          path = 'tests/integration/test_retained0017_owner_upgrade_0055_v1_pg.py'
+          name = 'test_actual0017_controlled_startup_blocks_preload_but_rejects_original_bad_default'
+
+          def original_case(source):
+              nodes = [node for node in ast.parse(source).body
+                       if isinstance(node, ast.AsyncFunctionDef) and node.name == name]
+              assert len(nodes) == 1 and nodes[0].decorator_list
+              return source.splitlines(keepends=True)[nodes[0].decorator_list[0].lineno - 1:nodes[0].end_lineno]
+
+          before = subprocess.check_output(['git', 'show', f'{sys.argv[1]}:{path}'])
+          assert original_case(before) == original_case(Path(path).read_bytes())
+          PY
+          python3 scripts/manifest.py --check
+          tree=$(git rev-parse 'HEAD^{tree}')
+          archive="$RUNNER_TEMP/ctcc-source.tar"
+          git -c core.autocrlf=false -c core.eol=lf archive --format=tar --output="$archive" "$commit"
+          digest=$(sha256sum "$archive" | cut -d ' ' -f 1)
+          options=(--archive "$archive" --archive-sha256 "$digest" --commit "$commit" --tree "$tree"
+            --retained17-preload --output "$RUNNER_TEMP/ctcc-retained17-preload")
+          python3 -m scripts.run_retained0017_reference_probe_v1 "${options[@]}"
+          python3 -m scripts.run_retained0017_reference_probe_v1 "${options[@]}" --verify-only
+      - name: Preserve measured source, JUnit and resource cleanup evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ctcc-retained17-preload-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/ctcc-source.tar
+            ${{ runner.temp }}/ctcc-retained17-preload/*.json
+            ${{ runner.temp }}/ctcc-retained17-preload/*.log
+            ${{ runner.temp }}/ctcc-retained17-preload/test-results/*.xml
+          if-no-files-found: error
+          retention-days: 30
