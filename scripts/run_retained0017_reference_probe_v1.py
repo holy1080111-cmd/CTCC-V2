@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import re
 from contextlib import ExitStack
+from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
@@ -42,7 +43,57 @@ OWNED_PAPER_SCOPE = (
 OWNED_PAPER_SUITE = "paper58-fresh-owned-runtime"
 OWNED_PAPER_REPORT = "test-results/paper58-fresh-owned-runtime.xml"
 OWNED_PAPER_ACCEPTANCE = "owned-paper-acceptance.json"
+SUPPORTED_SUPEROWNER_CASES = (
+    "tests/integration/test_native_owner_upgrade_0056_v2_pg.py::test_actual0056_reviewed_superowner_cli_once_with_fresh_readback",
+)
 canonical, digest = measurement.canonical, measurement.digest
+
+
+@dataclass(frozen=True)
+class _ExactCasesProbe:
+    schema: str
+    scope: str
+    suite: str
+    database_target: str
+    stage: str
+    nodes: tuple[str, ...]
+    report: str
+    receipt: str
+    state_key: str
+    console: str
+
+    @property
+    def cases(self):
+        return tuple(
+            (path.removesuffix(".py").replace("/", "."), case)
+            for path, case in (node.split("::") for node in self.nodes)
+        )
+
+
+_PAPER = _ExactCasesProbe(
+    schema=OWNED_PAPER_SCHEMA,
+    scope=OWNED_PAPER_SCOPE,
+    suite=OWNED_PAPER_SUITE,
+    database_target="0058",
+    stage="paper58-owned-runtime-tests",
+    nodes=(OWNED_PAPER_MODULE + "::" + OWNED_PAPER_CASE[1],),
+    report=OWNED_PAPER_REPORT,
+    receipt=OWNED_PAPER_ACCEPTANCE,
+    state_key="owned_paper_runtime",
+    console="PAPER58_FRESH_OWNED_RUNTIME",
+)
+_SUPPORTED_SUPEROWNER = _ExactCasesProbe(
+    schema="ctcc.source58.supported_superowner_cli_identity.v1",
+    scope="disposable_tls_pg17_db0055_to_0056_supported_superowner_cli_no_retained_data_no_venue",
+    suite="source58-supported-superowner-cli",
+    database_target="0055_and_0056",
+    stage="supported-superowner-cli-tests",
+    nodes=SUPPORTED_SUPEROWNER_CASES,
+    report="test-results/source58-supported-superowner-cli.xml",
+    receipt="supported-superowner-cli-acceptance.json",
+    state_key="supported_superowner_cli",
+    console="SOURCE58_SUPPORTED_SUPEROWNER_CLI",
+)
 
 
 def _storage_mode(args):
@@ -74,6 +125,20 @@ def _owned_paper_mode(args):
     return value
 
 
+def _exact_cases_probe(args):
+    granted_owner = getattr(args, "supported_superowner_cli", False)
+    owned = _owned_paper_mode(args)
+    need(
+        type(granted_owner) is bool
+        and not (
+            granted_owner and (owned or _storage_mode(args) or _paper58_mode(args))
+        )
+    )
+    if granted_owner:
+        return _SUPPORTED_SUPEROWNER
+    return _PAPER if owned else None
+
+
 def _owned_paper_acceptance(state, report):
     need(report["tests"] == report["passed"] == 1 and report["skipped"] == 0)
     return {
@@ -93,6 +158,35 @@ def _owned_paper_acceptance(state, report):
     }
 
 
+def _exact_case_acceptance(probe, state, report):
+    if probe is _PAPER:
+        return _owned_paper_acceptance(state, report)
+    need(
+        probe is _SUPPORTED_SUPEROWNER
+        and report["tests"] == report["passed"] == len(probe.nodes) == 1
+        and report["skipped"] == 0
+    )
+    return {
+        "schema": "ctcc.source58.supported_superowner_cli_acceptance.v1",
+        "source_commit": state["commit"],
+        "source_tree": state["tree"],
+        "archive_sha256": state["archive_sha256"],
+        "manifest_sha256": state["manifest_sha256"],
+        "junit_sha256": report["sha256"],
+        "required_nodeids": list(probe.nodes),
+        "database_targets": ["0055", "0056"],
+        "supported_superowner_cli": "PASS",
+        "password_authentication_verified": False,
+        "real_non_superuser_owner_acceptance": False,
+        "retained_owner_maintenance_acceptance": False,
+        "passed": len(probe.nodes),
+        "skipped": 0,
+        "preserved_ledger_opened": False,
+        "external_order_writes": 0,
+        "execution_authority": False,
+    }
+
+
 def need(value):
     if value is not True:
         raise ValueError("retained0017_reference_probe_refused") from None
@@ -105,7 +199,7 @@ def admit_archive(args):
 
 
 def verify_probe(root, *, args, files):
-    owned_paper = _owned_paper_mode(args)
+    exact = _exact_cases_probe(args)
     diagnostic = _storage_mode(args)
     paper = _paper58_contract(args)
     state = read_evidence_json((root / "identity.json").read_bytes())
@@ -118,12 +212,13 @@ def verify_probe(root, *, args, files):
         and state["tree"] == args.tree
         and state["archive_sha256"] == args.archive_sha256
     )
-    if owned_paper:
+    if exact is not None:
         need(
-            state["schema"] == state["runner_contract"] == OWNED_PAPER_SCHEMA
-            and state["validation_scope"] == OWNED_PAPER_SCOPE
-            and state["suite"] == OWNED_PAPER_SUITE
-            and state["database_target"] == state["source_contract_head"] == "0058"
+            state["schema"] == state["runner_contract"] == exact.schema
+            and state["validation_scope"] == exact.scope
+            and state["suite"] == exact.suite
+            and state["database_target"] == exact.database_target
+            and state["source_contract_head"] == "0058"
             and state["source_files_sha256"] == digest(raw_map)
             and state["manifest_sha256"] == files["MANIFEST.sha256"]["sha256"]
             and state["runner_sha256"] == files[RUNNER]["sha256"]
@@ -173,8 +268,8 @@ def verify_probe(root, *, args, files):
     else:
         source = measurement.source_identity(state, files, raw_map)
     cases = (
-        (OWNED_PAPER_CASE,)
-        if owned_paper
+        exact.cases
+        if exact is not None
         else paper.CASES
         if paper is not None
         else (*storage.CASES, canonical55.CASE)
@@ -182,8 +277,8 @@ def verify_probe(root, *, args, files):
         else measurement.CASES
     )
     report_name = (
-        OWNED_PAPER_REPORT
-        if owned_paper
+        exact.report
+        if exact is not None
         else paper.REPORT
         if paper is not None
         else storage.REPORT
@@ -197,8 +292,8 @@ def verify_probe(root, *, args, files):
     )
     need(report["tests"] == report["passed"] == len(cases) and report["skipped"] == 0)
     pair = (
-        _owned_paper_acceptance(state, report)
-        if owned_paper
+        _exact_case_acceptance(exact, state, report)
+        if exact is not None
         else paper.verify_reference_pair_v1(root, source, files)
         if paper is not None
         else storage.verify_reports_v1(root, source)
@@ -210,12 +305,12 @@ def verify_probe(root, *, args, files):
             state["canonical55_reference"]
             == canonical55.verify_reference_v1(root, source, files)
         )
-    if owned_paper:
-        need(read_evidence_json((root / OWNED_PAPER_ACCEPTANCE).read_bytes()) == pair)
+    if exact is not None:
+        need(read_evidence_json((root / exact.receipt).read_bytes()) == pair)
     need(
         state[
-            "owned_paper_runtime"
-            if owned_paper
+            exact.state_key
+            if exact is not None
             else "paper58_reference_pair"
             if paper is not None
             else "native_storage_components"
@@ -242,10 +337,10 @@ def verify_probe(root, *, args, files):
 def run_probe(args, raw, files, root):
     diagnostic = _storage_mode(args)
     paper = _paper58_contract(args)
-    owned_paper = _owned_paper_mode(args)
+    exact = _exact_cases_probe(args)
     report_name = (
-        OWNED_PAPER_REPORT
-        if owned_paper
+        exact.report
+        if exact is not None
         else paper.REPORT
         if paper is not None
         else storage.REPORT
@@ -271,37 +366,39 @@ def run_probe(args, raw, files, root):
     )
     label = "org.ctcc.validation.run=" + run_id
     state = {
-        "schema": OWNED_PAPER_SCHEMA
-        if owned_paper
+        "schema": exact.schema
+        if exact is not None
         else paper.SCHEMA
         if paper is not None
         else storage.SCHEMA
         if diagnostic
         else "ctcc.retained0017.reference_probe_identity.v1",
-        "runner_contract": OWNED_PAPER_SCHEMA
-        if owned_paper
+        "runner_contract": exact.schema
+        if exact is not None
         else paper.CONTRACT
         if paper is not None
         else storage.CONTRACT
         if diagnostic
         else measurement.PROBE_CONTRACT,
-        "validation_scope": OWNED_PAPER_SCOPE
-        if owned_paper
+        "validation_scope": exact.scope
+        if exact is not None
         else paper.SCOPE
         if paper is not None
         else storage.SCOPE
         if diagnostic
         else measurement.PROBE_SCOPE,
-        "suite": OWNED_PAPER_SUITE
-        if owned_paper
+        "suite": exact.suite
+        if exact is not None
         else paper.SUITE
         if paper is not None
         else storage.SUITE
         if diagnostic
         else "retained0017-reference-probe",
         "source_contract_head": "0058",
-        "database_target": "0058"
-        if owned_paper or paper is not None
+        "database_target": exact.database_target
+        if exact is not None
+        else "0058"
+        if paper is not None
         else "0055_and_0057"
         if diagnostic
         else "0017",
@@ -465,8 +562,8 @@ def run_probe(args, raw, files, root):
         # No upgrade of the admin database to58 is implied. Required cases
         # independently create their own disposable canonical-source DBs.
         container(
-            "paper58-owned-runtime-tests"
-            if owned_paper
+            exact.stage
+            if exact is not None
             else "paper58-reference-tests"
             if paper is not None
             else "native-storage-tests"
@@ -475,14 +572,15 @@ def run_probe(args, raw, files, root):
             *_PYTEST,
             "-q",
             "--junitxml=/validation-results/" + Path(report_name).name,
-            OWNED_PAPER_MODULE + "::" + OWNED_PAPER_CASE[1]
-            if owned_paper
-            else PAPER58_TEST_MODULE
-            if paper is not None
-            else storage.MODULE
-            if diagnostic
-            else TEST_MODULE,
-            *((canonical55.MODULE,) if diagnostic else ()),
+            *(
+                exact.nodes
+                if exact is not None
+                else (PAPER58_TEST_MODULE,)
+                if paper is not None
+                else (storage.MODULE, canonical55.MODULE)
+                if diagnostic
+                else (TEST_MODULE,)
+            ),
             mounts=(
                 "--mount",
                 f"type=bind,src={results},dst=/validation-results",
@@ -504,15 +602,15 @@ def run_probe(args, raw, files, root):
                         )
                         + "=/validation-results",
                     )
-                    if not owned_paper
+                    if exact is None
                     else ()
                 ),
             ),
             timeout=900,
         )
         cases = (
-            (OWNED_PAPER_CASE,)
-            if owned_paper
+            exact.cases
+            if exact is not None
             else paper.CASES
             if paper is not None
             else (*storage.CASES, canonical55.CASE)
@@ -528,10 +626,10 @@ def run_probe(args, raw, files, root):
             report["tests"] == report["passed"] == len(cases) and report["skipped"] == 0
         )
         state["tests"] = report
-        if owned_paper:
-            acceptance = _owned_paper_acceptance(state, report)
-            state["owned_paper_runtime"] = acceptance
-            _write(root / OWNED_PAPER_ACCEPTANCE, acceptance)
+        if exact is not None:
+            acceptance = _exact_case_acceptance(exact, state, report)
+            state[exact.state_key] = acceptance
+            _write(root / exact.receipt, acceptance)
         elif paper is not None:
             state["paper58_reference_pair"] = paper.verify_reference_pair_v1(
                 root, paper.source_identity(state, files, mapping.read_bytes()), files
@@ -573,8 +671,8 @@ def run_probe(args, raw, files, root):
         )
     verify_probe(root, args=args, files=files)
     print(
-        "PAPER58_FRESH_OWNED_RUNTIME=PASS"
-        if owned_paper
+        exact.console + "=PASS"
+        if exact is not None
         else "PAPER58_FRESH_STRUCTURAL_REFERENCE_PAIR=PASS"
         if paper is not None
         else "NATIVE_STORAGE_CATALOG_DIAGNOSTIC=PASS"
@@ -599,6 +697,7 @@ def main():
     purposes.add_argument("--native-storage-diagnostic", action="store_true")
     purposes.add_argument("--paper58-structural-reference", action="store_true")
     purposes.add_argument("--paper58-owned-runtime", action="store_true")
+    purposes.add_argument("--supported-superowner-cli", action="store_true")
     args = parser.parse_args()
     for value, pattern in (
         (args.commit, r"[a-f0-9]{40}"),
@@ -609,9 +708,10 @@ def main():
     raw, files = admit_archive(args)
     if args.verify_only:
         verify_probe(args.output, args=args, files=files)
+        exact = _exact_cases_probe(args)
         print(
-            "PAPER58_FRESH_OWNED_RUNTIME_ARCHIVED_READBACK=PASS"
-            if _owned_paper_mode(args)
+            exact.console + "_ARCHIVED_READBACK=PASS"
+            if exact is not None
             else "PAPER58_STRUCTURAL_REFERENCE_ARCHIVED_READBACK=PASS"
             if _paper58_mode(args)
             else "NATIVE_STORAGE_DIAGNOSTIC_ARCHIVED_READBACK=PASS"

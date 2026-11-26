@@ -481,3 +481,195 @@ async def test_actual0055_v2_and_commonroute_custom_marker_am_refuse_before_head
     finally:
         event.remove(owner.sync_engine, "before_cursor_execute", watch)
     assert opened == []
+
+
+async def test_actual0056_reviewed_superowner_cli_once_with_fresh_readback(
+    tmp_path, _actual55_v2_lab, record_property
+):
+    """Use the regular CLI, its genuine 0055 owner, and three distinct role logins."""
+    import asyncio
+    import os
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from app.domain.source_primitives import sha
+    from scripts import current0056_fitted_catalog_measurement_v1 as measurement
+    from scripts import run_retained0017_reference_probe_v1 as admitted_probe
+    from tests.integration.test_gate3_fitted_candidate_custody_pg import (
+        _reconstruct_owned_lab_archive,
+    )
+    from tests.native_owner55_upgrade_lab_v2 import run_actual_owner55_cli_v2
+
+    owner, selected, lab_pins, _prepared = _actual55_v2_lab
+    identity, files, files_raw = measurement._read_hermetic_inputs()
+    probe = admitted_probe._exact_cases_probe(
+        SimpleNamespace(supported_superowner_cli=True)
+    )
+    assert probe is not None and len(probe.nodes) == 1
+    assert identity["schema"] == identity["runner_contract"] == probe.schema
+    assert identity["validation_scope"] == probe.scope
+    assert identity["suite"] == probe.suite
+    assert identity["source_contract_head"] == "0058"
+    assert identity["database_target"] == "0055_and_0056"
+    assert identity["build_context"] == "admitted_archive_bytes_v1"
+    assert identity["hermetic_regression"] == "NOT_RUN"
+    assert identity["full_suite_acceptance"] is identity["trading_acceptance"] is False
+    assert identity["host_env"] is identity["host_credentials"] is False
+    assert type(identity["external_order_writes"]) is int
+    assert identity["external_order_writes"] == 0
+    assert measurement._canonical(files) == files_raw
+    assert sha(files_raw) == identity["source_files_sha256"]
+    assert files["MANIFEST.sha256"]["sha256"] == identity["manifest_sha256"]
+    assert files[admitted_probe.RUNNER]["sha256"] == identity["runner_sha256"]
+    assert (
+        sha((subject._SOURCE / "MANIFEST.sha256").read_bytes())
+        == identity["manifest_sha256"]
+    )
+    assert (
+        sha((subject._SOURCE / admitted_probe.RUNNER).read_bytes())
+        == identity["runner_sha256"]
+    )
+    archive, archive_sha = _reconstruct_owned_lab_archive(tmp_path, identity, files)
+    assert lab_pins.route.source_manifest_sha256 == identity["manifest_sha256"]
+    pins = replace(
+        lab_pins,
+        source_commit=identity["commit"],
+        source_tree=identity["tree"],
+        source_archive_sha256=archive_sha,
+    )
+
+    # This disposable dedicated TLS harness uses trust authentication. The
+    # private input contract still requires a password-bearing URL. The value
+    # is inert lab-only data and demonstrates no authentication acceptance.
+    lab_password = "synthetic-hosted-lab-only"
+    secret_file = tmp_path / "reviewed-disposable-owner-dsn"
+    secret_file.write_bytes(
+        owner.url.set(port=pins.route.port, password=lab_password)
+        .render_as_string(hide_password=False)
+        .encode("ascii")
+    )
+    secret_file.chmod(0o600)
+    ca_file = Path(os.environ["CTCC_DEVVAL_CUSTODY_TEST_TLS_CA_FILE"])
+    role_urls = tuple(
+        factory.kw["bind"].url.set(port=pins.route.port, password=lab_password)
+        for factory in (
+            selected.writer_factory,
+            selected.custody_factory,
+            selected.frame_reader_factory,
+        )
+    )
+
+    async def invoke():
+        return await run_actual_owner55_cli_v2(
+            tmp_path,
+            pins,
+            owner_dsn_file=secret_file,
+            ca_file=ca_file,
+            source_archive_file=archive,
+            role_urls=role_urls,
+        )
+
+    async with subject._marker_checked_v2(owner, pins) as connection:
+        actual = tuple(
+            (
+                await connection.execute(
+                    text("""SELECT current_user, session_user, r.oid::bigint,
+                                    d.datdba::bigint, r.rolsuper,
+                                    COALESCE(s.ssl, false)
+                         FROM pg_catalog.pg_roles r
+                         JOIN pg_catalog.pg_database d ON d.datname=current_database()
+                         JOIN pg_catalog.pg_stat_ssl s ON s.pid=pg_backend_pid()
+                         WHERE r.rolname=current_user""")
+                )
+            ).one()
+        )
+    assert actual == (
+        pins.route.owner,
+        pins.route.owner,
+        pins.route.owner_oid,
+        pins.route.owner_oid,
+        True,
+        True,
+    )
+    before_roles = await subject._role_observation_v2(selected, owner, pins, "0055")
+    before = await subject._readonly_inventory_v2(owner, pins, "0055")
+
+    # Observe the actual CLI backend waiting on the exact advisory key while
+    # our separate transaction holds it. A generic early refusal would never
+    # enter pg_locks as this owner's backend blocked by this exact holder.
+    wait_sql = text("""SELECT EXISTS (
+        SELECT 1 FROM pg_catalog.pg_locks pending
+        JOIN pg_catalog.pg_stat_activity actor ON actor.pid=pending.pid
+        WHERE pending.locktype='advisory' AND NOT pending.granted
+          AND pending.database=:database_oid AND pending.objsubid=1
+          AND CAST(pending.classid AS bigint)=:lock_class
+          AND CAST(pending.objid AS bigint)=:lock_object
+          AND actor.datid=pending.database AND actor.usename=:owner_name
+          AND CAST(:blocker_pid AS integer)=ANY(pg_catalog.pg_blocking_pids(pending.pid))
+    )""")
+    owner_lock_key = 5883109675522810055
+    observed_wait = False
+    async with owner.begin() as competing, owner.connect() as observer:
+        await competing.execute(subject._OWNER_LOCK)
+        await observer.execution_options(isolation_level="AUTOCOMMIT")
+        arguments = {
+            "database_oid": pins.route.database_oid,
+            "lock_class": owner_lock_key >> 32,
+            "lock_object": owner_lock_key & ((1 << 32) - 1),
+            "owner_name": pins.route.owner,
+            "blocker_pid": await competing.scalar(
+                text("SELECT pg_catalog.pg_backend_pid()")
+            ),
+        }
+        waiting = asyncio.create_task(invoke())
+        try:
+            while not waiting.done():
+                if await observer.scalar(wait_sql, arguments) is True:
+                    observed_wait = True
+                    break
+                await asyncio.sleep(0.05)
+        finally:
+            refused_code, refused = await waiting
+    assert observed_wait is True
+    assert (refused_code, refused) == (
+        1,
+        {"status": "REFUSED", "code": "native_owner_0056_upgrade_refused"},
+    )
+    assert await subject._readonly_inventory_v2(owner, pins, "0055") == before
+    record_property("isolated_actual_owner_lock_contention", "OBSERVED")
+    record_property("independent_original_inventory_after_contention", "UNCHANGED_0055")
+
+    code, receipt = await invoke()
+    assert code == 0 and receipt["status"] == "PASS"
+    assert receipt["schema"] == "ctcc.native_owner_0056.migration_commit_readback.v2"
+    assert receipt["source_commit"] == identity["commit"]
+    assert receipt["source_tree"] == identity["tree"]
+    assert receipt["source_archive_sha256"] == archive_sha
+    assert receipt["source_manifest_sha256"] == identity["manifest_sha256"]
+    assert receipt["source_head"] == "0058" and receipt["database_target"] == "0056"
+    assert receipt["database_head_before"] == "0055"
+    assert receipt["database_head_after"] == "0056"
+    assert receipt["rehearsal_rollback_verified"] is True
+    assert receipt["independent_postcommit_readonly_observations"] == 3
+    assert receipt["independent_role_logins_verified"] == 3
+    assert receipt["all_original_metadata_preserved"] is True
+    assert receipt["all_original_rows_layouts_oids_sequences_preserved"] is True
+    assert receipt["unchanged_demo_grants"] == 42
+    assert receipt["grants_installed"] is False
+    assert receipt["startup_admission"] is receipt["execution_authority"] is False
+    after = await subject._readonly_inventory_v2(owner, pins, "0056")
+    subject._preserved_v2(before, after)
+    assert (
+        await subject._role_observation_v2(selected, owner, pins, "0056")
+        == before_roles
+    )
+    assert await subject._readonly_inventory_v2(owner, pins, "0056") == after
+    record_property("independent_successor_inventory", "VERIFIED_0056")
+
+    replay_code, replay = await invoke()
+    assert (replay_code, replay) == (
+        1,
+        {"status": "REFUSED", "code": "native_owner_0056_upgrade_refused"},
+    )
+    assert await subject._readonly_inventory_v2(owner, pins, "0056") == after
+    record_property("stale_private_packet_replay", "REFUSED_WITH_UNCHANGED_0056")

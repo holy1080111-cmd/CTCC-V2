@@ -1,0 +1,57 @@
+name: Source58 normal owner 55 to 56 CLI validation
+
+on:
+  push:
+    branches: [work/db0058-supported-superowner-cli-validation]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  actual-supported-superowner-cli:
+    if: github.ref == 'refs/heads/work/db0058-supported-superowner-cli-validation'
+    name: Actual reviewed superowner 55 to 56 CLI
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact validation topic
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify the exact subject and run the single normal owner CLI case
+        shell: bash
+        run: |
+          set -euo pipefail
+          subject=a4a88d608c45cd975f9579ea364b49ff01b15ced
+          commit=$(git rev-parse HEAD)
+          test "$commit" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD^)" = "$subject"
+          test "$(git rev-parse "$subject^{tree}")" = 'd6612fd7fd945e5ea363b89ad9021acb023eb46e'
+          test "$(git show "$subject:MANIFEST.sha256" | sha256sum | cut -d ' ' -f 1)" = '0dfefc69db71aebd82d7a93aa3a877a4da71a30c1212d601c17d75b414281901'
+          diff -u <(printf '%s\n' \
+            .github/workflows/db0058-supported-superowner-cli-validation.yml MANIFEST.sha256 \
+            scripts/run_retained0017_reference_probe_v1.py tests/integration/test_native_owner_upgrade_0056_v2_pg.py) \
+            <(git diff --name-only "$subject" "$commit")
+          python3 scripts/manifest.py --check
+          tree=$(git rev-parse 'HEAD^{tree}')
+          archive="$RUNNER_TEMP/ctcc-source.tar"
+          git -c core.autocrlf=false -c core.eol=lf archive --format=tar --output="$archive" "$commit"
+          digest=$(sha256sum "$archive" | cut -d ' ' -f 1)
+          options=(--archive "$archive" --archive-sha256 "$digest" --commit "$commit" --tree "$tree"
+            --supported-superowner-cli --output "$RUNNER_TEMP/ctcc-supported-superowner-cli")
+          python3 -m scripts.run_retained0017_reference_probe_v1 "${options[@]}"
+          python3 -m scripts.run_retained0017_reference_probe_v1 "${options[@]}" --verify-only
+      - name: Preserve exact source, case results and disposable cleanup
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ctcc-supported-superowner-cli-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/ctcc-source.tar
+            ${{ runner.temp }}/ctcc-supported-superowner-cli/*.json
+            ${{ runner.temp }}/ctcc-supported-superowner-cli/*.log
+            ${{ runner.temp }}/ctcc-supported-superowner-cli/test-results/*.xml
+          if-no-files-found: error
+          retention-days: 30
