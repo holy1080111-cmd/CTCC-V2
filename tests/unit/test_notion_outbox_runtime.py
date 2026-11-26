@@ -22,6 +22,7 @@ from app.trade_evidence import (
 )
 from app.trade_evidence import notion_binding as binding
 from app.trade_evidence.runtime import NotionOutboxRuntime, discover_jobs
+from scripts import setup_notion_outbox as setup
 from scripts.setup_notion_outbox import discover_destination
 from tests.unit.notion_delivery_data_harness import SyntheticReportingDataRuntime
 from tests.unit.test_trade_evidence_notion_adapter import (
@@ -761,6 +762,63 @@ async def test_readback_proves_database_relation_and_exact_four_properties():
         receipt = await binding.verify_binding(client, TOKEN, destination())
     assert all(len(value) == 64 for value in receipt.values())
     assert [request.method for request in calls] == ["GET", "GET"]
+
+
+def _existing_binding_arguments(root):
+    token_file = root / "existing.token"
+    destination_file = root / "destination.json"
+    raw = destination().model_dump_json().encode()
+    binding.save_private_token(token_file, TOKEN)
+    setup.write_local_record(destination_file, raw)
+    return [
+        "--verify-existing",
+        "--token-file",
+        str(token_file),
+        "--destination-file",
+        str(destination_file),
+        "--destination-sha256",
+        hashlib.sha256(raw).hexdigest(),
+    ]
+
+
+def test_verify_existing_command_uses_two_gets_preserves_files_and_redacts(
+    tmp_path, monkeypatch, capsys
+):
+    args = _existing_binding_arguments(tmp_path)
+    before = {
+        path.name: (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in tmp_path.iterdir()
+    }
+    client, calls = client_for([database(), schema()])
+    monkeypatch.setattr(setup, "isolated_client", lambda: client)
+    setup.main(args)
+    captured = capsys.readouterr()
+    assert TOKEN.get_secret_value() not in captured.out
+    assert str(tmp_path) not in captured.out
+    assert captured.err == ""
+    assert '"status": "EXISTING_BINDING_VERIFIED"' in captured.out
+    assert '"delivery_acceptance": false' in captured.out
+    assert [request.method for request in calls] == ["GET", "GET"]
+    assert {
+        path.name: (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in tmp_path.iterdir()
+    } == before
+
+
+def test_verify_existing_command_rejects_relative_token_before_http(
+    tmp_path, monkeypatch, capsys
+):
+    args = _existing_binding_arguments(tmp_path)
+    args[args.index("--token-file") + 1] = "do-not-echo-this.token"
+    monkeypatch.setattr(
+        setup, "isolated_client", lambda: pytest.fail("invalid path reached HTTP")
+    )
+    with pytest.raises(SystemExit) as refused:
+        setup.main(args)
+    assert refused.value.code == 1
+    captured = capsys.readouterr()
+    assert captured.out == "NOTION_EXISTING_BINDING_REFUSED\n"
+    assert captured.err == ""
 
 
 @pytest.mark.asyncio

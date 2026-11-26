@@ -1,30 +1,24 @@
 # Independent Notion outbox runtime
 
-**Current delivery admission: DENY.** Even with `NOTION_OUTBOX_ENABLED=true`,
-`NotionOutboxRuntime.tick()` pauses with
-`notion_outbox_submission_source_authority_unavailable` before loading the
-token, reading a queue, or sending any Notion request. A hash-valid local
-`.json`/`.state` pair and a historical projection receipt do not establish an
-issuer-backed exchange response or an eligible submission. The worker must
-remain OFF in deployments. Restoring delivery requires a reviewed database
-readback that joins the exact immutable submission outcome, transport issuer,
-projection receipt, envelope digest and current eligibility before dispatch;
-legacy eligible rows must remain quarantined. The existing synthetic worker
-tests exercise downstream recovery behavior only and are not delivery
-acceptance evidence.
+The worker defaults to OFF. The current native DB0058 Demo path requires both
+outbox flags, the same pinned private producer and delivery root, and an
+eligible issuer-backed submission. Before loading the token or contacting
+Notion, it obtains two independent readbacks of the exact outcome, transport
+issuer, projection receipt, envelope digest and eligibility. A local
+`.json`/`.state` pair alone cannot grant delivery. The packaged Windows wizard
+leaves both flags OFF. The Analysis and Paper tools do not start the reporting
+worker. Synthetic worker tests exercise downstream recovery and do not establish
+real Notion delivery.
 
 `SubmissionReportingRepository.inspect_notion_delivery_source(...)` provides a
 read-only diagnostic for one exact report ID and envelope hash. It verifies the
 local outbox pair, replays the committed private submission/spool lineage, and
 compares any database projection receipt to the same queue, report and envelope.
 Every result has `delivery_authority=false` and `execution_authority=false`.
-The current outcome records transport authenticity as unverified, and database
-constraints prohibit eligible spools and projection receipts; therefore even a
-matching diagnostic cannot authorize a Notion page. The diagnostic does not
-run in the delivery worker, perform HTTP, repair files, or replace the final
-hard DENY. Before any future delivery activation, an independently owned
-transport issuer and immutable eligibility record must exist, and the worker
-and final outbound boundary must both require a fresh, exact database join.
+Legacy outcome rows with unverified transport authenticity cannot supply
+eligible spools or projection receipts. The diagnostic does not perform HTTP,
+repair files or create a delivery permit. The native DB0058 route uses its own
+restricted source permit and current binding before dispatch.
 The diagnostic's file/DB observations are separate reads, not one atomic
 snapshot across concurrent publishers; its only safe current use is to locate
 missing evidence.
@@ -42,12 +36,12 @@ Only real, accepted post-submit payloads belong in its trusted queue. Deployment
 must bind the producer and worker to the same persistent queue and destination.
 An empty queue is not evidence of delivery or Demo acceptance.
 
-Every pass verifies the pinned local destination bytes, loads a private token,
-performs authenticated database/data-source GET readback, and validates all four
-property IDs, names and types before claiming a report. The database must contain
-the pinned data source. No first-data-source inference, property creation, schema
-repair, proxy, redirect, or hidden HTTP retry is performed. The current API
-separates database data-source membership from the data-source property schema.
+For a prepared report, the worker verifies the pinned local destination bytes,
+loads a private token, performs authenticated database/data-source GET readback,
+and validates all four property IDs, names and types before claiming it. The
+database must contain the pinned data source. Membership and schema come from
+separate API responses, with direct requests and no hidden HTTP retry. Schema
+changes cause the verification to refuse.
 [Database retrieval](https://developers.notion.com/reference/retrieve-database),
 [data-source retrieval](https://developers.notion.com/reference/retrieve-a-data-source),
 [API versioning](https://developers.notion.com/reference/versioning).
@@ -156,6 +150,26 @@ submission-source authority guard.
 Generic interactive database/source/property selection is available when
 nonsecret options are omitted.
 
+### Verify the existing private binding
+
+Use the existing absolute file paths and destination SHA256 recorded by setup.
+Pass the token file path and keep the token bytes private. This mode requires no
+outbox root or password prompt.
+
+```powershell
+python -B -m scripts.setup_notion_outbox --verify-existing `
+  --token-file '<existing owner-private token file>' `
+  --destination-file '<existing owner-private destination file>' `
+  --destination-sha256 '<recorded destination SHA256>'
+```
+
+The command verifies local permissions and the destination digest, then performs
+exactly one database and one data-source GET on success. It verifies the pinned
+membership and all four property IDs, names and types, and rereads the private
+files before printing a redacted result. It leaves the files, queue, Notion
+database and worker unchanged. `EXISTING_BINDING_VERIFIED` records read-only
+schema access at that observation time. A failure returns a fixed refusal.
+
 Setup defaults to `%LOCALAPPDATA%\CTCC\private-notion` on Windows and
 `~/.local/share/CTCC/private-notion` on POSIX. Token files are created exclusively,
 with a protected current-user-only Windows DACL or POSIX mode `0600`, before
@@ -177,7 +191,7 @@ Successful setup prints only nonsecret paths and the destination-file SHA256:
 
 | Runtime setting | Meaning |
 | --- | --- |
-| `NOTION_OUTBOX_ENABLED` | Defaults to `false`; current source-authority guard still pauses delivery if set true |
+| `NOTION_OUTBOX_ENABLED` | Defaults to `false`; delivery also requires an eligible source-backed report and the configured producer on the same private root |
 | `NOTION_OUTBOX_ROOT` | Absolute, existing persistent producer queue |
 | `NOTION_OUTBOX_TOKEN_FILE` | Private external token file |
 | `NOTION_OUTBOX_DESTINATION_FILE` | Four actual property pins from setup |

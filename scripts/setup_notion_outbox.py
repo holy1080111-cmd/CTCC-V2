@@ -1,4 +1,4 @@
-"""Interactive local setup: hidden token input and GET-only real schema binding.
+"""Set up or verify the existing private Notion binding using GET only.
 
 Creates no Notion pages/database/properties and never enables a worker or trades.
 Token files are written outside Git/evidence roots with user-only permissions.
@@ -10,6 +10,7 @@ import argparse
 import asyncio
 import getpass
 import hashlib
+import hmac
 import json
 import os
 import uuid
@@ -24,6 +25,8 @@ from app.trade_evidence import storage
 from app.trade_evidence.notion_binding import (
     database_sources,
     external_secret_path,
+    load_destination,
+    load_private_token,
     private_file,
     read_notion_resource,
     save_private_token,
@@ -108,6 +111,44 @@ def write_local_record(path: Path, raw: bytes):
             raise ValueError("notion_setup_local_readback_failed")
 
 
+def _read_existing_destination(path: Path, expected_sha256: str):
+    with private_file(path) as descriptor:
+        raw = storage._read_fd(descriptor, 16384)
+    if hashlib.sha256(raw).hexdigest() != expected_sha256:
+        raise ValueError("notion_existing_destination_pin_mismatch")
+    return load_destination(path, expected_sha256)
+
+
+async def verify_existing(
+    token_file: Path, destination_file: Path, destination_sha256: str
+):
+    """Verify the already configured private files and their exact remote schema."""
+    if token_file == destination_file:
+        raise ValueError("notion_existing_paths_must_differ")
+    destination = _read_existing_destination(destination_file, destination_sha256)
+    token = load_private_token(token_file)
+    async with isolated_client() as client:
+        proof = await verify_binding(client, token, destination)
+    after = _read_existing_destination(destination_file, destination_sha256)
+    token_after = load_private_token(token_file)
+    if after != destination or not hmac.compare_digest(
+        token.get_secret_value(), token_after.get_secret_value()
+    ):
+        raise ValueError("notion_existing_configuration_changed")
+    return {
+        "schema": "ctcc.notion_existing_binding_readback.v1",
+        "status": "EXISTING_BINDING_VERIFIED",
+        "verified_at": datetime.now(UTC).isoformat(),
+        "destination_file_sha256": destination_sha256,
+        "readback": proof,
+        "http_methods": ["GET"],
+        "notion_writes": 0,
+        "worker_started": False,
+        "delivery_acceptance": False,
+        "execution_authority": False,
+    }
+
+
 async def configure(args):
     root = storage._root_path(args.outbox_root)
     if not root.is_dir():
@@ -168,9 +209,18 @@ async def configure(args):
     print(f"NOTION_OUTBOX_DESTINATION_SHA256={digest}")
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--outbox-root", type=Path, required=True)
+class _PrivateArgumentParser(argparse.ArgumentParser):
+    def error(self, message):
+        self.exit(2, "NOTION_OUTBOX_ARGUMENTS_REFUSED\n")
+
+
+def main(argv=None):
+    parser = _PrivateArgumentParser(description=__doc__, allow_abbrev=False)
+    parser.add_argument("--verify-existing", action="store_true")
+    parser.add_argument("--token-file", type=Path)
+    parser.add_argument("--destination-file", type=Path)
+    parser.add_argument("--destination-sha256")
+    parser.add_argument("--outbox-root", type=Path)
     parser.add_argument("--database-id")
     parser.add_argument("--data-source-id")
     for role in notion.ROLES:
@@ -179,8 +229,34 @@ def main():
         Path(os.environ.get("LOCALAPPDATA", Path.home() / ".local/share"))
         / "CTCC/private-notion"
     )
-    parser.add_argument("--private-directory", type=Path, default=default)
-    args = parser.parse_args()
+    parser.add_argument("--private-directory", type=Path)
+    args = parser.parse_args(argv)
+    setup_arguments = (
+        args.outbox_root,
+        args.private_directory,
+        args.database_id,
+        args.data_source_id,
+        *(getattr(args, role + "_property_name") for role in notion.ROLES),
+    )
+    verify_arguments = (args.token_file, args.destination_file, args.destination_sha256)
+    if args.verify_existing:
+        if any(value is not None for value in setup_arguments) or not all(
+            verify_arguments
+        ):
+            parser.error("existing verification requires only the three private inputs")
+        try:
+            result = asyncio.run(verify_existing(*verify_arguments))
+        except Exception:  # noqa: BLE001 -- Never render private paths or remote data.
+            print("NOTION_EXISTING_BINDING_REFUSED")
+            raise SystemExit(1) from None
+        except KeyboardInterrupt:
+            print("NOTION_EXISTING_BINDING_CANCELLED")
+            raise SystemExit(1) from None
+        print(json.dumps(result, sort_keys=True))
+        return
+    if args.outbox_root is None or any(value is not None for value in verify_arguments):
+        parser.error("setup requires an outbox root and no existing binding inputs")
+    args.private_directory = args.private_directory or default
     try:
         asyncio.run(configure(args))
     except (KeyboardInterrupt, EOFError):
