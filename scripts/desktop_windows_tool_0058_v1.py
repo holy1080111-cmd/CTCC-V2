@@ -134,7 +134,7 @@ def _select_profile():
     value.lpstrFilter = ctypes.cast(filters, w.LPCWSTR)
     value.nFilterIndex = 1
     value.lpstrInitialDir = str(Path.home() / "AppData/Local")
-    value.lpstrTitle = "CTCC：選擇這個版本的私人設定檔"
+    value.lpstrTitle = "CTCC：選擇分析、Demo 或 Live 設定檔"
     # Existing file/path, Explorer UI, no cwd mutation and no Recent Documents.
     value.Flags = 0x1000 | 0x800 | 0x80000 | 0x8 | 0x2000000
     if not api.GetOpenFileNameW(ctypes.byref(value)):
@@ -463,6 +463,13 @@ def main():
         selected = _select_profile()
         if selected is None:
             return 0
+        if selected.name.casefold() == "paper-profile.json":
+            _message(
+                "Paper 模擬交易使用獨立啟動器。\n"
+                "請開啟已設定的 CTCC 2.0 Paper 捷徑，"
+                "或依安裝說明執行 Install-CTCC-0058.ps1 -Mode Launch -Tool paper。"
+            )
+            return 1
         owner = launch(_plan(selected))
     except BrowserNotOpened as error:
         _message("工具已啟動，但瀏覽器未能自動開啟。\n請在瀏覽器開啟：" + error.url)

@@ -8,6 +8,11 @@
 不會代為設定帳戶，也不會因為開啟頁面而授予交易權限。Live 預設關閉；
 原本的當次人工確認程序仍然適用。
 
+Paper 的設定精靈會產生 `paper-profile.json`。請開啟已設定的「CTCC 2.0 Paper」
+捷徑，或依 [Windows Paper 安裝說明](windows_tool_physical0058_v1.md#persistent-paper-on-windows)
+使用 `-Tool paper` 檢查並啟動本機帳本。若在 `Open-CTCC.cmd` 的檔案選擇器
+選到 Paper 設定檔，程式會顯示 Paper 啟動方式。
+
 若尚未安裝隔離執行環境，啟動器會提示先完成安裝。設定不屬於這個版本、
 核對失敗或連接埠已被其他程式占用時，頁面不會開啟。
 若服務已完成核對但瀏覽器未能開啟，提示會提供固定的本機網址；服務會保留。

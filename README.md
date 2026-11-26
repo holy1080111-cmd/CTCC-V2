@@ -16,8 +16,10 @@ By the user's revised scope, Gate3 and real trading examples are deferred;
 neither is reported as passed, and no profitability claim is made.
 
 After installing and configuring a reviewed Windows release, double-click
-`source/Open-CTCC.cmd` and choose that release's `tool-profile.json`. The
-[desktop launcher](docs/windows_tool_desktop_0058_v1.md) verifies the private
+`source/Open-CTCC.cmd` for Analysis, Demo or Live and choose that release's
+`tool-profile.json`. For Paper, open the configured CTCC 2.0 Paper shortcut
+or follow the [Paper launcher instructions](docs/windows_tool_physical0058_v1.md#persistent-paper-on-windows).
+The [desktop launcher](docs/windows_tool_desktop_0058_v1.md) verifies the private
 profile, exact package and new local process before opening the page. It does
 not configure an account or supply trading authorization.
 

@@ -393,6 +393,22 @@ def test_picker_cancel_never_autoselects_a_profile_or_starts_a_process(monkeypat
     assert desktop.main() == 0
 
 
+@pytest.mark.parametrize("filename", ["paper-profile.json", "PAPER-PROFILE.JSON"])
+def test_paper_profile_selection_points_to_paper_launcher(
+    filename, tmp_path, monkeypatch
+):
+    messages = []
+    monkeypatch.setattr(desktop, "_select_profile", lambda: tmp_path / filename)
+    monkeypatch.setattr(desktop, "_message", messages.append)
+    monkeypatch.setattr(desktop, "_plan", lambda _: pytest.fail("Paper profile read"))
+    monkeypatch.setattr(desktop, "launch", lambda _: pytest.fail("tool started"))
+
+    assert desktop.main() == 1
+    assert len(messages) == 1
+    assert "-Mode Launch -Tool paper" in messages[0]
+    assert str(tmp_path) not in messages[0]
+
+
 def test_private_configuration_error_is_never_reflected_into_ui(monkeypatch):
     def refused():
         raise ValueError("credential_must_not_escape")
