@@ -1,0 +1,121 @@
+name: Fresh DB0056 unbound native catalog observer validation
+
+on:
+  push:
+    branches: [work/db0058-unbound56-offline-native-observer-proof]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    if: github.ref == 'refs/heads/work/db0058-unbound56-offline-native-observer-proof'
+    name: Observe fresh DB0056 under both exact native transaction contexts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact validation-only source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Measure and reread the fixed no-venue PostgreSQL profile
+        shell: bash
+        run: |
+          set -euo pipefail
+          subject=e65a4aa5078b1bccf810f98073a58913215393ff
+          commit=$(git rev-parse HEAD)
+          test "$GITHUB_SHA" = "$commit"
+          git merge-base --is-ancestor "$subject" "$commit"
+          diff -u <(printf '%s\n' \
+            .github/workflows/db0058-unbound56-offline-native-observer-proof.yml \
+            MANIFEST.sha256 scripts/run_retained0017_reference_probe_v1.py \
+            tests/integration/test_retained0056_fitted_reference_pair_v1_pg.py) \
+            <(git diff --name-only "$subject" "$commit")
+          python3 - "$subject" <<'PY'
+          import ast
+          import hashlib
+          from pathlib import Path
+          import sys
+
+          runner = Path('scripts/run_retained0017_reference_probe_v1.py').read_bytes()
+          pins = {}
+          ignored = set()
+          for node in ast.parse(runner).body:
+              if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+                  name = node.targets[0].id
+                  if name in {'UNSCOPED_SUBJECT', 'UNSCOPED_INPUTS'}:
+                      assert name not in pins
+                      pins[name] = ast.literal_eval(node.value)
+                      ignored.update(range(node.lineno, node.end_lineno + 1))
+          body = b''.join(line for index, line in enumerate(runner.splitlines(keepends=True), 1) if index not in ignored)
+          # Exact previously verified 4307 runner body with only the two old source-pin literals excluded.
+          assert hashlib.sha256(body).hexdigest() == '5fc83f966ec3fe25d0105ed6e10735d55f9de1193cf86257691e4b779e5f433b'
+          assert set(pins) == {'UNSCOPED_SUBJECT', 'UNSCOPED_INPUTS'}
+          assert pins['UNSCOPED_SUBJECT'] == sys.argv[1]
+          assert all(hashlib.sha256(Path(path).read_bytes()).hexdigest() == digest for path, digest in pins['UNSCOPED_INPUTS'].items())
+          PY
+          python3 scripts/manifest.py --check
+          tree=$(git rev-parse 'HEAD^{tree}')
+          archive="$RUNNER_TEMP/ctcc-source.tar"
+          git -c core.autocrlf=false -c core.eol=lf archive --format=tar --output="$archive" "$commit"
+          digest=$(sha256sum "$archive" | cut -d ' ' -f 1)
+          output="$RUNNER_TEMP/ctcc-unbound56-observer"
+          options=(--archive "$archive" --archive-sha256 "$digest" --commit "$commit" --tree "$tree"
+            --unscoped-fitted56-reference a --output "$output")
+          python3 -m scripts.run_retained0017_reference_probe_v1 "${options[@]}"
+          python3 -m scripts.run_retained0017_reference_probe_v1 "${options[@]}" --verify-only
+          python3 - "$output" <<'PY'
+          import hashlib
+          from pathlib import Path
+          import sys
+
+          from scripts import retained0056_fitted_reference_pair_v1 as reference
+          from scripts.evidence_json import read_evidence_json
+
+          root = Path(sys.argv[1])
+          expected = {
+              'schema': 'ctcc.retained0056.fresh_native_observer_validation.v1',
+              'database_head': '0056',
+              'actual_repeatable_read_readonly_connections': 2,
+              'actual_read_committed_readwrite_observations': 2,
+              'distinct_backend_sessions': 4,
+              'observation_transactions_rolled_back': 4,
+              'post_observation_original_inventory_unchanged': True,
+              'shared_fitted_dependency_count': 0,
+              'fitted_initial_acl_count': 0,
+              'logical_dependency_sha256': 'd32e7e840377317720a4e1eeedd135e51540a6fc3b22c64713bdf2fe9328d506',
+              'fitted_dependency_count': 150,
+              'structural_sha256': '49ede7fd3777b0512f131f8c1ae9a788432d607b4d35fcb9f1ccb9895bb27631',
+              'role_context_sha256': 'eb10581de5ef346272f84f871e8d024764e5a31fcea3f94abfdb49cc3466968f',
+              'fixture_fresh_only': True,
+              'retained_inputs_read': 0,
+              'runtime_grants_installed': False,
+              'schema_upgrade_authorized': False,
+              'startup_admission': False,
+              'execution_authority': False,
+          }
+          read = root / 'test-results/unbound-fitted56-native-observer.json'
+          raw = read.read_bytes()
+          state = read_evidence_json((root / 'identity.json').read_bytes())
+          index = read_evidence_json((root / 'results.sha256.json').read_bytes())
+          expected['source_manifest_sha256'] = state['manifest_sha256']
+          expected['reference_measurement_sha256'] = hashlib.sha256((root / reference.MEASUREMENT).read_bytes()).hexdigest()
+          assert raw == reference.canonical(expected)
+          assert index[read.relative_to(root).as_posix()] == hashlib.sha256(raw).hexdigest()
+          assert state['probe'] == state['cleanup'] == 'PASS'
+          PY
+      - name: Preserve exact source and bounded native evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ctcc-unbound56-native-observer-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/ctcc-source.tar
+            ${{ runner.temp }}/ctcc-unbound56-observer/*.json
+            ${{ runner.temp }}/ctcc-unbound56-observer/*.log
+            ${{ runner.temp }}/ctcc-unbound56-observer/test-results/*.xml
+            ${{ runner.temp }}/ctcc-unbound56-observer/test-results/*.json
+          if-no-files-found: error
+          retention-days: 30

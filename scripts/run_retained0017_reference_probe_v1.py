@@ -11,6 +11,7 @@ from uuid import uuid4
 from scripts import canonical0055_catalog_reference_v1 as canonical55
 from scripts import native_owner_storage_diagnostic_v1 as storage
 from scripts import retained0017_reference_measurement_v1 as measurement
+from scripts import retained0056_fitted_reference_pair_v1 as fitted_reference
 from scripts import verify_final_hermetic as shared
 from scripts.devval_hermetic_tls import devval_tls
 from scripts.evidence_json import read_evidence_json
@@ -29,20 +30,18 @@ from scripts.verify_current0058_full_hermetic import admit_archive as admit_full
 RUNNER = measurement.PROBE_RUNNER
 TEST_MODULE = "tests/integration/test_retained0017_catalog_references_v1_pg.py"
 REPORT = "test-results/retained0017-reference-probe.xml"
-PAPER58_TEST_MODULE = "tests/integration/test_paper58_catalog_reference_v1_pg.py"
-OWNED_PAPER_MODULE = "tests/integration/test_paper58_owned_runtime_v1_pg.py"
-OWNED_PAPER_CASE = (
-    OWNED_PAPER_MODULE.removesuffix(".py").replace("/", "."),
-    "test_actual58_owned_paper_http_recovers_real_restricted_state_after_commit_ack_fault",
-)
-OWNED_PAPER_SCHEMA = "ctcc.source58.fresh_owned_paper_runtime_identity.v1"
-OWNED_PAPER_SCOPE = (
-    "fresh_canonical58_postprovision_tls_actor_http_and_restart_no_venue"
-)
-OWNED_PAPER_SUITE = "paper58-fresh-owned-runtime"
-OWNED_PAPER_REPORT = "test-results/paper58-fresh-owned-runtime.xml"
-OWNED_PAPER_ACCEPTANCE = "owned-paper-acceptance.json"
 canonical, digest = measurement.canonical, measurement.digest
+UNSCOPED_SCHEMA = "ctcc.source58.unscoped_fitted56_bootstrap_reference_probe.v1"
+UNSCOPED_SCOPE = "fresh_disposable0056_bootstrap_owner_tls_data_reference"
+UNSCOPED_SUBJECT = "e65a4aa5078b1bccf810f98073a58913215393ff"
+UNSCOPED_INPUTS = {
+    "migrations/versions/0056_gate3_fitted_candidate_custody.py": "82dacd7797d7e5f2286317fb2445c1a5e4986599733617d2ff8f3b8553b3ce3b",
+    "scripts/native_owner_upgrade_0056_v1.py": "38ff34d9e06b3b73fb3a0b85b6f8c6c7d524bbc209a0dbc5af6e516c32cd7391",
+    "scripts/native_validation/retained0056_unbound_schema_v1.py": "b2f42270bf7cf5038665f67b7b068429ca2ef2d0f36028f69ca81c4034de089a",
+    "scripts/native_validation/sql/retained0056_unbound_fitted_dependencies_v1.sql": "c09a58aa2d0f2c346dcd9fa5babc55730eda1bdde5dd152f7af3aacb52c16206",
+    "scripts/retained0056_bootstrap_reference_pin_v2.py": "f7c11fa9b29e15773cfd11e0ab7e3f45ae6baff21b71bccb8a81257a551b7363",
+    "scripts/retained0056_unscoped_fitted_observation_v1.py": "1a8b9bcb33ec5649b102e5a01a38982fbecb7df3e218c765d55f07627f4ef55f",
+}
 
 
 def _storage_mode(args):
@@ -51,46 +50,38 @@ def _storage_mode(args):
     return value
 
 
-def _paper58_mode(args):
-    value = getattr(args, "paper58_structural_reference", False)
-    need(type(value) is bool and not (value and _storage_mode(args)))
-    return value
-
-
-def _paper58_contract(args):
-    if not _paper58_mode(args):
-        return None
-    from scripts import paper58_catalog_reference_v1
-
-    return paper58_catalog_reference_v1
-
-
-def _owned_paper_mode(args):
-    value = getattr(args, "paper58_owned_runtime", False)
+def _unscoped_mode(args):
+    label = getattr(args, "unscoped_fitted56_reference", None)
     need(
-        type(value) is bool
-        and not (value and (_storage_mode(args) or _paper58_mode(args)))
+        label is None or (label in fitted_reference.LABELS and not _storage_mode(args))
     )
-    return value
+    return label
 
 
-def _owned_paper_acceptance(state, report):
-    need(report["tests"] == report["passed"] == 1 and report["skipped"] == 0)
-    return {
-        "schema": "ctcc.source58.fresh_owned_paper_runtime_acceptance.v1",
-        "source_commit": state["commit"],
-        "source_tree": state["tree"],
-        "archive_sha256": state["archive_sha256"],
-        "manifest_sha256": state["manifest_sha256"],
-        "junit_sha256": report["sha256"],
-        "isolated_restricted_paper_case": "PASS",
-        "database_head": "0058",
-        "fixture_fresh_unpinned_only": True,
-        "preserved_ledger_opened": False,
-        "operator_installation_verified": False,
-        "external_order_writes": 0,
-        "execution_authority": False,
-    }
+def _unscoped_subject(files):
+    need(
+        all(
+            files[name]["sha256"] == expected
+            for name, expected in UNSCOPED_INPUTS.items()
+        )
+    )
+    return {"commit": UNSCOPED_SUBJECT, "file_sha256": UNSCOPED_INPUTS}
+
+
+def _test_scope(args):
+    if _unscoped_mode(args):
+        return (
+            (fitted_reference.CASE,),
+            (fitted_reference.NODE,),
+            fitted_reference.REPORT,
+        )
+    if _storage_mode(args):
+        return (
+            (*storage.CASES, canonical55.CASE),
+            (storage.MODULE, canonical55.MODULE),
+            storage.REPORT,
+        )
+    return measurement.CASES, (TEST_MODULE,), REPORT
 
 
 def need(value):
@@ -105,12 +96,9 @@ def admit_archive(args):
 
 
 def verify_probe(root, *, args, files):
-    owned_paper = _owned_paper_mode(args)
+    unscoped = _unscoped_mode(args)
     diagnostic = _storage_mode(args)
-    paper = _paper58_contract(args)
     state = read_evidence_json((root / "identity.json").read_bytes())
-    if paper is None:
-        need("paper58_reference_pair" not in state)
     raw_map = (root / "source-files.json").read_bytes()
     need(raw_map == canonical(files))
     need(
@@ -118,35 +106,48 @@ def verify_probe(root, *, args, files):
         and state["tree"] == args.tree
         and state["archive_sha256"] == args.archive_sha256
     )
-    if owned_paper:
+    if unscoped:
+        cleanup = read_evidence_json((root / "cleanup.json").read_bytes())
+        prefix = "ctcc-final-" + state["run_id"] + "-"
         need(
-            state["schema"] == state["runner_contract"] == OWNED_PAPER_SCHEMA
-            and state["validation_scope"] == OWNED_PAPER_SCOPE
-            and state["suite"] == OWNED_PAPER_SUITE
-            and state["database_target"] == state["source_contract_head"] == "0058"
+            state["schema"] == UNSCOPED_SCHEMA
+            and state["suite"] == "unscoped-fitted56-bootstrap-reference"
+            and state["runner_contract"] == UNSCOPED_SCHEMA
+            and state["validation_scope"] == UNSCOPED_SCOPE
+            and state["reference_label"] == unscoped
+            and state["database_target"] == "0056"
+            and state["source_contract_head"] == "0058"
             and state["source_files_sha256"] == digest(raw_map)
             and state["manifest_sha256"] == files["MANIFEST.sha256"]["sha256"]
             and state["runner_sha256"] == files[RUNNER]["sha256"]
+            and state["validation_subject"] == _unscoped_subject(files)
             and state["build_context"] == "admitted_archive_bytes_v1"
             and state["hermetic_regression"] == "NOT_RUN"
-            and state["full_suite_acceptance"] is state["trading_acceptance"] is False
-            and state["host_credentials"] is state["host_env"] is False
+            and state["full_suite_acceptance"] is False
+            and state["trading_acceptance"] is False
+            and state["execution_authority"] is False
+            and state["host_env"] is False
+            and state["host_credentials"] is False
             and type(state["external_order_writes"]) is int
             and state["external_order_writes"] == 0
-            and "pair" not in state
+            and re.fullmatch(r"sha256:[a-f0-9]{64}", state["image_id"]) is not None
+            and re.fullmatch(r"[a-f0-9]{12}", state["run_id"]) is not None
+            and type(cleanup) is list
+            and all(row["status"] in {"ABSENT", "REMOVED"} for row in cleanup)
+            and {(row["kind"], row["name"]) for row in cleanup}
+            >= {("network", prefix + "network"), ("container", prefix + "postgres")}
+            and not (
+                {"pair", "canonical55_reference", "native_storage_components"}
+                & state.keys()
+            )
         )
-        network = read_evidence_json((root / "network-inspect.log").read_bytes())
-        image = read_evidence_json((root / "image-identity.log").read_bytes())
-        need(network["Internal"] is True and image["Id"] == state["image_id"])
-        source = state
-    elif diagnostic or paper is not None:
-        contract = storage if diagnostic else paper
+    elif diagnostic:
         need(
-            state["schema"] == contract.SCHEMA
-            and state["runner_contract"] == contract.CONTRACT
-            and state["validation_scope"] == contract.SCOPE
-            and state["suite"] == contract.SUITE
-            and state["database_target"] == ("0055_and_0057" if diagnostic else "0058")
+            state["schema"] == storage.SCHEMA
+            and state["runner_contract"] == storage.CONTRACT
+            and state["validation_scope"] == storage.SCOPE
+            and state["suite"] == storage.SUITE
+            and state["database_target"] == "0055_and_0057"
             and state["source_contract_head"] == "0058"
             and state["source_files_sha256"] == digest(raw_map)
             and state["manifest_sha256"] == files["MANIFEST.sha256"]["sha256"]
@@ -161,71 +162,34 @@ def verify_probe(root, *, args, files):
             and state["external_order_writes"] == 0
             and "pair" not in state
         )
-        if paper is not None:
-            need(
-                "native_storage_components" not in state
-                and "canonical55_reference" not in state
-                and "retained0017_reference_pair" not in state
-            )
-        source = (
-            paper.source_identity(state, files, raw_map) if paper is not None else state
-        )
+        source = state
     else:
         source = measurement.source_identity(state, files, raw_map)
-    cases = (
-        (OWNED_PAPER_CASE,)
-        if owned_paper
-        else paper.CASES
-        if paper is not None
-        else (*storage.CASES, canonical55.CASE)
-        if diagnostic
-        else measurement.CASES
-    )
-    report_name = (
-        OWNED_PAPER_REPORT
-        if owned_paper
-        else paper.REPORT
-        if paper is not None
-        else storage.REPORT
-        if diagnostic
-        else REPORT
-    )
+    cases, _, report_path = _test_scope(args)
     report = shared.verify_pytest_report(
-        root / report_name,
+        root / report_path,
         required_cases=cases,
         allow_unrelated_skips=False,
     )
     need(report["tests"] == report["passed"] == len(cases) and report["skipped"] == 0)
-    pair = (
-        _owned_paper_acceptance(state, report)
-        if owned_paper
-        else paper.verify_reference_pair_v1(root, source, files)
-        if paper is not None
-        else storage.verify_reports_v1(root, source)
-        if diagnostic
-        else measurement.verify_reference_pair(root, source=source)
-    )
-    if diagnostic:
+    if unscoped:
+        result = fitted_reference.measurement(
+            (root / fitted_reference.MEASUREMENT).read_bytes(),
+            label=unscoped,
+            manifest=state["manifest_sha256"],
+        )
+        need(state["reference_measurement"] == result)
+    elif diagnostic:
+        result = storage.verify_reports_v1(root, source)
         need(
             state["canonical55_reference"]
             == canonical55.verify_reference_v1(root, source, files)
         )
-    if owned_paper:
-        need(read_evidence_json((root / OWNED_PAPER_ACCEPTANCE).read_bytes()) == pair)
-    need(
-        state[
-            "owned_paper_runtime"
-            if owned_paper
-            else "paper58_reference_pair"
-            if paper is not None
-            else "native_storage_components"
-            if diagnostic
-            else "pair"
-        ]
-        == pair
-        and state["tests"] == report
-        and state["probe"] == state["cleanup"] == "PASS"
-    )
+        need(state["native_storage_components"] == result)
+    else:
+        result = measurement.verify_reference_pair(root, source=source)
+        need(state["pair"] == result)
+    need(state["tests"] == report and state["probe"] == state["cleanup"] == "PASS")
     results = read_evidence_json((root / "results.sha256.json").read_bytes())
     actual = {
         path.relative_to(root).as_posix(): digest(path.read_bytes())
@@ -236,22 +200,12 @@ def verify_probe(root, *, args, files):
         and path.name != "results.sha256.json"
     }
     need(results == actual)
-    return pair
+    return result
 
 
 def run_probe(args, raw, files, root):
+    unscoped = _unscoped_mode(args)
     diagnostic = _storage_mode(args)
-    paper = _paper58_contract(args)
-    owned_paper = _owned_paper_mode(args)
-    report_name = (
-        OWNED_PAPER_REPORT
-        if owned_paper
-        else paper.REPORT
-        if paper is not None
-        else storage.REPORT
-        if diagnostic
-        else REPORT
-    )
     results = root / "test-results"
     results.mkdir(mode=0o777)
     results.chmod(0o777)  # Only disposable, credential-free reference artifacts.
@@ -263,48 +217,19 @@ def run_probe(args, raw, files, root):
     network, postgres, redis = (
         prefix + name for name in ("network", "postgres", "redis")
     )
-    image = (
-        ("ctcc-paper58-reference:" if paper is not None else "ctcc-source17-reference:")
-        + args.commit[:12]
-        + "-"
-        + run_id
-    )
+    image = "ctcc-source17-reference:" + args.commit[:12] + "-" + run_id
     label = "org.ctcc.validation.run=" + run_id
     state = {
-        "schema": OWNED_PAPER_SCHEMA
-        if owned_paper
-        else paper.SCHEMA
-        if paper is not None
-        else storage.SCHEMA
+        "schema": storage.SCHEMA
         if diagnostic
         else "ctcc.retained0017.reference_probe_identity.v1",
-        "runner_contract": OWNED_PAPER_SCHEMA
-        if owned_paper
-        else paper.CONTRACT
-        if paper is not None
-        else storage.CONTRACT
+        "runner_contract": storage.CONTRACT
         if diagnostic
         else measurement.PROBE_CONTRACT,
-        "validation_scope": OWNED_PAPER_SCOPE
-        if owned_paper
-        else paper.SCOPE
-        if paper is not None
-        else storage.SCOPE
-        if diagnostic
-        else measurement.PROBE_SCOPE,
-        "suite": OWNED_PAPER_SUITE
-        if owned_paper
-        else paper.SUITE
-        if paper is not None
-        else storage.SUITE
-        if diagnostic
-        else "retained0017-reference-probe",
+        "validation_scope": storage.SCOPE if diagnostic else measurement.PROBE_SCOPE,
+        "suite": storage.SUITE if diagnostic else "retained0017-reference-probe",
         "source_contract_head": "0058",
-        "database_target": "0058"
-        if owned_paper or paper is not None
-        else "0055_and_0057"
-        if diagnostic
-        else "0017",
+        "database_target": "0055_and_0057" if diagnostic else "0017",
         "commit": args.commit,
         "tree": args.tree,
         "archive_sha256": digest(raw),
@@ -321,6 +246,17 @@ def run_probe(args, raw, files, root):
         "host_credentials": False,
         "external_order_writes": 0,
     }
+    if unscoped:
+        state.update(
+            schema=UNSCOPED_SCHEMA,
+            suite="unscoped-fitted56-bootstrap-reference",
+            runner_contract=UNSCOPED_SCHEMA,
+            validation_scope=UNSCOPED_SCOPE,
+            database_target="0056",
+            reference_label=unscoped,
+            validation_subject=_unscoped_subject(files),
+            execution_authority=False,
+        )
     _write(root / "identity.json", state)
     run, resources, tls_stack = shared.Run(root, budget_seconds=1800), [], ExitStack()
 
@@ -464,25 +400,29 @@ def run_probe(args, raw, files, root):
         )
         # No upgrade of the admin database to58 is implied. Required cases
         # independently create their own disposable canonical-source DBs.
+        cases, nodes, report_path = _test_scope(args)
+        if unscoped:
+            test_stage = "unscoped-fitted56-tests"
+            measurement_environment = (
+                "-e",
+                "CTCC_UNSCOPED_FITTED56_REFERENCE=" + unscoped,
+                "-e",
+                "CTCC_DEVVAL_CUSTODY_TEST_SOURCE_MANIFEST_SHA256="
+                + state["manifest_sha256"],
+            )
+        else:
+            test_stage = "native-storage-tests" if diagnostic else "reference17-tests"
+            measurement_environment = (
+                "-e",
+                (storage.ENV if diagnostic else measurement.ENV)
+                + "=/validation-results",
+            )
         container(
-            "paper58-owned-runtime-tests"
-            if owned_paper
-            else "paper58-reference-tests"
-            if paper is not None
-            else "native-storage-tests"
-            if diagnostic
-            else "reference17-tests",
+            test_stage,
             *_PYTEST,
             "-q",
-            "--junitxml=/validation-results/" + Path(report_name).name,
-            OWNED_PAPER_MODULE + "::" + OWNED_PAPER_CASE[1]
-            if owned_paper
-            else PAPER58_TEST_MODULE
-            if paper is not None
-            else storage.MODULE
-            if diagnostic
-            else TEST_MODULE,
-            *((canonical55.MODULE,) if diagnostic else ()),
+            "--junitxml=/validation-results/" + Path(report_path).name,
+            *nodes,
             mounts=(
                 "--mount",
                 f"type=bind,src={results},dst=/validation-results",
@@ -492,35 +432,12 @@ def run_probe(args, raw, files, root):
             ),
             extra_environment=(
                 *tls.pytest_environment,
-                *(
-                    (
-                        "-e",
-                        (
-                            paper.ENV
-                            if paper is not None
-                            else storage.ENV
-                            if diagnostic
-                            else measurement.ENV
-                        )
-                        + "=/validation-results",
-                    )
-                    if not owned_paper
-                    else ()
-                ),
+                *measurement_environment,
             ),
             timeout=900,
         )
-        cases = (
-            (OWNED_PAPER_CASE,)
-            if owned_paper
-            else paper.CASES
-            if paper is not None
-            else (*storage.CASES, canonical55.CASE)
-            if diagnostic
-            else measurement.CASES
-        )
         report = shared.verify_pytest_report(
-            root / report_name,
+            root / report_path,
             required_cases=cases,
             allow_unrelated_skips=False,
         )
@@ -528,13 +445,11 @@ def run_probe(args, raw, files, root):
             report["tests"] == report["passed"] == len(cases) and report["skipped"] == 0
         )
         state["tests"] = report
-        if owned_paper:
-            acceptance = _owned_paper_acceptance(state, report)
-            state["owned_paper_runtime"] = acceptance
-            _write(root / OWNED_PAPER_ACCEPTANCE, acceptance)
-        elif paper is not None:
-            state["paper58_reference_pair"] = paper.verify_reference_pair_v1(
-                root, paper.source_identity(state, files, mapping.read_bytes()), files
+        if unscoped:
+            state["reference_measurement"] = fitted_reference.measurement(
+                (root / fitted_reference.MEASUREMENT).read_bytes(),
+                label=unscoped,
+                manifest=state["manifest_sha256"],
             )
         elif diagnostic:
             state["native_storage_components"] = storage.verify_reports_v1(root, state)
@@ -572,16 +487,15 @@ def run_probe(args, raw, files, root):
             },
         )
     verify_probe(root, args=args, files=files)
-    print(
-        "PAPER58_FRESH_OWNED_RUNTIME=PASS"
-        if owned_paper
-        else "PAPER58_FRESH_STRUCTURAL_REFERENCE_PAIR=PASS"
-        if paper is not None
-        else "NATIVE_STORAGE_CATALOG_DIAGNOSTIC=PASS"
-        if diagnostic
-        else "RETAINED0017_FRESH_REFERENCE_PAIR=PASS",
-        flush=True,
-    )
+    if unscoped:
+        print("UNSCOPED_FITTED56_BOOTSTRAP_REFERENCE=PASS", flush=True)
+    else:
+        print(
+            "NATIVE_STORAGE_CATALOG_DIAGNOSTIC=PASS"
+            if diagnostic
+            else "RETAINED0017_FRESH_REFERENCE_PAIR=PASS",
+            flush=True,
+        )
     print("HERMETIC_REGRESSION=NOT_RUN", flush=True)
     return 0
 
@@ -597,8 +511,9 @@ def main():
     parser.add_argument("--verify-only", action="store_true")
     purposes = parser.add_mutually_exclusive_group()
     purposes.add_argument("--native-storage-diagnostic", action="store_true")
-    purposes.add_argument("--paper58-structural-reference", action="store_true")
-    purposes.add_argument("--paper58-owned-runtime", action="store_true")
+    purposes.add_argument(
+        "--unscoped-fitted56-reference", choices=fitted_reference.LABELS
+    )
     args = parser.parse_args()
     for value, pattern in (
         (args.commit, r"[a-f0-9]{40}"),
@@ -609,16 +524,15 @@ def main():
     raw, files = admit_archive(args)
     if args.verify_only:
         verify_probe(args.output, args=args, files=files)
-        print(
-            "PAPER58_FRESH_OWNED_RUNTIME_ARCHIVED_READBACK=PASS"
-            if _owned_paper_mode(args)
-            else "PAPER58_STRUCTURAL_REFERENCE_ARCHIVED_READBACK=PASS"
-            if _paper58_mode(args)
-            else "NATIVE_STORAGE_DIAGNOSTIC_ARCHIVED_READBACK=PASS"
-            if _storage_mode(args)
-            else "RETAINED0017_REFERENCE_PROBE_ARCHIVED_READBACK=PASS",
-            flush=True,
-        )
+        if _unscoped_mode(args):
+            print("UNSCOPED_FITTED56_BOOTSTRAP_ARCHIVED_READBACK=PASS", flush=True)
+        else:
+            print(
+                "NATIVE_STORAGE_DIAGNOSTIC_ARCHIVED_READBACK=PASS"
+                if _storage_mode(args)
+                else "RETAINED0017_REFERENCE_PROBE_ARCHIVED_READBACK=PASS",
+                flush=True,
+            )
         return 0
     args.output.mkdir(parents=True, exist_ok=False)
     root = args.output.resolve(strict=True)
