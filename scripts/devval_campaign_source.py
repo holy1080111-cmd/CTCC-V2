@@ -23,7 +23,9 @@ _HEX40 = re.compile(r"[0-9a-f]{40}\Z")
 _HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 _MAX_ARCHIVE = 64 * 1024 * 1024
 _MAX_FILES = 10_000
-_MAX_MANIFEST = 256 * 1024
+# The committed source inventory can exceed 256 KiB. Keep a separate bound
+# while retaining the archive, member count and byte-for-byte inventory checks.
+_MAX_MANIFEST = 512 * 1024
 _MAX_TOTAL = 64 * 1024 * 1024
 _REPARSE_POINT = 0x400
 

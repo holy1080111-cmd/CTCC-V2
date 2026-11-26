@@ -99,6 +99,37 @@ def test_source_checkpoint_checks_exact_extraction_and_refuses_extra(tmp_path):
         source.verify_source_checkpoint(root, archive, pin)
 
 
+def test_source_checkpoint_reads_back_a_large_committed_manifest(tmp_path):
+    root = tmp_path.resolve() / "source"
+    root.mkdir()
+    for index in range(1600):
+        member = root / f"member_{'a' * 98}_{index:04}.txt"
+        member.write_bytes(b"committed fixture\n")
+    manifest_path = root / "MANIFEST.sha256"
+    manifest.write_manifest(root, manifest_path)
+    assert 256 * 1024 < manifest_path.stat().st_size < 512 * 1024
+    archive = tmp_path.resolve() / "large-source.tar"
+    pin = _archive(root, archive)
+    checkpoint = source.verify_source_checkpoint(root, archive, pin)
+    assert checkpoint["expected_source_manifest_sha256"] == sha(
+        manifest_path.read_bytes()
+    )
+
+
+def test_source_checkpoint_refuses_a_manifest_over_its_independent_bound(tmp_path):
+    root = tmp_path.resolve() / "source"
+    root.mkdir()
+    (root / "pyproject.toml").write_bytes(b"[project]\nname='fixture'\n")
+    manifest_path = root / "MANIFEST.sha256"
+    manifest.write_manifest(root, manifest_path)
+    with manifest_path.open("ab") as stream:
+        stream.write(b"\n" * (512 * 1024))
+    archive = tmp_path.resolve() / "oversized-source.tar"
+    pin = _archive(root, archive)
+    with pytest.raises(source.DevvalSourceCheckpointError, match="checkpoint_invalid"):
+        source.verify_source_checkpoint(root, archive, pin)
+
+
 def test_freeze_writes_original_campaign_once_without_database(
     monkeypatch, tmp_path, capsys
 ):
