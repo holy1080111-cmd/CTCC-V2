@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import subprocess
 import sys
 from dataclasses import asdict
@@ -40,7 +41,14 @@ async def seed_stopped_retained_owner55_v2(owner):
 
 
 async def run_actual_owner55_cli_v2(
-    tmp_path, pins, *, owner_dsn_file, ca_file, source_archive_file, role_urls
+    tmp_path,
+    pins,
+    *,
+    owner_dsn_file,
+    ca_file,
+    source_archive_file,
+    role_urls,
+    fixed_trace=None,
 ):
     """A fresh CLI with actual reviewed source/private files and configured3 TLS DSNs.
 
@@ -89,6 +97,8 @@ async def run_actual_owner55_cli_v2(
         "--source-archive-file",
         str(source_archive_file),
     ]
+    if fixed_trace is not None:
+        command = [sys.executable, "-B", "-c", _FIXED_TRACE_SOURCE, *command[3:]]
     completed = await asyncio.to_thread(
         subprocess.run,
         command,
@@ -105,4 +115,30 @@ async def run_actual_owner55_cli_v2(
         receipt = json.loads(completed.stdout.strip())
     except (ValueError, TypeError):
         raise AssertionError("isolated_owner55_cli_missing_fixed_json") from None
+    if fixed_trace is not None:
+        lines = [
+            line.removeprefix("CTCC_NONSUPER_FIXED_TRACE ")
+            for line in completed.stderr.splitlines()
+            if line.startswith("CTCC_NONSUPER_FIXED_TRACE ")
+        ]
+        assert len(lines) == 1 and len(lines[0]) <= 40000
+        decoded = json.loads(lines[0])
+        assert type(decoded) is list and 0 < len(decoded) <= 128
+        for record in decoded:
+            assert type(record) is list and len(record) == 5
+            event, file, phase, number, kind = record
+            assert event in ("entered", "raised")
+            assert re.fullmatch(r"(?:scripts|app/core|app/domain)/[a-z0-9_]+\.py", file)
+            assert re.fullmatch(r"[A-Za-z0-9_<>]{1,90}", phase)
+            assert type(number) is int and 0 < number <= 10000
+            assert (
+                kind is None
+                and event == "entered"
+                or event == "raised"
+                and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,79}", kind)
+            )
+        fixed_trace.extend(decoded)
     return completed.returncode, receipt
+
+
+_FIXED_TRACE_SOURCE = '\nimport json\nimport os\nimport re\nimport runpy\nimport sys\n\nROOT = os.getcwd() + os.sep\nMARKER = "CTCC_NONSUPER_FIXED_TRACE "\nMODULE = "scripts.native_owner_upgrade_0056_v1"\nFILES = frozenset({\n    "scripts/native_owner_upgrade_0056_v1.py",\n    "scripts/native_owner_granted_catalog_v1.py",\n    "scripts/native_owner_route_preflight_0056_v1.py",\n    "scripts/native_owner_upgrade_0057_v1.py",\n    "scripts/native_owner_retained_rows_v2.py",\n    "scripts/current_contract_source_scopes_v1.py",\n    "scripts/current0056_fitted_delta_catalog_v1.py",\n    "app/core/native_role_identity_0056_v2.py",\n    "app/core/native_role_preflight_v1.py",\n    "app/core/native_role_witness_0056_v1.py",\n    "app/domain/collector_current_0055_catalog_v1.py",\n    "app/domain/collector_current_0056_inherited_catalog_v1.py",\n})\nPHASES = frozenset({\n    "upgrade_owner_0055_to_0056_v1", "_load_pins_v2",\n    "_require_positive_private_file_v2", "_prepared", "_verify_reviewed_archive",\n    "_configured_resources_v2", "preflight_owner_route_0056_v1",\n    "_checked_preflight", "_role_observation_v2", "_readonly_inventory_v2",\n    "_granted_maintainer_oid", "_catalog_v2", "observe_granted_owner_structure",\n    "_commit_once", "_upgrade_exact_0055", "_preserved_v2", "_independent_readback",\n})\nignored = {"StopIteration", "StopAsyncIteration", "GeneratorExit"}\nrecords, seen = [], set()\n\ndef trace(frame, event, argument):\n    file = frame.f_code.co_filename\n    if not file.startswith(ROOT):\n        return None\n    name = file.removeprefix(ROOT).replace(os.sep, "/")\n    if name not in FILES:\n        return None\n    phase = frame.f_code.co_name\n    if event == "call" and phase in PHASES:\n        item = ("entered", name, phase, frame.f_code.co_firstlineno, None)\n    elif event == "exception":\n        kind = argument[0].__name__\n        if kind in ignored or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,79}", kind) is None:\n            return trace\n        item = ("raised", name, phase, frame.f_lineno, kind)\n    else:\n        return trace\n    if item not in seen and len(records) < 128:\n        seen.add(item)\n        records.append(item)\n    return trace\n\ntry:\n    sys.argv = [MODULE, *sys.argv[1:]]\n    sys.settrace(trace)\n    runpy.run_module(MODULE, run_name="__main__", alter_sys=True)\nfinally:\n    sys.settrace(None)\n    print(MARKER + json.dumps(records, separators=(",", ":")), file=sys.stderr, flush=True)\n'

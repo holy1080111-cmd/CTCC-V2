@@ -336,6 +336,74 @@ async def test_actual0056_non_superuser_owner_upgrades_0055_once_with_fresh_read
     assert source["manifest_sha256"] == os.environ.get(
         "CTCC_DEVVAL_CUSTODY_TEST_SOURCE_MANIFEST_SHA256"
     )
+    await _run_actual_granted_nonsuper_owner_cli_lab(
+        tmp_path,
+        url,
+        tls,
+        identity,
+        files,
+        expected_manifest_sha256=source["manifest_sha256"],
+    )
+
+
+async def test_actual0056_granted_nonsuper_cli_stage_first_refusal(
+    tmp_path, record_property
+):
+    """Actual TLS CLI with isolated scope and original data/fault/readonly assertions."""
+    from types import SimpleNamespace
+
+    from scripts import run_retained0017_reference_probe_v1 as admitted_probe
+
+    url, tls = _isolated_tls_database_config()
+    identity, files, raw_map = fitted_measurement._read_hermetic_inputs()
+    scope = admitted_probe._exact_cases_probe(
+        SimpleNamespace(nonsuper_cli_stage_diagnostic=True)
+    )
+    assert scope is not None and len(scope.nodes) == 1
+    assert identity["schema"] == identity["runner_contract"] == scope.schema
+    assert identity["validation_scope"] == scope.scope
+    assert identity["suite"] == scope.suite
+    assert identity["source_contract_head"] == "0058"
+    assert identity["database_target"] == "0055_and_0056"
+    assert identity["build_context"] == "admitted_archive_bytes_v1"
+    assert identity["hermetic_regression"] == "NOT_RUN"
+    assert identity["full_suite_acceptance"] is identity["trading_acceptance"] is False
+    assert identity["host_env"] is identity["host_credentials"] is False
+    assert type(identity["external_order_writes"]) is int
+    assert identity["external_order_writes"] == 0
+    assert fitted_measurement._canonical(files) == raw_map
+    assert sha(raw_map) == identity["source_files_sha256"]
+    assert files["MANIFEST.sha256"]["sha256"] == identity["manifest_sha256"]
+    assert files[admitted_probe.RUNNER]["sha256"] == identity["runner_sha256"]
+    assert (
+        sha((_SOURCE_ROOT / "MANIFEST.sha256").read_bytes())
+        == identity["manifest_sha256"]
+    )
+    assert (
+        sha((_SOURCE_ROOT / admitted_probe.RUNNER).read_bytes())
+        == identity["runner_sha256"]
+    )
+    await _run_actual_granted_nonsuper_owner_cli_lab(
+        tmp_path,
+        url,
+        tls,
+        identity,
+        files,
+        expected_manifest_sha256=identity["manifest_sha256"],
+        diagnostic_record=record_property,
+    )
+
+
+async def _run_actual_granted_nonsuper_owner_cli_lab(
+    tmp_path,
+    url,
+    tls,
+    identity,
+    files,
+    *,
+    expected_manifest_sha256,
+    diagnostic_record=None,
+):
     archive, archive_pin = _reconstruct_owned_lab_archive(tmp_path, identity, files)
     ca_file = Path(os.environ["CTCC_DEVVAL_CUSTODY_TEST_TLS_CA_FILE"])
     ca_sha = os.environ["CTCC_DEVVAL_CUSTODY_TEST_TLS_CA_SHA256"]
@@ -484,7 +552,7 @@ async def test_actual0056_non_superuser_owner_upgrades_0055_once_with_fresh_read
         assert row[2:5] == (False, False, False)
         assert row[6:] == (login, login)
         route = owner_route.OwnerRoutePinsV1(
-            source_manifest_sha256=source["manifest_sha256"],
+            source_manifest_sha256=expected_manifest_sha256,
             ca_sha256=ca_sha,
             cluster_system_identifier_sha256=sha(row[5].encode("ascii")),
             host=url.host,
@@ -534,6 +602,7 @@ async def test_actual0056_non_superuser_owner_upgrades_0055_once_with_fresh_read
                 )
                 == "0055"
             )
+        fixed_trace = [] if diagnostic_record is not None else None
         code, result = await run_actual_owner55_cli_v2(
             tmp_path,
             pins,
@@ -541,7 +610,39 @@ async def test_actual0056_non_superuser_owner_upgrades_0055_once_with_fresh_read
             ca_file=ca_file,
             source_archive_file=archive,
             role_urls=role_urls,
+            fixed_trace=fixed_trace,
         )
+        if diagnostic_record is not None:
+            allowed = {
+                ("REFUSED", "native_owner_0056_upgrade_refused"),
+                ("INCOMPLETE", "native_owner_0056_commit_outcome_unknown"),
+                ("INCOMPLETE", "native_owner_0056_committed_readback_required"),
+            }
+            state = (result.get("status"), result.get("code"))
+            diagnostic_record(
+                "nonsuper_cli_fixed_source_trace",
+                json.dumps(
+                    {
+                        "receipt": list(state) if state in allowed else ["OTHER", None],
+                        "exit_code": code,
+                        "trace": fixed_trace,
+                    },
+                    separators=(",", ":"),
+                ),
+            )
+            assert (code, state) == (
+                1,
+                ("REFUSED", "native_owner_0056_upgrade_refused"),
+            )
+            async with owner.connect() as connection:
+                assert (
+                    await connection.scalar(
+                        text("SELECT version_num FROM public.alembic_version")
+                    )
+                    == "0055"
+                )
+            diagnostic_record("original_owner_marker_after_refusal", "0055")
+            return
         assert code == 0, result
         assert result["status"] == "PASS"
         assert result["database_head_before"] == "0055"
