@@ -1,0 +1,57 @@
+name: Source58 actual non-superuser owner CLI validation
+
+on:
+  push:
+    branches: [work/db0058-nonsuper-owner-cli-validation]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  actual-nonsuper-owner-cli:
+    if: github.ref == 'refs/heads/work/db0058-nonsuper-owner-cli-validation'
+    name: Actual non-superuser owner CLI
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact validation topic
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify the exact candidate and run the actual non-superuser owner CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          subject=a06b04e9cd86399749070c00675b29b0d5398917
+          commit=$(git rev-parse HEAD)
+          test "$commit" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD^)" = "$subject"
+          test "$(git rev-parse "$subject^{tree}")" = '3fa1ecd93825f3a32a1939fc401f39d113eff1a4'
+          test "$(git show "$subject:MANIFEST.sha256" | sha256sum | cut -d ' ' -f 1)" = '227bb0f1e2d730826bf42d2a12b74b20f709f0e11fc14eecaf53dadadebc2c94'
+          diff -u <(printf '%s\n' \
+            .github/workflows/db0058-nonsuper-owner-cli-validation.yml MANIFEST.sha256 \
+            scripts/run_retained0017_reference_probe_v1.py tests/integration/test_gate3_fitted_candidate_custody_pg.py) \
+            <(git diff --name-only "$subject" "$commit")
+          python3 scripts/manifest.py --check
+          tree=$(git rev-parse 'HEAD^{tree}')
+          archive="$RUNNER_TEMP/ctcc-source.tar"
+          git -c core.autocrlf=false -c core.eol=lf archive --format=tar --output="$archive" "$commit"
+          digest=$(sha256sum "$archive" | cut -d ' ' -f 1)
+          options=(--archive "$archive" --archive-sha256 "$digest" --commit "$commit" --tree "$tree"
+            --nonsuper-owner-cli --output "$RUNNER_TEMP/ctcc-nonsuper-owner-cli")
+          python3 -m scripts.run_retained0017_reference_probe_v1 "${options[@]}"
+          python3 -m scripts.run_retained0017_reference_probe_v1 "${options[@]}" --verify-only
+      - name: Preserve exact source, case results and disposable cleanup
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ctcc-nonsuper-owner-cli-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/ctcc-source.tar
+            ${{ runner.temp }}/ctcc-nonsuper-owner-cli/*.json
+            ${{ runner.temp }}/ctcc-nonsuper-owner-cli/*.log
+            ${{ runner.temp }}/ctcc-nonsuper-owner-cli/test-results/*.xml
+          if-no-files-found: error
+          retention-days: 30
