@@ -20,6 +20,7 @@ def _foreign(*_args, **_kwargs):
         "_bank_rows_v1",
         "_prepare_bank_prefix_v1",
         "_complete_prepared_bank_sha_v1",
+        "_check_retained_source_bank_v1",
     ),
 )
 @pytest.mark.parametrize("change", ("binding", "same_function_code"))

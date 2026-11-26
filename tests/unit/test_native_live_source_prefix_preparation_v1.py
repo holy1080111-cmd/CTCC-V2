@@ -15,6 +15,7 @@ from app.domain.source_primitives import (
     ClockStamp,
     PublicReceiptError,
     canonical,
+    decode,
     sha,
 )
 from app.okx_live import trusted_source_bridge_v1 as subject
@@ -336,3 +337,140 @@ async def test_producer_prepares_before_final_get_and_unchanged_replay_rejects_l
         < names.index("final_get_returned")
     )
     assert names[-1] == "prepare"  # Only the new current suffix is prepared afterwards.
+
+
+async def _two_declared_refreshes(fixture, root):
+    owners = [
+        await subject._capture_with_original_lease_v1(
+            fixture.plan(), root, fixture.settings, fixture.lease
+        )
+    ]
+    for invocation in ("b" * 32, "c" * 32):
+        owners.append(
+            await subject._capture_incremental_with_original_lease_v1(
+                owners[-1], fixture.plan(invocation)
+            )
+        )
+    return tuple(owners)
+
+
+def _retained_bank(state):
+    return (
+        *state.get("retained_history_pages", ()),
+        *state["history_pages"],
+        *state["baseline_current_pages"],
+        *state["current_pages"],
+    )
+
+
+@pytest.mark.asyncio
+async def test_original_recursive_replay_reuses_only_exact_body_data_inside_one_call(
+    monkeypatch, tmp_path
+):
+    fixture = _DeclaredCaptureIngress(monkeypatch)
+    owners = await _two_declared_refreshes(fixture, tmp_path)
+    states = tuple(subject._SOURCES[owner] for owner in owners)
+    banks = tuple(_retained_bank(state) for state in states)
+    expected_body_count = sum(map(len, banks))
+    assert tuple(map(len, banks)) == (60, 126, 192)
+    assert all(
+        _legacy_digest(bank) == state["raw_bank_sha256"]
+        for bank, state in zip(banks, states, strict=True)
+    )
+    # Multiple independent history/current reads retain distinct metadata
+    # around two repeated raw bodies in this declared flat account.
+    bodies = {page.raw_body for bank in banks for page in bank}
+    assert len(bodies) == 2
+    parsed = []
+    raw_hashes = []
+    headers = []
+    original_headers = subject._header_digest
+
+    def read(data, *, maximum):
+        if maximum == 8 * 1024 * 1024:
+            parsed.append(data)
+        return decode(data, maximum=maximum)
+
+    def hash_bytes(data):
+        if data in bodies:
+            raw_hashes.append(data)
+        return sha(data)
+
+    def hash_headers(value):
+        headers.append(value)
+        return original_headers(value)
+
+    monkeypatch.setattr(subject, "decode", read)
+    monkeypatch.setattr(subject, "sha", hash_bytes)
+    monkeypatch.setattr(subject, "_header_digest", hash_headers)
+    # The default digest builder remains a wholly independent full replay.
+    assert subject._bank_sha(banks[-1]) == states[-1]["raw_bank_sha256"]
+    assert len(parsed) == len(banks[-1])
+    parsed.clear()
+    raw_hashes.clear()
+    headers.clear()
+    for _ in range(2):
+        view = subject._replay_owned_live_source_v1(owners[-1], key=subject._SOURCE_KEY)
+        assert view["raw_bank_sha256"] == states[-1]["raw_bank_sha256"]
+        assert set(parsed) == bodies and len(parsed) == 2
+        assert len(raw_hashes) == expected_body_count + len(parsed)
+        assert len(headers) == expected_body_count
+        parsed.clear()
+        raw_hashes.clear()
+        headers.clear()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "change",
+    ("ancestor_stamp", "ancestor_canonical", "new_consistent_raw", "ancestor_resealed"),
+)
+async def test_retained_replay_refuses_changed_source_between_calls(
+    monkeypatch, tmp_path, change
+):
+    fixture = _DeclaredCaptureIngress(monkeypatch)
+    owners = await _two_declared_refreshes(fixture, tmp_path)
+    subject._replay_owned_live_source_v1(owners[-1], key=subject._SOURCE_KEY)
+    state = subject._SOURCES[
+        owners[-1] if change == "new_consistent_raw" else owners[0]
+    ]
+    first, *rest = state["history_pages"]
+    if change == "ancestor_stamp":
+        altered = replace(first, stamps=(fixture.clock(), *first.stamps[1:]))
+    elif change == "ancestor_canonical":
+        altered = replace(first, canonical_sha256="0" * 64)
+    else:
+        raw = canonical({"code": "0", "data": [{"changed": True}]})
+        digest = sha(raw)
+        altered = replace(
+            first, raw_body=raw, raw_sha256=digest, canonical_sha256=digest
+        )
+    state["history_pages"] = (altered, *rest)
+    if change == "ancestor_resealed":
+        # The ancestor can match its own updated receipt and still disagree
+        # with its independently retained child's original prefix witness.
+        digest = subject._bank_sha(_retained_bank(state))
+        receipt = decode(state["receipt_json"], maximum=65536)
+        receipt["raw_bank_sha256"] = digest
+        state["raw_bank_sha256"] = digest
+        state["receipt_json"] = canonical(receipt)
+        state["source_revision_sha256"] = sha(state["receipt_json"])
+    with pytest.raises(subject.LiveSourceBridgeError):
+        subject._replay_owned_live_source_v1(owners[-1], key=subject._SOURCE_KEY)
+
+
+@pytest.mark.asyncio
+async def test_retained_replay_rechecks_current_clock_after_body_work(
+    monkeypatch, tmp_path
+):
+    fixture = _DeclaredCaptureIngress(monkeypatch)
+    *_, newest = await _two_declared_refreshes(fixture, tmp_path)
+
+    def read(data, *, maximum):
+        if maximum == 8 * 1024 * 1024:
+            fixture.tick += 5001
+        return decode(data, maximum=maximum)
+
+    monkeypatch.setattr(subject, "decode", read)
+    with pytest.raises(subject.LiveSourceBridgeError):
+        subject._replay_owned_live_source_v1(newest, key=subject._SOURCE_KEY)

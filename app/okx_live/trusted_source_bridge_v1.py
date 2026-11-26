@@ -308,7 +308,7 @@ def _read_original_page_bank(root, attempt_id, receipt, *, selector=None):
     return tuple(pages)
 
 
-def _bank_rows_v1(pages):
+def _bank_rows_v1(pages, *, canonical_bodies=None, remember=False):
     _need(
         type(pages) is tuple
         and 1 <= len(pages) <= 1024
@@ -316,16 +316,21 @@ def _bank_rows_v1(pages):
     )
     rows = []
     for page in pages:
+        _need(type(page) is LiveSourcePageDataV1)
+        raw = page.raw_body
         _need(
-            type(page) is LiveSourcePageDataV1
-            and type(page.raw_body) is bytes
+            type(raw) is bytes
             and type(page.selector)
             in (LiveAccountRawPageSelectorV1, LiveAccountHistorySelectorV1)
-            and sha(page.raw_body) == page.raw_sha256
+            and sha(raw) == page.raw_sha256
             and _header_digest(page.raw_headers) == page.headers_sha256
-            and sha(canonical(decode(page.raw_body, maximum=8 * 1024 * 1024)))
-            == page.canonical_sha256
         )
+        digest = None if canonical_bodies is None else canonical_bodies.get(raw)
+        if digest is None:
+            digest = sha(canonical(decode(raw, maximum=8 * 1024 * 1024)))
+            if remember:
+                canonical_bodies[raw] = digest
+        _need(digest == page.canonical_sha256)
         rows.append(
             [
                 asdict(page.selector),
@@ -389,6 +394,15 @@ def _retained_source_identity_v1(owner, *, depth=0):
     This private operation is only for a same-task, same-lease incremental
     capture. It deliberately returns no account view or execution capability.
     """
+    _check_retained_source_bank_v1(
+        owner, depth=depth, canonical_bodies={}, remember=True
+    )
+
+
+def _check_retained_source_bank_v1(owner, *, depth, canonical_bodies, remember):
+    # Only the newest bank can add exact immutable bytes. Its existing
+    # page/byte limits also bound the local map. Ancestors independently verify
+    # every occurrence, and an unmatched body is decoded without being stored.
     _need(type(owner) is OwnedLiveSourceV1 and type(depth) is int and 0 <= depth <= 2)
     state = _SOURCES.get(owner)
     _need(type(state) is dict and state["task"] is asyncio.current_task())
@@ -404,17 +418,17 @@ def _retained_source_identity_v1(owner, *, depth=0):
     )
     retained = state.get("retained_history_pages", ())
     _need(type(retained) is tuple)
-    _need(
-        _bank_sha(
-            (
-                *retained,
-                *state["history_pages"],
-                *state["baseline_current_pages"],
-                *state["current_pages"],
-            )
-        )
-        == state["raw_bank_sha256"]
+    rows = _bank_rows_v1(
+        (
+            *retained,
+            *state["history_pages"],
+            *state["baseline_current_pages"],
+            *state["current_pages"],
+        ),
+        canonical_bodies=canonical_bodies,
+        remember=remember,
     )
+    _need(sha(canonical(rows)) == state["raw_bank_sha256"])
     _need(
         state["history_selectors"] == tuple(item[1] for item in state["history"])
         and receipt["history_custody_sha256"] == [item[2] for item in state["history"]]
@@ -422,7 +436,9 @@ def _retained_source_identity_v1(owner, *, depth=0):
     )
     previous = state.get("previous_source_owner")
     if previous is not None:
-        _retained_source_identity_v1(previous, depth=depth + 1)
+        _check_retained_source_bank_v1(
+            previous, depth=depth + 1, canonical_bodies=canonical_bodies, remember=False
+        )
         old = _SOURCES[previous]
         _need(
             old["lease"] is state["lease"]
