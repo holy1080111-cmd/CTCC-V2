@@ -54,7 +54,7 @@ def _actual_owner_cases():
 
 def test_actual_owner_cases_all_run_once_on_source58_component3():
     expected = _actual_owner_cases()
-    assert len(expected) == len(set(expected)) == len(full.CANONICAL_OWNER_CASES) == 31
+    assert len(expected) == len(set(expected)) == len(full.CANONICAL_OWNER_CASES) == 32
     assert set(full.CANONICAL_OWNER_CASES) == set(expected)
     assert len(NEW_CASES) == 6 and set(NEW_CASES) <= set(expected)
     assert set(expected).isdisjoint(full.SUCCESSOR_CASES)
@@ -147,7 +147,7 @@ def test_source58_preserves_the_existing_genuine_cli_once_on_historical_owner1()
         for index in range(5)
         if full.collection.selected_for("postgres", index, node)
     ] == [1]
-    assert len(full.OWNER0056_V2_CASES) == len(set(full.OWNER0056_V2_CASES)) == 9
+    assert len(full.OWNER0056_V2_CASES) == len(set(full.OWNER0056_V2_CASES)) == 10
     assert all(case not in full.base.REQUIRED_CASES for case in full.OWNER0056_V2_CASES)
 
 

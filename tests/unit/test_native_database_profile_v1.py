@@ -85,6 +85,7 @@ def test_context_checks_physical57_without_relabeling_input(read_only):
     kwargs = {
         "role": role,
         "read_only": read_only,
+        "isolation": "read committed",
         "parents": (),
         "schema_name": schema,
     }

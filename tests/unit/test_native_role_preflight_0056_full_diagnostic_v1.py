@@ -108,6 +108,7 @@ def test_inherited_context_preserves_both_transaction_contracts(read_only):
     kwargs = {
         "role": role,
         "read_only": read_only,
+        "isolation": "read committed",
         "parents": frozenset(),
         "schema_name": "fixed",
     }

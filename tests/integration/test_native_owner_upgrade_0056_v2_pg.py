@@ -21,6 +21,7 @@ from app.domain import collector_current_0055_catalog_v1 as current55
 from app.domain import collector_current_0056_inherited_catalog_v1 as current56
 from scripts import current_contract_source_scopes_v1 as scopes
 from scripts import native_owner_upgrade_0056_v1 as subject
+from scripts import retained0056_unscoped_fitted_observation_v1 as unscoped
 from tests.integration import test_native_owner_upgrade_0057_pg as owner57_lab
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
@@ -66,6 +67,53 @@ async def _assert_exact_catalog_isolation(owner, pins, catalog_sql, default_obse
             assert document[section]["server"]["read_only"] == "on"
         with pytest.raises(current55.Current0055CatalogError):
             default_observer(document)
+
+
+async def test_actual0056_unscoped_fitted_catalog_rejects_permissive_acl(
+    _actual56_owner_profile_lab,
+):
+    owner, _selected, pins, _script = _actual56_owner_profile_lab
+
+    async def observe():
+        async with subject._marker_checked_v2(owner, pins) as connection:
+            return await unscoped.observe_unscoped_fitted_catalog_0056_v1(
+                connection,
+                source=subject._SOURCE,
+                owner=pins.route.owner,
+                owner_oid=pins.route.owner_oid,
+            )
+
+    observed = await observe()
+    assert observed.execution_authority is False
+    assert await observe() == observed
+    reader = f'"{pins.role_names[2]}"'
+    trials = (
+        (
+            "GRANT EXECUTE ON FUNCTION public.gate3_fitted_binding_read(text) TO PUBLIC",
+            "REVOKE EXECUTE ON FUNCTION public.gate3_fitted_binding_read(text) FROM PUBLIC",
+            "unscoped_fitted_direct_acl",
+        ),
+        (
+            f"GRANT SELECT(seal_sha256) ON public.gate3_fitted_candidate_bindings TO {reader}",
+            f"REVOKE SELECT(seal_sha256) ON public.gate3_fitted_candidate_bindings FROM {reader}",
+            "unscoped_fitted_effective_acl_or_storage",
+        ),
+        (
+            f"GRANT pg_read_all_data TO {reader} WITH INHERIT FALSE",
+            f"REVOKE pg_read_all_data FROM {reader}",
+            "unscoped_fitted_effective_acl_or_storage",
+        ),
+    )
+    for grant, revoke, expected in trials:
+        async with owner.begin() as connection:
+            await connection.exec_driver_sql(grant)
+        try:
+            with pytest.raises(subject.fitted56.CatalogRefusal, match=expected):
+                await observe()
+        finally:
+            async with owner.begin() as connection:
+                await connection.exec_driver_sql(revoke)
+        assert await observe() == observed
 
 
 async def test_actual0055_v2_rehearsal_rollback_then_commit_preserves_all_rows_and42_grants(

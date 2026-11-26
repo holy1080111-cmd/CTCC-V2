@@ -84,6 +84,7 @@ def verify_0056_pair(
             left,
             role=raw["role"],
             read_only="off",
+            isolation="read committed",
             parents=parents,
             schema_name=schema_name,
             **profiles.arguments(profile),

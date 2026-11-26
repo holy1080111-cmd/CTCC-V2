@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 
 from scripts import current0056_fitted_delta_catalog_v1 as catalog
+from scripts import retained0056_unscoped_fitted_observation_v1 as unscoped
 
 OWNER = "ctcc"
 DEMO = ("ctcc_native_writer", "ctcc_native_custody", "ctcc_native_frame")
@@ -170,6 +171,66 @@ def synthetic_catalog() -> dict:
         "role_edges": [],
         "original_write_access": [],
     }
+
+
+def test_unscoped_fitted_observation_requires_exact_structure_and_no_effective_acl():
+    document = synthetic_catalog()
+    document["function_grants"] = []
+    for key in ("roles", "role_create"):
+        document[key] = [row for row in document[key] if row[0] == OWNER]
+    for row in document["tables"]:
+        row["columns"] = [["example", "text", True, None, "", "", None]]
+    access = {
+        "owner_bound": True,
+        "relations": 3,
+        "routines": 20,
+        "owned_heap_relations": True,
+        "owned_functions": True,
+        "no_extra_user_triggers": True,
+        "native_fk_triggers": 12,
+        "no_alternate_table_privilege": True,
+        "no_alternate_execute": True,
+    }
+    observed = unscoped._inspect_unscoped_fitted_catalog_v1(
+        document, access, owner=OWNER
+    )
+    assert observed.execution_authority is False
+    unscoped.require_reviewed_unscoped_fitted_structure_v1(
+        observed, reviewed_structural_sha256=observed.structural_sha256
+    )
+    changed = copy.deepcopy(document)
+    changed["functions"][0]["definition_sha256"] = "9" * 64
+    changed = unscoped._inspect_unscoped_fitted_catalog_v1(changed, access, owner=OWNER)
+    with unittest.TestCase().assertRaisesRegex(
+        catalog.CatalogRefusal, "unscoped_fitted_reviewed_structure_changed"
+    ):
+        unscoped.require_reviewed_unscoped_fitted_structure_v1(
+            changed, reviewed_structural_sha256=observed.structural_sha256
+        )
+    for field, bad in (
+        ("owner_bound", False),
+        ("no_alternate_table_privilege", False),
+        ("no_alternate_execute", False),
+        ("native_fk_triggers", 11),
+    ):
+        with unittest.TestCase().assertRaisesRegex(
+            catalog.CatalogRefusal, "unscoped_fitted_effective_acl_or_storage"
+        ):
+            unscoped._inspect_unscoped_fitted_catalog_v1(
+                document, {**access, field: bad}, owner=OWNER
+            )
+    for field in ("function_grants", "table_grants"):
+        with unittest.TestCase().assertRaisesRegex(
+            catalog.CatalogRefusal, "unscoped_fitted_direct_acl"
+        ):
+            unscoped._inspect_unscoped_fitted_catalog_v1(
+                {**document, field: [["PUBLIC"]]}, access, owner=OWNER
+            )
+    document["tables"][0]["columns"][0][-1] = ["=r/ctcc"]
+    with unittest.TestCase().assertRaisesRegex(
+        catalog.CatalogRefusal, "unscoped_fitted_owner_or_column_acl"
+    ):
+        unscoped._inspect_unscoped_fitted_catalog_v1(document, access, owner=OWNER)
 
 
 class FittedDeltaInertTests(unittest.TestCase):

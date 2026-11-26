@@ -167,9 +167,10 @@ def _source(value):
     plan = decode(files.read("plan.json", journal.MAX_RAW), journal.MAX_RAW)
     staged = plan["schema_version"] == journal.GLOBAL_STAGED_PLAN
     _need(staged or plan["schema_version"] == journal.GLOBAL_INITIAL_PLAN)
+    _need(summary["disposition"] == "captured")
+    packet_json = packet.packet_json
     _need(
-        summary["disposition"] == "captured"
-        and packet.packet_json == value.packet.packet_json
+        packet_json == value.packet.packet_json
         and packet.policy_sha256 == public._WIRE_POLICY_SHA256
     )
     _need(packet.instrument_id == value.instrument_id)
@@ -184,7 +185,7 @@ def _source(value):
         and receipt["stage"] == value.stage
         and receipt["candidate_sha256"] == value.candidate_sha256
         and receipt["publication_receipt_sha256"] == value.publication_receipt_sha256
-        and receipt["packet_sha256"] == packet.bundle_sha256
+        and receipt["packet_sha256"] == sha(packet_json)
         and receipt["plan_sha256"] == value.plan_sha256
         and receipt["journal_sha256"] == value.journal_sha256
         and receipt["raw_inventory_sha256"] == value.raw_inventory_sha256

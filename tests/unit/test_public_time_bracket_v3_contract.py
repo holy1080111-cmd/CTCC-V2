@@ -722,11 +722,25 @@ async def test_v3_post_time_ignores_mutable_state_phase_injection_before_io(
 
 
 @pytest.mark.asyncio
-async def test_v3_valid_post_phase_reaches_client_once_without_network(monkeypatch):
+@pytest.mark.parametrize("change_before_client", (False, True))
+async def test_v3_valid_post_phase_reaches_client_once_without_network(
+    monkeypatch, change_before_client
+):
     owner = runtime._Source(runtime._ISSUER)
     loop = asyncio.get_running_loop()
     attempt = object()
-    packet = SimpleNamespace(packet_json=b"synthetic-packet")
+    wire = b"synthetic-packet"
+    encoded = []
+
+    class DeclaredPacket:
+        value = wire
+
+        @property
+        def packet_json(self):
+            encoded.append(self.value)
+            return self.value
+
+    packet = DeclaredPacket()
     validated_event = {"kind": "time_validated", "metadata": {"id": 0}}
     prefix_head = "c" * 64
     runtime._SOURCES[owner] = {
@@ -748,13 +762,15 @@ async def test_v3_valid_post_phase_reaches_client_once_without_network(monkeypat
         pre_validation_head=sha(canonical(validated_event)),
         market_prefix_head=prefix_head,
         market_packet=packet,
-        market_packet_sha256=sha(packet.packet_json),
+        market_packet_sha256=sha(wire),
     )
     calls = []
     original_new_client = runtime._new_owned_client
 
     def checked_client(source, role):
         calls.append(("client", role))
+        if change_before_client:
+            packet.value = b"changed-between-checkpoints"
         return original_new_client(source, role)
 
     def checked_binding(_state, _packet, *, expected_roles):
@@ -773,15 +789,12 @@ async def test_v3_valid_post_phase_reaches_client_once_without_network(monkeypat
         assert pending_cancel is False
         await client.aclose()
 
+    def replay_prefix(_attempt, *, market_packet):
+        assert market_packet == wire
+        return prefix_head, [validated_event]
+
     monkeypatch.setattr(runtime, "_fence_v2_demo_transport", lambda _state: None)
-    monkeypatch.setattr(
-        journal,
-        "_replay_open_v3_prefix",
-        lambda _attempt, *, market_packet=None: (
-            prefix_head,
-            [validated_event],
-        ),
-    )
+    monkeypatch.setattr(journal, "_replay_open_v3_prefix", replay_prefix)
     monkeypatch.setattr(runtime, "_check_packet_binding_v2", checked_binding)
     monkeypatch.setattr(runtime, "_new_owned_client", checked_client)
     monkeypatch.setattr(
@@ -790,10 +803,19 @@ async def test_v3_valid_post_phase_reaches_client_once_without_network(monkeypat
     monkeypatch.setattr(runtime, "_fetch_http", no_network)
     monkeypatch.setattr(runtime.public, "_close_client", close_client)
     try:
-        with pytest.raises(
-            runtime.PublicSourceRuntimeError, match="synthetic_no_network"
-        ):
+        refusal = (
+            "public_v3_time_phase_invalid"
+            if change_before_client
+            else "synthetic_no_network"
+        )
+        with pytest.raises(runtime.PublicSourceRuntimeError, match=refusal):
             await runtime._fetch_owned_public_time_v3(owner, "time_post")
+        if change_before_client:
+            assert calls == [("bind", None), ("client", "time_post")]
+            assert encoded == [wire, b"changed-between-checkpoints"]
+            assert not runtime._SOURCES[owner]["clients"]
+            return
+        assert encoded == [wire, wire]
         assert calls == [
             ("bind", None),
             ("client", "time_post"),

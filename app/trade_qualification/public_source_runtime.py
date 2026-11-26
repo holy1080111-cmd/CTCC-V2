@@ -874,9 +874,11 @@ def _complete_owned_public_market_v3(source, packet, *, _owner):
         packet,
         expected_roles=("quote", "candles", "market_aux", "time_pre"),
     )
-    head, events = _v3_time_prefix(
-        source, phase, market_packet=canonical_packet.packet_json
-    )
+    # Bind the SHA to the same immutable bytes submitted to the prefix replay.
+    # Each subsequent time-post gate independently serializes the actual model.
+    packet_json = canonical_packet.packet_json
+    packet_sha256 = sha(packet_json)
+    head, events = _v3_time_prefix(source, phase, market_packet=packet_json)
     if len(
         [event for event in events if event["kind"].startswith("ws_")]
     ) != 7 or not any(
@@ -890,7 +892,7 @@ def _complete_owned_public_market_v3(source, packet, *, _owner):
         pre_validation_head=phase.pre_validation_head,
         market_prefix_head=head,
         market_packet=canonical_packet,
-        market_packet_sha256=sha(canonical_packet.packet_json),
+        market_packet_sha256=packet_sha256,
     )
     return canonical_packet
 
@@ -905,16 +907,12 @@ def _require_v3_pre_market_phase(source):
 def _require_v3_post_time_phase(source):
     state = _state(source)
     phase = _V3_TIME_PHASES.get(source)
-    if (
-        phase is None
-        or phase.market_prefix_head is None
-        or phase.market_packet is None
-        or sha(phase.market_packet.packet_json) != phase.market_packet_sha256
-    ):
+    if phase is None or phase.market_prefix_head is None or phase.market_packet is None:
         raise PublicSourceRuntimeError("public_v3_time_phase_invalid")
-    head, _ = _v3_time_prefix(
-        source, phase, market_packet=phase.market_packet.packet_json
-    )
+    packet_json = phase.market_packet.packet_json
+    if sha(packet_json) != phase.market_packet_sha256:
+        raise PublicSourceRuntimeError("public_v3_time_phase_invalid")
+    head, _ = _v3_time_prefix(source, phase, market_packet=packet_json)
     if head != phase.market_prefix_head:
         raise PublicSourceRuntimeError("public_v3_time_phase_changed")
     _check_bracket_packet_binding(

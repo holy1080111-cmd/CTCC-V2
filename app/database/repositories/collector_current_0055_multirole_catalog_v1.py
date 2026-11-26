@@ -226,6 +226,7 @@ def _verify_pair(
             left,
             role=raw["role"],
             read_only="off",
+            isolation="read committed",
             parents=parents,
             schema_name=schema_name,
         )

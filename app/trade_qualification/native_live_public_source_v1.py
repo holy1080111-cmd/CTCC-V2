@@ -931,6 +931,7 @@ async def complete_owned_live_post_g12_public_v2(stage, *, key):
     )
     finished = _current(state)
     _project(packet, report_id=params.report_id, at=utc_from_ns(finished["utc_ns"]))
+    packet_sha256 = packet.bundle_sha256
     receipt = canonical(
         {
             "schema_version": "ctcc.native_live.production_public_staged_envelope.v2",
@@ -951,7 +952,7 @@ async def complete_owned_live_post_g12_public_v2(stage, *, key):
             "account_source_revision_sha256": ready.source_revision_sha256,
             "plan_sha256": captured.plan_sha256,
             "journal_sha256": captured.journal_sha256,
-            "packet_sha256": packet.bundle_sha256,
+            "packet_sha256": packet_sha256,
             "raw_inventory_sha256": inventory_pin,
             "raw_file_count": len(files),
             "raw_total_bytes": size,
@@ -983,7 +984,7 @@ async def complete_owned_live_post_g12_public_v2(stage, *, key):
     state.update(
         plan_sha256=captured.plan_sha256,
         journal_sha256=captured.journal_sha256,
-        packet_sha256=packet.bundle_sha256,
+        packet_sha256=packet_sha256,
         inventory_sha256=inventory_pin,
         receipt=receipt,
     )
