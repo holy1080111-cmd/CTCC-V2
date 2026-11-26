@@ -4,17 +4,35 @@ import json
 from dataclasses import replace
 from datetime import timedelta
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 
 from app.domain.analysis import MultiTimeframeAnalysis
 from app.domain.market import MarketSnapshot
+from app.trade_qualification import fixed_original_event_path_v1 as event_path
 from app.trade_qualification.fixed_original_event_path_v1 import (
     evaluate_fixed_original_event_path_v1,
     join_confirmed_original_path_v1,
     verify_fixed_original_event_path_v1,
 )
 from tests.unit.qualification_recheck_fixtures import recheck_source
+
+
+@pytest.mark.parametrize("filename", ["events.py", "continuation.py", "core.py"])
+def test_event_policy_rechecks_each_bound_source_file(monkeypatch, filename):
+    event_path._require_event_policy_v1()
+    read_bytes = Path.read_bytes
+
+    def changed(path):
+        content = read_bytes(path)
+        return content + b"\n" if path.name == filename else content
+
+    monkeypatch.setattr(Path, "read_bytes", changed)
+    with pytest.raises(
+        ValueError, match="^fixed_original_event_policy_source_changed$"
+    ):
+        event_path._require_event_policy_v1()
 
 
 @pytest.fixture(scope="module", params=["long", "short"])

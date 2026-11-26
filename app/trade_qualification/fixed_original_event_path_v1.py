@@ -20,11 +20,17 @@ from app.market.quality.candles import BAR_SECONDS, candle_closed_at
 from app.trade_qualification import continuation, data
 from app.trade_qualification.continuation import ContinuationResult
 
+_EXTRACTOR_SHA256 = "b97ae8976bfde9f54a2cec0ca815f64bee0b9ee8ea155de36147860fcdd56030"
+_CONTINUATION_SHA256 = (
+    "f38aa72ab7740d937229b0637ff400450861ececdd780f948f8c69d727490156"
+)
+_INDICATORS_SHA256 = "74d6774846a392b4b17a4d6aeab032e78eea46f8735465388fa1cc37081ac07e"
 _POLICY = canonical(
     {
         "version": "ctcc.original_base_confirmed_event_path.v1",
-        "extractor_source_sha256": "18361eb3cdc1719276e72d86360c9b4d91e47191c13ab75aecb85233439e6b1d",
-        "continuation_source_sha256": "f38aa72ab7740d937229b0637ff400450861ececdd780f948f8c69d727490156",
+        "extractor_source_sha256": _EXTRACTOR_SHA256,
+        "continuation_source_sha256": _CONTINUATION_SHA256,
+        "indicator_source_sha256": _INDICATORS_SHA256,
         "timeframes": list(continuation.TIMEFRAMES),
         "invalidation": "long_low_lte_or_short_high_gte_original_invalidation",
         "required_interval": "confirmed_and_open_at_or_after_original_setup",
@@ -40,16 +46,11 @@ _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 
 def _require_event_policy_v1():
-    root = Path(__file__).resolve().parent
+    root = Path(__file__).resolve().parents[1]
     for filename, digest in (
-        (
-            "events.py",
-            "18361eb3cdc1719276e72d86360c9b4d91e47191c13ab75aecb85233439e6b1d",
-        ),
-        (
-            "continuation.py",
-            "f38aa72ab7740d937229b0637ff400450861ececdd780f948f8c69d727490156",
-        ),
+        ("trade_qualification/events.py", _EXTRACTOR_SHA256),
+        ("trade_qualification/continuation.py", _CONTINUATION_SHA256),
+        ("indicators/core.py", _INDICATORS_SHA256),
     ):
         if sha((root / filename).read_bytes()) != digest:
             raise ValueError("fixed_original_event_policy_source_changed")
