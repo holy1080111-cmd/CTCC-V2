@@ -205,6 +205,37 @@ custody of pins. Point-in-time predictive eligibility, sealed OOS, Gate 4,
 execution, and Live acceptance remain false. Focused tests use synthetic
 manifests and aggregate outputs; no full historical replay is part of CI.
 
+## Run retained MIE diagnostics locally
+
+Run from the checkout with its supported Python 3.12 environment. Use existing
+released diagnostic artifacts. Set the path and digest variables from their
+local regular file paths and separately retained SHA-256 digests.
+
+```powershell
+python -B -m scripts.inspect_offline_mie shadow --trace $TraceFile --trace-sha256 $TraceSha256
+python -B -m scripts.inspect_offline_mie economic --plan $ConcentrationPlan --plan-sha256 $ConcentrationPlanSha256 --cohort $CohortFile --cohort-sha256 $CohortSha256
+python -B -m scripts.inspect_offline_mie cost-stress --plan $CostPlan --plan-sha256 $CostPlanSha256 --path $ReturnPath --path-sha256 $ReturnPathSha256
+```
+
+- `shadow` checks a complete serialized `MieShadowTrace` up to 4 MiB. It prints
+  the canonical replay digest and the trace's shadow-only authority.
+- `economic` requires canonical `ConcentrationPlanV1` and
+  `ConcentrationCohortV1` files. The cohort already contains netted cash PnL
+  in one currency.
+- `cost-stress` requires canonical `CostStressPlanV1` and `CostStressPathV1`
+  files. It applies the existing six scenarios to the supplied fixed path.
+
+The read-only command prints one JSON diagnostic. Economic and cost stress
+include the evaluator's report and the SHA-256 of its canonical report bytes.
+Keep that output private if it contains trade identifiers or sensitive cohort
+details. The command leaves source authenticity, independent preregistration,
+Gate 3, Gate 4, predictive and economic OOS, real-trade verification, and
+execution authority unverified. Errors produce a fixed refusal and exit `1`.
+
+The moving-block and order reshuffle diagnostics below remain Python APIs.
+Run the separate [offline fault checker](windows_tool_physical0058_v1.md#offline-fault-checks)
+for the fixed component regression roster.
+
 ## Moving-block stress diagnostic
 
 `moving_block_net_outcomes_v1` replays a pinned normalized cost path and
