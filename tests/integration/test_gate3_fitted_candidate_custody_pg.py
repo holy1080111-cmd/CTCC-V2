@@ -17,6 +17,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from importlib import import_module
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import asyncpg
@@ -326,10 +327,23 @@ def _reconstruct_owned_lab_archive(tmp_path, identity, files):
     return path, sha(path.read_bytes())
 
 
-async def test_actual0056_non_superuser_owner_upgrades_0055_once_with_fresh_readback(
-    tmp_path,
-):
-    """Historical superuser genesis, then a fresh restricted 0056 owner session."""
+_REVIEWED_OWNER_SESSION = text("""SELECT d.oid::bigint,d.datdba::bigint,
+ r.rolsuper,r.rolcreatedb,r.rolcreaterole,
+ (SELECT system_identifier::text FROM pg_catalog.pg_control_system()),
+ current_user,session_user,
+ EXISTS(SELECT 1 FROM pg_catalog.pg_stat_ssl
+        WHERE pid=pg_catalog.pg_backend_pid() AND ssl)
+ FROM pg_catalog.pg_database d JOIN pg_catalog.pg_roles r ON r.oid=d.datdba
+ WHERE d.datname=pg_catalog.current_database()""")
+_OWNER_CLI_REFUSAL = (
+    1,
+    {"status": "REFUSED", "code": "native_owner_0056_upgrade_refused"},
+)
+
+
+@pytest.fixture
+async def _actual0055_reviewed_cli_lab(tmp_path):
+    """Build one disposable DB0055 with the real owner and exact three-role ACL."""
     url, tls = _isolated_tls_database_config()
     identity, files, files_raw = fitted_measurement._read_hermetic_inputs()
     source = fitted_measurement.source_identity(identity, files, files_raw)
@@ -404,38 +418,10 @@ async def test_actual0056_non_superuser_owner_upgrades_0055_once_with_fresh_read
         )
         async with owner.begin() as connection:
             await connection.run_sync(_migrate_owned_empty_to_0055)
-        # Immutable 0050 requires the historical parent owner to be a
-        # superuser. End that lab-only genesis session before the 0056 actor;
-        # the actor must open a new, non-superuser physical connection.
-        await owner.dispose()
-        owner = None
-        async with admin.begin() as connection:
-            await connection.exec_driver_sql(
-                f"ALTER ROLE {_delta56_identifier(login)} NOSUPERUSER"
-            )
-        owner = create_async_engine(
-            owner_url,
-            poolclass=NullPool,
-            connect_args={"ssl": tls, "timeout": 10},
-            hide_parameters=True,
-        )
         async with owner.connect() as connection:
-            row = tuple(
-                (
-                    await connection.execute(
-                        text("""SELECT d.oid::bigint,d.datdba::bigint,
-                                 r.rolsuper,r.rolcreatedb,r.rolcreaterole,
-                                 (SELECT system_identifier::text
-                                  FROM pg_catalog.pg_control_system()),
-                                 current_user,session_user
-                          FROM pg_catalog.pg_database d
-                          JOIN pg_catalog.pg_roles r ON r.oid=d.datdba
-                          WHERE d.datname=pg_catalog.current_database()""")
-                    )
-                ).one()
-            )
-        assert row[2:5] == (False, False, False)
-        assert row[6:] == (login, login)
+            row = tuple((await connection.execute(_REVIEWED_OWNER_SESSION)).one())
+        assert row[2:5] == (True, False, False)
+        assert row[6:] == (login, login, True)
         route = owner_route.OwnerRoutePinsV1(
             source_manifest_sha256=source["manifest_sha256"],
             ca_sha256=ca_sha,
@@ -513,52 +499,35 @@ async def test_actual0056_non_superuser_owner_upgrades_0055_once_with_fresh_read
             role_names=restricted_names,
             role_oids=role_oids,
         )
-        async with owner.begin() as competing:
-            await competing.execute(owner_upgrade._OWNER_LOCK)
-            code, refused = await run_actual_owner55_cli_v2(
+        selected = ConfiguredNativeDemoFactoriesV2(
+            *(
+                async_sessionmaker(engine, autoflush=False, expire_on_commit=False)
+                for engine in restricted
+            ),
+            restricted[1],
+            restricted[2],
+        )
+
+        async def invoke(*, observe_demoted_owner_gate=False):
+            code, receipt = await run_actual_owner55_cli_v2(
                 tmp_path,
                 pins,
                 owner_dsn_file=secret_file,
                 ca_file=ca_file,
                 source_archive_file=archive,
                 role_urls=role_urls,
+                observe_demoted_owner_gate=observe_demoted_owner_gate,
             )
-            assert code == 1 and refused["status"] == "REFUSED"
-        async with owner.connect() as connection:
-            assert (
-                await connection.scalar(
-                    text("SELECT version_num FROM public.alembic_version")
-                )
-                == "0055"
-            )
-        code, result = await run_actual_owner55_cli_v2(
-            tmp_path,
-            pins,
-            owner_dsn_file=secret_file,
-            ca_file=ca_file,
-            source_archive_file=archive,
-            role_urls=role_urls,
+            assert password not in json.dumps(receipt)
+            return code, receipt
+
+        yield SimpleNamespace(
+            admin=admin,
+            owner=owner,
+            pins=pins,
+            selected=selected,
+            invoke=invoke,
         )
-        assert code == 0, result
-        assert result["status"] == "PASS"
-        assert result["database_head_before"] == "0055"
-        assert result["database_head_after"] == "0056"
-        assert result["independent_postcommit_readonly_observations"] == 3
-        assert result["grants_installed"] is False
-        assert result["row_encoding"] == owner_upgrade.retained_rows.ROW_ENCODING
-        assert result["rehearsal_rollback_verified"] is True
-        assert result["unchanged_demo_grants"] == 42
-        assert result["startup_admission"] is result["execution_authority"] is False
-        assert password not in json.dumps(result)
-        code, stale = await run_actual_owner55_cli_v2(
-            tmp_path,
-            pins,
-            owner_dsn_file=secret_file,
-            ca_file=ca_file,
-            source_archive_file=archive,
-            role_urls=role_urls,
-        )
-        assert code == 1 and stale["status"] == "REFUSED"
     finally:
         try:
             for engine in restricted:
@@ -607,6 +576,163 @@ async def test_actual0056_non_superuser_owner_upgrades_0055_once_with_fresh_read
                                 await admin.dispose()
                             finally:
                                 secret_file.unlink(missing_ok=True)
+
+
+async def test_actual0056_reviewed_superowner_upgrades_0055_once_with_fresh_readback(
+    _actual0055_reviewed_cli_lab,
+):
+    """Normal CLI runs once on the supported real owner, then rejects the stale packet."""
+    lab = _actual0055_reviewed_cli_lab
+    owner, pins = lab.owner, lab.pins
+    before_roles = await owner_upgrade._role_observation_v2(
+        lab.selected, owner, pins, "0055"
+    )
+    before = await owner_upgrade._readonly_inventory_v2(owner, pins, "0055")
+    wait_sql = text("""SELECT EXISTS (
+        SELECT 1 FROM pg_catalog.pg_locks pending
+        JOIN pg_catalog.pg_stat_activity actor ON actor.pid=pending.pid
+        WHERE pending.locktype='advisory' AND NOT pending.granted
+          AND pending.database=:database_oid AND pending.objsubid=1
+          AND CAST(pending.classid AS bigint)=:lock_class
+          AND CAST(pending.objid AS bigint)=:lock_object
+          AND actor.datid=pending.database AND actor.usename=:owner_name
+          AND CAST(:blocker_pid AS integer)=ANY(pg_catalog.pg_blocking_pids(pending.pid))
+    )""")
+    owner_lock_key = 5883109675522810055
+    observed_wait = False
+    async with owner.begin() as competing, owner.connect() as observer:
+        await competing.execute(owner_upgrade._OWNER_LOCK)
+        await observer.execution_options(isolation_level="AUTOCOMMIT")
+        arguments = {
+            "database_oid": pins.route.database_oid,
+            "lock_class": owner_lock_key >> 32,
+            "lock_object": owner_lock_key & ((1 << 32) - 1),
+            "owner_name": pins.route.owner,
+            "blocker_pid": await competing.scalar(
+                text("SELECT pg_catalog.pg_backend_pid()")
+            ),
+        }
+        waiting = asyncio.create_task(lab.invoke())
+        try:
+            while not waiting.done():
+                if await observer.scalar(wait_sql, arguments) is True:
+                    observed_wait = True
+                    break
+                await asyncio.sleep(0.05)
+        finally:
+            refused = await waiting
+    assert observed_wait is True
+    assert refused == _OWNER_CLI_REFUSAL
+    assert await owner_upgrade._readonly_inventory_v2(owner, pins, "0055") == before
+
+    code, result = await lab.invoke()
+    assert code == 0 and result["status"] == "PASS"
+    assert result["schema"] == "ctcc.native_owner_0056.migration_commit_readback.v2"
+    assert result["source_commit"] == pins.source_commit
+    assert result["source_tree"] == pins.source_tree
+    assert result["source_archive_sha256"] == pins.source_archive_sha256
+    assert result["source_manifest_sha256"] == pins.route.source_manifest_sha256
+    assert result["database_head_before"] == "0055"
+    assert result["database_head_after"] == "0056"
+    assert result["independent_postcommit_readonly_observations"] == 3
+    assert result["independent_role_logins_verified"] == 3
+    assert result["grants_installed"] is False
+    assert result["row_encoding"] == owner_upgrade.retained_rows.ROW_ENCODING
+    assert result["rehearsal_rollback_verified"] is True
+    assert result["unchanged_demo_grants"] == 42
+    assert result["startup_admission"] is result["execution_authority"] is False
+    after = await owner_upgrade._readonly_inventory_v2(owner, pins, "0056")
+    owner_upgrade._preserved_v2(before, after)
+    assert (
+        await owner_upgrade._role_observation_v2(lab.selected, owner, pins, "0056")
+        == before_roles
+    )
+    assert await owner_upgrade._readonly_inventory_v2(owner, pins, "0056") == after
+    assert await lab.invoke() == _OWNER_CLI_REFUSAL
+    assert await owner_upgrade._readonly_inventory_v2(owner, pins, "0056") == after
+
+
+async def test_actual0056_demoted_owner_refuses_before_ddl_with_unchanged_0055(
+    _actual0055_reviewed_cli_lab,
+):
+    """Prove the same genuinely demoted owner hits the frozen raw policy before DDL."""
+    from app.core import native_role_preflight_v1 as roles
+    from app.domain import account_history_partition_catalog_v1 as partition
+
+    lab = _actual0055_reviewed_cli_lab
+    owner, pins = lab.owner, lab.pins
+
+    async def actual_partition():
+        writer = lab.selected.writer_factory
+        async with writer() as session, session.begin():
+            await roles._session_settings(session, frame=False)
+            await roles._exact_existing_acl(
+                await session.connection(), pins.role_names, pins.role_oids[0]
+            )
+        frame = lab.selected.frame_reader_factory
+        async with frame() as session, session.begin():
+            await roles._session_settings(session, frame=True)
+            actual = await roles._identity(session, pins.role_names[2])
+            assert (actual[3], actual[4]) == (
+                pins.role_oids[2],
+                pins.route.database_oid,
+            )
+            return (await session.execute(text(partition.CATALOG_SQL))).scalar_one()
+
+    async def actual_demoted_owner_0055():
+        async with owner_upgrade._marker_checked_v2(owner, pins) as connection:
+            row = tuple((await connection.execute(_REVIEWED_OWNER_SESSION)).one())
+            assert (
+                await connection.scalar(
+                    text("SELECT version_num FROM public.alembic_version")
+                )
+                == "0055"
+            )
+        assert row[:5] == (
+            pins.route.database_oid,
+            pins.route.owner_oid,
+            False,
+            False,
+            False,
+        )
+        assert row[6:] == (pins.route.owner, pins.route.owner, True)
+        assert (
+            sha(row[5].encode("ascii")) == pins.route.cluster_system_identifier_sha256
+        )
+
+    before = await actual_partition()
+    partition.verify_account_history_partition_catalog(before)
+    assert all(row["owner_superuser"] is True for row in before["tables"])
+    await owner.dispose()
+    async with lab.admin.begin() as connection:
+        await connection.exec_driver_sql(
+            f"ALTER ROLE {_delta56_identifier(pins.route.owner)} NOSUPERUSER"
+        )
+    await actual_demoted_owner_0055()
+    demoted = await actual_partition()
+    assert len(demoted["tables"]) == len(before["tables"]) == len(partition.TABLES)
+    assert all(
+        row["owner_superuser"] is False and row["owner_oid"] == pins.route.owner_oid
+        for row in demoted["tables"]
+    )
+    assert {key: value for key, value in before.items() if key != "tables"} == {
+        key: value for key, value in demoted.items() if key != "tables"
+    }
+    assert [
+        {key: value for key, value in row.items() if key != "owner_superuser"}
+        for row in before["tables"]
+    ] == [
+        {key: value for key, value in row.items() if key != "owner_superuser"}
+        for row in demoted["tables"]
+    ]
+    with pytest.raises(
+        partition.AccountHistoryPartitionError,
+        match="^account_history_partition_table_drift$",
+    ):
+        partition.verify_account_history_partition_catalog(demoted)
+    assert await lab.invoke(observe_demoted_owner_gate=True) == _OWNER_CLI_REFUSAL
+    await actual_demoted_owner_0055()
+    assert await actual_partition() == demoted
 
 
 async def test_actual0056_password_bearing_owner_route_preflight_is_readonly(

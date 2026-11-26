@@ -13,6 +13,20 @@ guessed from role inventory. The reviewed source commit/tree/archive,
 manifest, CA, cluster and TLS owner route remain required. A pin file/hash is
 an input and does not by itself prove who reviewed it.
 
+The historical partition catalog requires its actual owning role to be a
+PostgreSQL superuser. Keep that owner out of the runtime API. The three
+configured writer, custody and frame logins remain separate restricted roles.
+A role demoted after provisioning must fail before the migration transaction,
+with revision 0055 and its exact existing grants preserved.
+
+PostgreSQL component 1 requires both the genuine supported CLI upgrade and
+the genuine demotion refusal. The former non-superuser success expectation
+is retired. The original failed result and the focused refusal diagnostic
+remain archived under their original commits and test identities.
+[Original failure](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/45863452395),
+[Refusal diagnostic](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/45867111319),
+[Supported CLI acceptance](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/45869229514).
+
 The command uses the existing configured three-role source and opens fresh
 owner/writer/custody/frame connections with the reviewed CA. It verifies the
 full actual native55 catalog, custody/frame/writer proof and exact42 effective

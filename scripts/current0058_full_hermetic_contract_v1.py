@@ -137,9 +137,12 @@ OWNER0056_V2_CASES = tuple(
         "test_actual0055_v2_marker_view_refuses_before_its_select_callback",
     )
 )
-OWNER0056_EXISTING_CLI_CASE = (
-    "tests.integration.test_gate3_fitted_candidate_custody_pg",
-    "test_actual0056_non_superuser_owner_upgrades_0055_once_with_fresh_readback",
+OWNER0056_CLI_CASES = tuple(
+    ("tests.integration.test_gate3_fitted_candidate_custody_pg", name)
+    for name in (
+        "test_actual0056_reviewed_superowner_upgrades_0055_once_with_fresh_readback",
+        "test_actual0056_demoted_owner_refuses_before_ddl_with_unchanged_0055",
+    )
 )
 OWNER0057_NULL_CASES = tuple(
     (
@@ -403,7 +406,7 @@ REQUIRED_CASES = (
     *OWNER0056_V2_CASES,
     *OWNER_STORAGE_CANONICAL_CASES,
     *OWNER0057_NULL_CASES,
-    OWNER0056_EXISTING_CLI_CASE,
+    *OWNER0056_CLI_CASES,
     *ORIGINAL_OCO_REPORT_CASES,
     *LIVE_OPERATOR_CASES,
     *LIVE_LIFECYCLE_CASES,

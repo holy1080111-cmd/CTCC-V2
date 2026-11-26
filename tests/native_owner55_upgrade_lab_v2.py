@@ -40,7 +40,14 @@ async def seed_stopped_retained_owner55_v2(owner):
 
 
 async def run_actual_owner55_cli_v2(
-    tmp_path, pins, *, owner_dsn_file, ca_file, source_archive_file, role_urls
+    tmp_path,
+    pins,
+    *,
+    owner_dsn_file,
+    ca_file,
+    source_archive_file,
+    role_urls,
+    observe_demoted_owner_gate=False,
 ):
     """A fresh CLI with actual reviewed source/private files and configured3 TLS DSNs.
 
@@ -89,6 +96,8 @@ async def run_actual_owner55_cli_v2(
         "--source-archive-file",
         str(source_archive_file),
     ]
+    if observe_demoted_owner_gate:
+        command = [sys.executable, "-B", "-c", _DEMOTED_OWNER_TRACER, *command[3:]]
     completed = await asyncio.to_thread(
         subprocess.run,
         command,
@@ -105,4 +114,52 @@ async def run_actual_owner55_cli_v2(
         receipt = json.loads(completed.stdout.strip())
     except (ValueError, TypeError):
         raise AssertionError("isolated_owner55_cli_missing_fixed_json") from None
+    if observe_demoted_owner_gate:
+        markers = [
+            line
+            for line in completed.stderr.splitlines()
+            if line.startswith(_DEMOTED_OWNER_MARKER)
+        ]
+        assert markers == [_DEMOTED_OWNER_MARKER + "OBSERVED"]
     return completed.returncode, receipt
+
+
+_DEMOTED_OWNER_MARKER = "CTCC_FROZEN_DEMOTED_OWNER_GATE="
+_DEMOTED_OWNER_TRACER = r"""
+import os
+import runpy
+import sys
+
+root = os.getcwd()
+partition = os.path.join(root, "app/domain/account_history_partition_catalog_v1.py")
+upgrader = os.path.join(root, "scripts/native_owner_upgrade_0056_v1.py")
+proof = set()
+
+def observe(frame, event, argument):
+    path, function = frame.f_code.co_filename, frame.f_code.co_name
+    if path == upgrader:
+        if event == "call" and function in ("_commit_once", "_upgrade_exact_0055"):
+            proof.add("write_path_entered")
+        return None
+    if path != partition or function != "verify_account_history_partition_catalog":
+        return None
+    if event == "exception":
+        error_type, error, _ = argument
+        if (
+            error_type.__module__ == "app.domain.account_history_partition_catalog_v1"
+            and error_type.__name__ == "AccountHistoryPartitionError"
+            and error.args == ("account_history_partition_table_drift",)
+        ):
+            proof.add("raw_partition_table_drift")
+    return observe
+
+module = "scripts.native_owner_upgrade_0056_v1"
+sys.argv = [module, *sys.argv[1:]]
+try:
+    sys.settrace(observe)
+    runpy.run_module(module, run_name="__main__", alter_sys=True)
+finally:
+    sys.settrace(None)
+    valid = proof == {"raw_partition_table_drift"}
+    print("CTCC_FROZEN_DEMOTED_OWNER_GATE=" + ("OBSERVED" if valid else "UNVERIFIED"), file=sys.stderr)
+"""
