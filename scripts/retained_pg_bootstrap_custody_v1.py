@@ -241,6 +241,7 @@ class _Origin(Enum):
     FRESH_FIXTURE = "fresh_canonical17_cold_fixture"
     STOPPED55_READER = "preserved_stopped0055_reader"
     STOPPED55_NEGATIVE = "preserved_stopped0055_negative_stop"
+    STOPPED55_STOP1_PREFLIGHT = "preserved_stopped0055_revision1_readonly_preflight"
 
 
 class _Phase(Enum):
@@ -1830,9 +1831,9 @@ def _owned_route_v1(owner, pins, *, fixture=False):
     ), context
 
 
-def _install_owner_guard_v1():
+def _install_owner_guard_v1(*, stop1_preflight=False):
     global _NATIVE_GUARD
-    _need(_NATIVE_GUARD is None)
+    _need(_NATIVE_GUARD is None and type(stop1_preflight) is bool)
     from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncTransaction
 
     from app.database import native_pg_tls_v1 as pg_tls
@@ -1859,6 +1860,14 @@ def _install_owner_guard_v1():
     from scripts import retained0055_negative_stop_guard_v1 as negative_guard
     from scripts import retained0055_negative_stop_reassert_v1 as negative_stop
     from scripts import verify_migration_identity as identity
+
+    preflight_dependencies = ()
+    if stop1_preflight:
+        from scripts import retained0055_stop1_preflight_v1 as stop1
+        from scripts import retained0056_bootstrap_reference_pin_v2 as fitted_pin
+        from scripts import retained0056_fitted_reference_pair_v1 as fitted_pair
+
+        preflight_dependencies = (stop1, fitted_pin, fitted_pair)
 
     os_names = (
         "open",
@@ -1952,6 +1961,7 @@ def _install_owner_guard_v1():
             inherited55,
             source55,
             profiles,
+            *preflight_dependencies,
         ),
         bindings=bindings,
     )
@@ -3032,9 +3042,17 @@ def _read_request(path):
     return value, RetainedBootstrapFilesV1(**value["files"]), source
 
 
-def _read_stopped55_request(path, *, apply=False):
-    _need(type(apply) is bool)
-    value = json.loads(_private_bytes(path, 65536))
+def _read_stopped55_request(path, *, apply=False, stop1_preflight=False):
+    _need(
+        type(apply) is type(stop1_preflight) is bool and not (apply and stop1_preflight)
+    )
+    raw = _private_bytes(path, 65536)
+    if stop1_preflight:
+        from scripts.evidence_json import read_evidence_json
+
+        value = read_evidence_json(raw)
+    else:
+        value = json.loads(raw)
     keys = {
         "schema",
         "files",
@@ -3047,6 +3065,10 @@ def _read_stopped55_request(path, *, apply=False):
     if apply:
         keys |= {"confirmation", "eligibility"}
         schema = "ctcc.retained_pg.stopped0055_negative_stop_request.v1"
+    elif stop1_preflight:
+        from scripts import retained0055_stop1_preflight_v1 as stop1
+
+        schema = stop1.REQUEST_SCHEMA
     _need(type(value) is dict and set(value) == keys and value["schema"] == schema)
     if apply:
         eligibility = value["eligibility"]
@@ -3139,6 +3161,8 @@ def _read_stopped55_request(path, *, apply=False):
             )
         )
     )
+    if stop1_preflight:
+        stop1.require_request_lineage(value)
     return value, RetainedBootstrapFilesV1(**files), source
 
 
@@ -3355,6 +3379,11 @@ def _run_fixed_supervisor_v1(request, files, source, origin):
     _need(type(origin) is _Origin)
     has_cold_input = origin is not _Origin.FRESH_FIXTURE
     negative_stop = origin is _Origin.STOPPED55_NEGATIVE
+    stop1_preflight = origin is _Origin.STOPPED55_STOP1_PREFLIGHT
+    if stop1_preflight:
+        from scripts import retained0055_stop1_preflight_v1 as stop1
+
+        stop1.require_reference_data()
     _need(
         type(files)
         is (RetainedBootstrapFilesV1 if has_cold_input else FreshCanonical17ResourcesV1)
@@ -3389,7 +3418,11 @@ def _run_fixed_supervisor_v1(request, files, source, origin):
             if origin is _Origin.PRESERVED:
                 cold_manifest = _cold_manifest(manifest_raw, origin=_Origin.PRESERVED)
             else:
-                stopped, cold_manifest = _stopped55_manifest_v1(manifest_raw, request)
+                stopped, cold_manifest = (
+                    stop1.admit_manifest(manifest_raw, request)
+                    if stop1_preflight
+                    else _stopped55_manifest_v1(manifest_raw, request)
+                )
                 _need(files.cold_directory == stopped["working_directory"])
                 _need(
                     tuple(stopped["stopped_directory_identity"])
@@ -3482,6 +3515,7 @@ def _run_fixed_supervisor_v1(request, files, source, origin):
         _Origin.FRESH_FIXTURE: "_supervisor_fresh_main_v1",
         _Origin.STOPPED55_READER: "_supervisor_stopped55_main_v1",
         _Origin.STOPPED55_NEGATIVE: "_supervisor_stopped55_negative_main_v1",
+        _Origin.STOPPED55_STOP1_PREFLIGHT: "_supervisor_stopped55_stop1_main_v1",
     }[origin]
     program = (
         "import sys;sys.path.insert(0,'/run/resources/source');"
@@ -3524,6 +3558,8 @@ def _run_fixed_supervisor_v1(request, files, source, origin):
             else _PRESERVED_UPGRADE_STATUS
         )
         if origin is _Origin.PRESERVED
+        else stop1.STATUS
+        if stop1_preflight
         else {
             _Origin.FRESH_FIXTURE: _FRESH_SUCCESS_STATUS,
             _Origin.STOPPED55_READER: _STOPPED55_READONLY_STATUS,
@@ -3531,6 +3567,9 @@ def _run_fixed_supervisor_v1(request, files, source, origin):
         }[origin]
     )
     _need(result.get("status") == expected_status)
+    if stop1_preflight:
+        _need(outcome.stdout == _canonical(result) + b"\n")
+        stop1.require_result(result)
     return result
 
 
@@ -3563,6 +3602,16 @@ def run_stopped0055_negative_stop_supervisor_v1(request_file):
     _need(type(request_file) is type(Path()))
     request, files, source = _read_stopped55_request(request_file, apply=True)
     return _run_fixed_supervisor_v1(request, files, source, _Origin.STOPPED55_NEGATIVE)
+
+
+def run_stopped0055_stop1_preflight_supervisor_v1(request_file):
+    """Fixed two-read preflight on a new copy of the exact sealed revision-1 database."""
+    _linux()
+    _need(type(request_file) is type(Path()))
+    request, files, source = _read_stopped55_request(request_file, stop1_preflight=True)
+    return _run_fixed_supervisor_v1(
+        request, files, source, _Origin.STOPPED55_STOP1_PREFLIGHT
+    )
 
 
 def _completed_owned_data_v1(owned, origin, *, committed):
@@ -3669,7 +3718,9 @@ async def _execute_fresh_acceptance_v1(resources, source):
     }
 
 
-async def _execute_stopped55_v1(request, files, *, negative_stop):
+async def _execute_stopped55_v1(
+    request, files, *, negative_stop, stop1_preflight=False
+):
     from sqlalchemy.engine import URL
     from sqlalchemy.ext.asyncio import create_async_engine
     from sqlalchemy.pool import NullPool
@@ -3677,6 +3728,14 @@ async def _execute_stopped55_v1(request, files, *, negative_stop):
     from scripts import retained0017_owner_upgrade_0055_v1 as owner_api
     from scripts import retained0055_negative_stop_reassert_v1 as negative
 
+    _need(
+        type(negative_stop) is type(stop1_preflight) is bool
+        and not (negative_stop and stop1_preflight)
+    )
+    if stop1_preflight:
+        from scripts import retained0055_stop1_preflight_v1 as stop1
+
+        stop1.require_reference_data()
     route = negative.canonical.OwnerRoutePinsV1(**request["route"])
     source, previous = request["source"], request["predecessor"]
     snapshot = None
@@ -3699,7 +3758,11 @@ async def _execute_stopped55_v1(request, files, *, negative_stop):
         16 * 1024 * 1024,
         expected=previous["physical_inventory_sha256"],
     )
-    stopped, parsed = _stopped55_manifest_v1(raw, request)
+    stopped, parsed = (
+        stop1.admit_manifest(raw, request)
+        if stop1_preflight
+        else _stopped55_manifest_v1(raw, request)
+    )
     cold = Path(files.cold_directory)
     _need(
         cold == Path("/run/resources/cold")
@@ -3707,7 +3770,7 @@ async def _execute_stopped55_v1(request, files, *, negative_stop):
     )
     parent = Path(files.private_output_parent)
     _private_parent(parent)
-    _install_owner_guard_v1()
+    _install_owner_guard_v1(stop1_preflight=stop1_preflight)
     _guard()
     cold_fd = os.open(cold, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     working_fd = server = engine = lease = None
@@ -3777,16 +3840,20 @@ async def _execute_stopped55_v1(request, files, *, negative_stop):
             hide_parameters=True,
         )
         archive = Path(files.source_archive_file)
-        if negative_stop:
-            # Mint only here, on the fixed confirmed child, never from the
-            # negative eligibility report or the reusable reader route.
+        if negative_stop or stop1_preflight:
+            # Bind only the held native child. The two origins have distinct
+            # permission checks; the preflight cannot claim or advance a write.
             async with engine.connect() as connection:
                 lock_profile = await _read_maintenance_lock_profile_v1(connection)
             lease = object.__new__(OwnedRetainedBootstrapV1)
             record = _LiveRecord(
                 owner=lease,
                 pins=pins,
-                origin=_Origin.STOPPED55_NEGATIVE,
+                origin=(
+                    _Origin.STOPPED55_STOP1_PREFLIGHT
+                    if stop1_preflight
+                    else _Origin.STOPPED55_NEGATIVE
+                ),
                 preserved_apply_confirmed=False,
                 phase=_Phase.READY,
                 process_id=os.getpid(),
@@ -3816,21 +3883,32 @@ async def _execute_stopped55_v1(request, files, *, negative_stop):
             _journal(record, _Phase.READY)
             _RECORDS[id(lease)] = record
             _bind_engine_v1(lease, engine)
-            result = await negative._run_owned_stopped55_negative_v1(
-                lease,
-                engine,
-                pins,
-                archive,
-                expected_after_sha256=previous["after_sha256"],
-            )
-            committed = True
-            final = _record(lease)
-            _need(
-                final.phase is _Phase.READBACK_ONLY
-                and final.commit_attempts == 1
-                and final.journal_step == 4
-            )
-            result["negative_eligibility_sha256"] = request["eligibility"]["sha256"]
+            if stop1_preflight:
+                result = await stop1.observe_owned_stop1(
+                    lease, engine, pins, archive, stopped
+                )
+                final = _record(lease)
+                _need(
+                    final.phase is _Phase.READY
+                    and final.commit_attempts == 0
+                    and final.journal_step == 1
+                )
+            else:
+                result = await negative._run_owned_stopped55_negative_v1(
+                    lease,
+                    engine,
+                    pins,
+                    archive,
+                    expected_after_sha256=previous["after_sha256"],
+                )
+                committed = True
+                final = _record(lease)
+                _need(
+                    final.phase is _Phase.READBACK_ONLY
+                    and final.commit_attempts == 1
+                    and final.journal_step == 4
+                )
+                result["negative_eligibility_sha256"] = request["eligibility"]["sha256"]
         else:
             result = await negative._plan_stopped_copy_v1(
                 engine, pins, archive, expected_after_sha256=previous["after_sha256"]
@@ -3845,6 +3923,8 @@ async def _execute_stopped55_v1(request, files, *, negative_stop):
         _need(stopped_status == "FAST_SHUTDOWN_0")
         _need(_control_state(_run_image(control, common, 5)) == system)
         _verify_cold_tree(cold_fd, parsed)
+        if stop1_preflight:
+            _verify_source(files, source)
         return {
             **result,
             "stopped_inventory_sha256": previous["physical_inventory_sha256"],
@@ -3896,12 +3976,18 @@ def _supervisor_stopped55_negative_main_v1():
     return _supervisor_stopped55_main_v1(negative_stop=True)
 
 
-def _supervisor_stopped55_main_v1(*, negative_stop=False):
+def _supervisor_stopped55_stop1_main_v1():
+    return _supervisor_stopped55_main_v1(stop1_preflight=True)
+
+
+def _supervisor_stopped55_main_v1(*, negative_stop=False, stop1_preflight=False):
     try:
         _linux()
         _need(Path(__file__).resolve().parents[1] == Path("/run/resources/source"))
         request, files, source = _read_stopped55_request(
-            Path("/run/request.json"), apply=negative_stop
+            Path("/run/request.json"),
+            apply=negative_stop,
+            stop1_preflight=stop1_preflight,
         )
         _need(_current_executable_sha() == PYTHON_ELF_SHA256)
         _require_runtime_provider(files, logical=True)
@@ -3909,7 +3995,12 @@ def _supervisor_stopped55_main_v1(*, negative_stop=False):
         _verify_source(files, source)
         _require_runtime_metadata_v1()
         result = asyncio.run(
-            _execute_stopped55_v1(request, files, negative_stop=negative_stop)
+            _execute_stopped55_v1(
+                request,
+                files,
+                negative_stop=negative_stop,
+                stop1_preflight=stop1_preflight,
+            )
         )
         print(_canonical(result).decode("ascii"))
         return 0
