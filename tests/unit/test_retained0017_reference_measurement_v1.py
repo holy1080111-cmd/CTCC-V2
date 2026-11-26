@@ -382,6 +382,7 @@ def test_actual_component3_post_test_gate_propagates_pair_refusal(
         "historical0057": None,
         "actual0058_g12_custody": None,
         "retained0017_reference_pair": None,
+        "paper58_reference_pair": None,
     }
 
 

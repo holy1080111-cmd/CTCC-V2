@@ -1,0 +1,358 @@
+{
+  "archive_sha256": "4c3cf1b2a01c13cb0a6db397716c70ae143639fc98e4aecb8fd85ea7a3bee8a0",
+  "artifact_id": 14701788130,
+  "cleanup": "PASS",
+  "db_connections_by_verifier": 0,
+  "dependency_lock": {
+    "accepted_full_validation_baseline": false,
+    "installed_inventory": {
+      "current_count": 43,
+      "excluded_metadata": [
+        {
+          "metadata_path": "/app/ctcc_v2.egg-info",
+          "name": "ctcc-v2",
+          "version": "2.0.0"
+        }
+      ],
+      "exclusion_scope": "one_source_ctcc_v2_egg_info_record_only; installed_versions_unchanged",
+      "expected_count": 42,
+      "isolated_count": 42,
+      "isolated_python_matches": true,
+      "mode": "isolated_exact_with_one_source_project_metadata_record",
+      "source_metadata_excluded": true
+    },
+    "lock_sha256": "a44e649cb1d21d3790e132c21699cc172e77ed87682929320cf8f6190fe014e4",
+    "packages": 41,
+    "target": "linux"
+  },
+  "execution_authority": false,
+  "external_requests_by_verifier": 0,
+  "full_suite_acceptance": false,
+  "hermetic_regression": "NOT_RUN",
+  "literal_automatically_adopted": false,
+  "literal_candidate_sha256": "0c0336e396efe2b91c2d725f8e936673ef44aa081dd330b3a62c1f1369b8f8ab",
+  "manifest_sha256": "7a68ff805ccb065a2f8747088d72ee3a8f1220545337e31b5eb6271b553845b4",
+  "newer_source_acceptance": false,
+  "normalized_bytes_equal": true,
+  "official_zip_sha256": "b9e52e21f43df382448528163744defc26d56d9e2e9885d7fd7dc9979a32ff7f",
+  "original_archived_verifier": "PASS",
+  "original_verifier_source_sha256": "0e86e62bc9dea5e5b8bc64c4904f1af32c5f347ef49af4eff1a349f2c60b87e1",
+  "original_verifier_stdout_sha256": "55fa8aca40a0bcedc893129ce5dc03d28ea13985f1b3c842507d3de215f065b0",
+  "paper58_reference_pair": {
+    "database_head": "0058",
+    "execution_authority": false,
+    "fresh_fixture_only": true,
+    "normalized_catalog_sha256": "0c0336e396efe2b91c2d725f8e936673ef44aa081dd330b3a62c1f1369b8f8ab",
+    "paper_actor_admission": false,
+    "references": [
+      {
+        "database_head": "0058",
+        "normalized_catalog_sha256": "0c0336e396efe2b91c2d725f8e936673ef44aa081dd330b3a62c1f1369b8f8ab",
+        "physical": {
+          "actual_tls": true,
+          "cluster_system_identifier_sha256": "c304ded98f743acd9a8e867c371f93dad10b4e62dd4b7d24b4e7fad1f401f7b1",
+          "database": "ctcc_ref55_database_29fdea7f67df4cec",
+          "database_oid": 16386,
+          "marker_relation_oid": 16387,
+          "owner": "ctcc_ref55_owner_29fdea7f67df4cec",
+          "owner_flags": [
+            true,
+            false,
+            false,
+            false,
+            true,
+            false,
+            false
+          ],
+          "owner_memberships": 0,
+          "owner_oid": 16385,
+          "server_version_num": "170011"
+        },
+        "raw_catalog_sha256": "14cb609d3ce8c3e776ad2cc1c4c1edc62b75aa198bff68bc4f64a268a648d68f",
+        "reference": "a",
+        "source": {
+          "archive_sha256": "4c3cf1b2a01c13cb0a6db397716c70ae143639fc98e4aecb8fd85ea7a3bee8a0",
+          "commit": "72d99c9b4d82e13b5ccd1269a37dbe6a6dc1fbde",
+          "comparator_sha256": "66772e1e8aa8321583dc4ebd8ddedec306f7996b18a6ffe2d0de2a05b772cf11",
+          "diagnostic_scope": "two_fresh_canonical55_to58_full_catalog_data_no_paper_admission",
+          "manifest_sha256": "7a68ff805ccb065a2f8747088d72ee3a8f1220545337e31b5eb6271b553845b4",
+          "migration_inventory_sha256": "8cc12ef63da5300ada10c6dd5ec46d7ce5a43176c20c5dcf88f177a370c48261",
+          "migration_leaf_sha256": "029a470e93a0d4aa73e948a1721102672f81bb2a0ad41c75b228f32b04dbc3a1",
+          "producer_sha256": "b616e0c0222b73b45fa059c93cafbc417fb5c3afab04ad51243f82a8f88eda66",
+          "runner_sha256": "0e86e62bc9dea5e5b8bc64c4904f1af32c5f347ef49af4eff1a349f2c60b87e1",
+          "source58_scope_sha256": "6b8ba75b430afa523faba02bc27a7df518d1d881bd3009cfc327f98567e0b9c1",
+          "source_files_sha256": "6d1b80b5ded396dc93d124eab2f542c4675b9c2c41c5f0b7dcb83a3b58192599",
+          "source_head": "0058",
+          "source_shape_sha256": "afba325cf8a65d7b07a3b0abe237e8bc3a13b6fb10c600b6f89f6ac1e3e19400",
+          "tree": "7a38c3ba7061d4608459c106cb42eba59f16e9ef"
+        },
+        "source58_scope_sha256": "6b8ba75b430afa523faba02bc27a7df518d1d881bd3009cfc327f98567e0b9c1"
+      },
+      {
+        "database_head": "0058",
+        "normalized_catalog_sha256": "0c0336e396efe2b91c2d725f8e936673ef44aa081dd330b3a62c1f1369b8f8ab",
+        "physical": {
+          "actual_tls": true,
+          "cluster_system_identifier_sha256": "c304ded98f743acd9a8e867c371f93dad10b4e62dd4b7d24b4e7fad1f401f7b1",
+          "database": "ctcc_ref55_database_0a9b576157bb4a05",
+          "database_oid": 18761,
+          "marker_relation_oid": 18762,
+          "owner": "ctcc_ref55_owner_0a9b576157bb4a05",
+          "owner_flags": [
+            true,
+            false,
+            false,
+            false,
+            true,
+            false,
+            false
+          ],
+          "owner_memberships": 0,
+          "owner_oid": 18760,
+          "server_version_num": "170011"
+        },
+        "raw_catalog_sha256": "b9468e784b3cf6f3ecf5b1fd2e48c9540fecc9e9821d8c25f7e7fdb66e468fcc",
+        "reference": "b",
+        "source": {
+          "archive_sha256": "4c3cf1b2a01c13cb0a6db397716c70ae143639fc98e4aecb8fd85ea7a3bee8a0",
+          "commit": "72d99c9b4d82e13b5ccd1269a37dbe6a6dc1fbde",
+          "comparator_sha256": "66772e1e8aa8321583dc4ebd8ddedec306f7996b18a6ffe2d0de2a05b772cf11",
+          "diagnostic_scope": "two_fresh_canonical55_to58_full_catalog_data_no_paper_admission",
+          "manifest_sha256": "7a68ff805ccb065a2f8747088d72ee3a8f1220545337e31b5eb6271b553845b4",
+          "migration_inventory_sha256": "8cc12ef63da5300ada10c6dd5ec46d7ce5a43176c20c5dcf88f177a370c48261",
+          "migration_leaf_sha256": "029a470e93a0d4aa73e948a1721102672f81bb2a0ad41c75b228f32b04dbc3a1",
+          "producer_sha256": "b616e0c0222b73b45fa059c93cafbc417fb5c3afab04ad51243f82a8f88eda66",
+          "runner_sha256": "0e86e62bc9dea5e5b8bc64c4904f1af32c5f347ef49af4eff1a349f2c60b87e1",
+          "source58_scope_sha256": "6b8ba75b430afa523faba02bc27a7df518d1d881bd3009cfc327f98567e0b9c1",
+          "source_files_sha256": "6d1b80b5ded396dc93d124eab2f542c4675b9c2c41c5f0b7dcb83a3b58192599",
+          "source_head": "0058",
+          "source_shape_sha256": "afba325cf8a65d7b07a3b0abe237e8bc3a13b6fb10c600b6f89f6ac1e3e19400",
+          "tree": "7a38c3ba7061d4608459c106cb42eba59f16e9ef"
+        },
+        "source58_scope_sha256": "6b8ba75b430afa523faba02bc27a7df518d1d881bd3009cfc327f98567e0b9c1"
+      }
+    ],
+    "schema": "ctcc.paper58.fresh_structural_pair.v1",
+    "schema_admission": false,
+    "source": {
+      "archive_sha256": "4c3cf1b2a01c13cb0a6db397716c70ae143639fc98e4aecb8fd85ea7a3bee8a0",
+      "commit": "72d99c9b4d82e13b5ccd1269a37dbe6a6dc1fbde",
+      "comparator_sha256": "66772e1e8aa8321583dc4ebd8ddedec306f7996b18a6ffe2d0de2a05b772cf11",
+      "diagnostic_scope": "two_fresh_canonical55_to58_full_catalog_data_no_paper_admission",
+      "manifest_sha256": "7a68ff805ccb065a2f8747088d72ee3a8f1220545337e31b5eb6271b553845b4",
+      "migration_inventory_sha256": "8cc12ef63da5300ada10c6dd5ec46d7ce5a43176c20c5dcf88f177a370c48261",
+      "migration_leaf_sha256": "029a470e93a0d4aa73e948a1721102672f81bb2a0ad41c75b228f32b04dbc3a1",
+      "producer_sha256": "b616e0c0222b73b45fa059c93cafbc417fb5c3afab04ad51243f82a8f88eda66",
+      "runner_sha256": "0e86e62bc9dea5e5b8bc64c4904f1af32c5f347ef49af4eff1a349f2c60b87e1",
+      "source58_scope_sha256": "6b8ba75b430afa523faba02bc27a7df518d1d881bd3009cfc327f98567e0b9c1",
+      "source_files_sha256": "6d1b80b5ded396dc93d124eab2f542c4675b9c2c41c5f0b7dcb83a3b58192599",
+      "source_head": "0058",
+      "source_shape_sha256": "afba325cf8a65d7b07a3b0abe237e8bc3a13b6fb10c600b6f89f6ac1e3e19400",
+      "tree": "7a38c3ba7061d4608459c106cb42eba59f16e9ef"
+    },
+    "source58_scope_sha256": "6b8ba75b430afa523faba02bc27a7df518d1d881bd3009cfc327f98567e0b9c1",
+    "startup_admission": false
+  },
+  "paper_actor_admission": false,
+  "references": [
+    {
+      "context_sha256": "34d73e4e1d0a6810c80323f42f174491fc4b0ad309901c267be2bd99e6323c23",
+      "entry_counts": {
+        "attribute": 2204,
+        "constraint": 648,
+        "database": 1,
+        "default": 159,
+        "function": 161,
+        "index": 361,
+        "initial_acl": 1,
+        "namespace": 1,
+        "relation": 563,
+        "sequence": 9,
+        "trigger": 553,
+        "type": 210
+      },
+      "ordinary_dependencies": 4375,
+      "physical": {
+        "actual_tls": true,
+        "cluster_system_identifier_sha256": "c304ded98f743acd9a8e867c371f93dad10b4e62dd4b7d24b4e7fad1f401f7b1",
+        "database": "ctcc_ref55_database_29fdea7f67df4cec",
+        "database_oid": 16386,
+        "marker_relation_oid": 16387,
+        "owner": "ctcc_ref55_owner_29fdea7f67df4cec",
+        "owner_flags": [
+          true,
+          false,
+          false,
+          false,
+          true,
+          false,
+          false
+        ],
+        "owner_memberships": 0,
+        "owner_oid": 16385,
+        "server_version_num": "170011"
+      },
+      "predecessor_native55_observation": {
+        "account_complete": false,
+        "controlled_history_ddl_sha256": "3ca6242ab123f5903df424e9711715ecae24dc34d734968be76642652fb44a6f",
+        "database_head": "0055",
+        "execution_authority": false,
+        "legacy_0053_lineage_ddl_sha256": "edd0896ada9f1e07303f382deccffc7461bf2b23b5ea6ad0ab0b5c3bc5193ed9",
+        "legacy_0054_issuer_ddl_sha256": "5f82b31ffe168f803d65e485c8296d1df49d3fb2cda6701b0216fea0d6be24ee",
+        "native_baseline_admission": true,
+        "native_close_intent_index_sha256": "328a542ce818f0a9d245d8efa580e6c63801103d7e094740149f6c668ccc8568",
+        "native_closure_body_sha256": "0b3b1b19810e68747418917bfd2bbb9166a72da530de3739d9e88a2e191a2c5b",
+        "native_configuration_ddl_sha256": "1e7273c147f4dc448e81c38898f9aa0a85b4f3b71814ebc2fd4a8be2e374094a",
+        "native_configuration_positive_body_sha256": "3af959dfb16be4dfdd544db592a7a3fcd96452c71826ba25ee355688b7445681",
+        "native_definitions_sha256": "6243338abe9cfcbb4eb613bc3d21cd7adbaf8059644e8b7a1c2df9755ac340c7",
+        "native_filled_flat_body_sha256": "1fbd546ecdb5c87c50db23c9578844c5cb9e2dca3800d2ee725c423c3b52e7f9",
+        "native_report_eligibility_body_sha256": "deea4e5f9f1337708a7e999bf23cb3adf29f54f804395b1d93693940a2581e1c",
+        "native_submission_body_sha256": "af6e5a77c12a2ac77bef73141f1378b1b48fa5005a89b09d330fe0673271db58",
+        "native_zero_closure_body_sha256": "2c6deca6c5fd420aca430d0054d7cf19aafcf45a1c0ccd9f59faa795bc6da09c",
+        "operator_ddl_sha256": "9535c233c7398c9f70d407a6c172576f251cc4d6d2cd9ce2a0e716164b69a629",
+        "role_oid": 16385,
+        "schema": "ctcc.collector_current0055.owner_installation.v1"
+      },
+      "profile": {
+        "database": "ctcc_ref55_database_29fdea7f67df4cec",
+        "datum_abi": "pg17.amd64.little.datum8.signedchar",
+        "owner": "ctcc_ref55_owner_29fdea7f67df4cec",
+        "read_only": "on",
+        "role": "none",
+        "search_path": "pg_catalog",
+        "server_version": "170011",
+        "session_owner": "ctcc_ref55_owner_29fdea7f67df4cec",
+        "timezone": "UTC",
+        "tls": true
+      },
+      "reference": "a",
+      "references": 8696,
+      "shared_dependencies": 276,
+      "source58_scope_sha256": "6b8ba75b430afa523faba02bc27a7df518d1d881bd3009cfc327f98567e0b9c1"
+    },
+    {
+      "context_sha256": "4a9f9bb3cd82334a1819f29e2aaf14a87aa97a3d15be16744569d2e7858ea8be",
+      "entry_counts": {
+        "attribute": 2204,
+        "constraint": 648,
+        "database": 1,
+        "default": 159,
+        "function": 161,
+        "index": 361,
+        "initial_acl": 1,
+        "namespace": 1,
+        "relation": 563,
+        "sequence": 9,
+        "trigger": 553,
+        "type": 210
+      },
+      "ordinary_dependencies": 4375,
+      "physical": {
+        "actual_tls": true,
+        "cluster_system_identifier_sha256": "c304ded98f743acd9a8e867c371f93dad10b4e62dd4b7d24b4e7fad1f401f7b1",
+        "database": "ctcc_ref55_database_0a9b576157bb4a05",
+        "database_oid": 18761,
+        "marker_relation_oid": 18762,
+        "owner": "ctcc_ref55_owner_0a9b576157bb4a05",
+        "owner_flags": [
+          true,
+          false,
+          false,
+          false,
+          true,
+          false,
+          false
+        ],
+        "owner_memberships": 0,
+        "owner_oid": 18760,
+        "server_version_num": "170011"
+      },
+      "predecessor_native55_observation": {
+        "account_complete": false,
+        "controlled_history_ddl_sha256": "3ca6242ab123f5903df424e9711715ecae24dc34d734968be76642652fb44a6f",
+        "database_head": "0055",
+        "execution_authority": false,
+        "legacy_0053_lineage_ddl_sha256": "edd0896ada9f1e07303f382deccffc7461bf2b23b5ea6ad0ab0b5c3bc5193ed9",
+        "legacy_0054_issuer_ddl_sha256": "5f82b31ffe168f803d65e485c8296d1df49d3fb2cda6701b0216fea0d6be24ee",
+        "native_baseline_admission": true,
+        "native_close_intent_index_sha256": "328a542ce818f0a9d245d8efa580e6c63801103d7e094740149f6c668ccc8568",
+        "native_closure_body_sha256": "0b3b1b19810e68747418917bfd2bbb9166a72da530de3739d9e88a2e191a2c5b",
+        "native_configuration_ddl_sha256": "1e7273c147f4dc448e81c38898f9aa0a85b4f3b71814ebc2fd4a8be2e374094a",
+        "native_configuration_positive_body_sha256": "3af959dfb16be4dfdd544db592a7a3fcd96452c71826ba25ee355688b7445681",
+        "native_definitions_sha256": "6243338abe9cfcbb4eb613bc3d21cd7adbaf8059644e8b7a1c2df9755ac340c7",
+        "native_filled_flat_body_sha256": "1fbd546ecdb5c87c50db23c9578844c5cb9e2dca3800d2ee725c423c3b52e7f9",
+        "native_report_eligibility_body_sha256": "deea4e5f9f1337708a7e999bf23cb3adf29f54f804395b1d93693940a2581e1c",
+        "native_submission_body_sha256": "af6e5a77c12a2ac77bef73141f1378b1b48fa5005a89b09d330fe0673271db58",
+        "native_zero_closure_body_sha256": "2c6deca6c5fd420aca430d0054d7cf19aafcf45a1c0ccd9f59faa795bc6da09c",
+        "operator_ddl_sha256": "9535c233c7398c9f70d407a6c172576f251cc4d6d2cd9ce2a0e716164b69a629",
+        "role_oid": 18760,
+        "schema": "ctcc.collector_current0055.owner_installation.v1"
+      },
+      "profile": {
+        "database": "ctcc_ref55_database_0a9b576157bb4a05",
+        "datum_abi": "pg17.amd64.little.datum8.signedchar",
+        "owner": "ctcc_ref55_owner_0a9b576157bb4a05",
+        "read_only": "on",
+        "role": "none",
+        "search_path": "pg_catalog",
+        "server_version": "170011",
+        "session_owner": "ctcc_ref55_owner_0a9b576157bb4a05",
+        "timezone": "UTC",
+        "tls": true
+      },
+      "reference": "b",
+      "references": 8696,
+      "shared_dependencies": 276,
+      "source58_scope_sha256": "6b8ba75b430afa523faba02bc27a7df518d1d881bd3009cfc327f98567e0b9c1"
+    }
+  ],
+  "result_entries_verified_before_and_after": 23,
+  "retained_original_windows_state_opened": false,
+  "run_id": 44890988317,
+  "schema": "ctcc.official_source72d.paper58_pair_independent_readback.v1",
+  "schema_admission": false,
+  "six_formal_files": {
+    "test-results/paper58-reference-a-normalized.json": {
+      "bytes": 9218124,
+      "sha256": "0c0336e396efe2b91c2d725f8e936673ef44aa081dd330b3a62c1f1369b8f8ab"
+    },
+    "test-results/paper58-reference-a-raw.json": {
+      "bytes": 5820465,
+      "sha256": "14cb609d3ce8c3e776ad2cc1c4c1edc62b75aa198bff68bc4f64a268a648d68f"
+    },
+    "test-results/paper58-reference-a-receipt.json": {
+      "bytes": 1222003,
+      "sha256": "3d7cf986d064a7624162d5f9a0ba2f9def5057d11e25e45f86b998c419f9360f"
+    },
+    "test-results/paper58-reference-b-normalized.json": {
+      "bytes": 9218124,
+      "sha256": "0c0336e396efe2b91c2d725f8e936673ef44aa081dd330b3a62c1f1369b8f8ab"
+    },
+    "test-results/paper58-reference-b-raw.json": {
+      "bytes": 5820467,
+      "sha256": "b9468e784b3cf6f3ecf5b1fd2e48c9540fecc9e9821d8c25f7e7fdb66e468fcc"
+    },
+    "test-results/paper58-reference-b-receipt.json": {
+      "bytes": 1222003,
+      "sha256": "dc71b731eae80eea5bbc5422e06ec89135d10119f85f3f5c9fba0a822dee6fc5"
+    }
+  },
+  "source_commit": "72d99c9b4d82e13b5ccd1269a37dbe6a6dc1fbde",
+  "source_files_sha256": "6d1b80b5ded396dc93d124eab2f542c4675b9c2c41c5f0b7dcb83a3b58192599",
+  "source_files_verified_before_and_after": 2460,
+  "source_tree": "7a38c3ba7061d4608459c106cb42eba59f16e9ef",
+  "startup_admission": false,
+  "tests": {
+    "errors": 0,
+    "failures": 0,
+    "passed": 2,
+    "required_case_passed": {
+      "tests.integration.test_paper58_catalog_reference_v1_pg::test_actual0058_fresh_structural_reference[a]": 1,
+      "tests.integration.test_paper58_catalog_reference_v1_pg::test_actual0058_fresh_structural_reference[b]": 1
+    },
+    "required_module_passed": {},
+    "sha256": "cfb6866a7b74b2c77a9503447275c702c7275379a7975b227847c992654127c6",
+    "skipped": 0,
+    "tests": 2
+  }
+}
