@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -39,23 +40,37 @@ NEW = {
     "collector_current_0056_inherited_catalog_v1.py": "7ef3e52af3eefd006a16ef0bc9d274ebf8d8e81917ad90c48994a78d39f1c3f1",
 }
 
-_LEGACY_REPLAY = """
-import hashlib, json, sys
+_LEGACY_REPLAY = r"""
+import hashlib, json, sys, traceback
 from pathlib import Path
 
+def diagnostic(kind, error, tb):
+    cause = error.__context__ or error
+    coordinates = [(Path(item.filename).name, item.name, item.lineno)
+                   for item in traceback.extract_tb(cause.__traceback__ or tb)[-8:]]
+    print(json.dumps([globals().get('head','setup'), globals().get('phase','setup'),
+                      type(cause).__name__, coordinates]), file=sys.stderr)
+
+sys.excepthook = diagnostic
 root, project = map(Path, sys.argv[1:])
 sys.path.insert(0, str(root))
 sys.path.append(str(project))
 from app.domain import collector_current_0055_catalog_v1 as old55
 from app.domain import collector_current_0056_inherited_catalog_v1 as old56
 assert old56.inherited is old55
-args = json.loads(sys.stdin.buffer.read(6000001))
+
+def frame(maximum):
+    raw = sys.stdin.buffer.readline(maximum + 2)
+    assert 1 < len(raw) <= maximum + 1 and raw.endswith(b'\n')
+    return json.loads(raw)
+
+source = frame(4096)
 observed_source = {}
 for module in (old55, old56):
     path = Path(module.__file__)
     assert path.parent == root / 'app/domain'
     observed_source[path.name] = hashlib.sha256(path.read_bytes()).hexdigest()
-assert observed_source == args['source']
+assert observed_source == source
 
 def observe55_writer(value):
     return old55.observe_actual_writer_catalog(value, read_only='on')
@@ -72,12 +87,18 @@ for head, owner, writer in (
     ('0055', old55.observe_actual_owner_catalog, observe55_writer),
     ('0056', old56.observe_owner_installation_0056, old56.observe_writer_0056),
 ):
-    value = args['catalogs'][head]
-    rows[head] = {
-        'owner_rc': owner(value['owner_rc']), 'writer_rc': writer(value['writer_rc']),
-        'owner_rr_denied': rejects(owner, value['owner_rr']),
-        'writer_rr_denied': rejects(writer, value['writer_rr']),
-    }
+    rows[head] = {}
+    for phase, callback, denial in (
+        ('owner_rc', owner, False), ('writer_rc', writer, False),
+        ('owner_rr', owner, True), ('writer_rr', writer, True),
+    ):
+        observed_head, observed_phase, value = frame(6000000)
+        assert (observed_head, observed_phase) == (head, phase)
+        if denial:
+            rows[head][phase + '_denied'] = rejects(callback, value)
+        else:
+            rows[head][phase] = callback(value)
+assert sys.stdin.buffer.read(1) == b''
 print(json.dumps(rows, sort_keys=True, separators=(',',':')))
 """
 
@@ -92,6 +113,33 @@ def _canonical(value):
     ).encode("ascii")
 
 
+def _legacy_refusal(raw):
+    if 0 < len(raw) <= 2048:
+        try:
+            head, phase, kind, coordinates = json.loads(raw)
+            if (
+                head in ("0055", "0056", "setup")
+                and phase in ("owner_rc", "writer_rc", "owner_rr", "writer_rr", "setup")
+                and re.fullmatch(r"[A-Za-z_]+", kind)
+                and type(coordinates) is list
+                and len(coordinates) <= 8
+                and all(
+                    re.fullmatch(r"[A-Za-z0-9_<>.-]+", name)
+                    and re.fullmatch(r"[A-Za-z0-9_<>.-]+", function)
+                    and type(line) is int
+                    and line > 0
+                    for name, function, line in coordinates
+                )
+            ):
+                pytest.fail(
+                    f"legacy_reader_subprocess_refused:{head}:{phase}:{kind}:{coordinates}",
+                    pytrace=False,
+                )
+        except (TypeError, ValueError):
+            pass
+    pytest.fail("legacy_reader_subprocess_refused", pytrace=False)
+
+
 def _legacy_replay(snapshot, directory):
     shutil.copytree(
         ROOT / "app", directory / "app", ignore=shutil.ignore_patterns("__pycache__")
@@ -103,20 +151,24 @@ def _legacy_replay(snapshot, directory):
         ).read_bytes()
         assert _sha(frozen) == digest
         (directory / "app/domain" / name).write_bytes(frozen)
-    raw = _canonical({"source": OLD, "catalogs": snapshot})
-    assert 0 < len(raw) <= 6_000_000
+    frames = [_canonical(OLD)]
+    for head in ("0055", "0056"):
+        for phase in ("owner_rc", "writer_rc", "owner_rr", "writer_rr"):
+            raw = _canonical([head, phase, snapshot[head][phase]])
+            assert 0 < len(raw) <= 6_000_000
+            frames.append(raw)
     result = subprocess.run(
         [sys.executable, "-I", "-B", "-c", _LEGACY_REPLAY, str(directory), str(ROOT)],
-        input=raw,
+        input=b"\n".join(frames) + b"\n",
         capture_output=True,
         check=False,
         timeout=35,
         env={"PATH": os.defpath, "LC_ALL": "C.UTF-8", "TZ": "UTC"},
         cwd=directory,
     )
-    assert (
-        result.returncode == 0 and not result.stderr and 0 < len(result.stdout) <= 65536
-    )
+    if result.returncode != 0:
+        _legacy_refusal(result.stderr)
+    assert not result.stderr and 0 < len(result.stdout) <= 65536
     return json.loads(result.stdout)
 
 
