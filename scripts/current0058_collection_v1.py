@@ -33,13 +33,15 @@ SUCCESSOR_PATHS = frozenset(
         "tests/integration/test_native_postsubmit_profiles0057_pg.py",
     }
 )
-# The source58 read-only owner tool observes a genuine disposable0017 clone.
-# It belongs to the retained-state owner worker, never successor profile proof
-# or an execution-capable unit shard. Frozen56/57 inventories stay unchanged.
+# Keep retained-state observation, upgrade, and negative-stop integration on
+# the disposable PostgreSQL owner worker. Frozen56/57 inventories are separate.
 RETAINED0017_OWNER_PATHS = frozenset(
     {
         "tests/integration/test_retained0017_owner_plan_v1_pg.py",
+        "tests/integration/test_retained0017_owner_upgrade_0055_v1_pg.py",
+        "tests/integration/test_retained0017_upgrade_projection_v1_pg.py",
         "tests/integration/test_retained0017_catalog_references_v1_pg.py",
+        "tests/integration/test_retained0055_negative_stop_v1_pg.py",
     }
 )
 CANONICAL_OWNER_PATHS = frozenset(
