@@ -20,7 +20,7 @@ from app.market.quality.candles import BAR_SECONDS, candle_closed_at
 from app.trade_qualification import continuation, data
 from app.trade_qualification.continuation import ContinuationResult
 
-_EXTRACTOR_SHA256 = "b97ae8976bfde9f54a2cec0ca815f64bee0b9ee8ea155de36147860fcdd56030"
+_EXTRACTOR_SHA256 = "f2a311ab24b9cf39b8abda7b2b798f9e6bfacc17499810250e061e78525aea98"
 _CONTINUATION_SHA256 = (
     "f38aa72ab7740d937229b0637ff400450861ececdd780f948f8c69d727490156"
 )

@@ -263,10 +263,12 @@ def test_all_combinations_of_missing_risk_claims_stop_at_g11_not_defaults(
 
 
 @pytest.mark.parametrize("failure_gate", [1, 6, 7, 10])
-def test_downstream_missing_claims_cannot_mask_or_advance_first_failure(failure_gate):
-    source = engine_source()
-    args = engine_inputs(source)
-    original = evaluate_pre_evidence(source.market, **args)
+def test_downstream_missing_claims_cannot_mask_or_advance_first_failure(
+    complete, failure_gate
+):
+    source, original_args, original = complete
+    market = source.market.model_copy(deep=True)
+    args = dict(original_args)
     args["risk_inputs"] = args["risk_inputs"].model_copy(
         update={"instrument": None, "account": None, "authority": None}
     )
@@ -274,7 +276,7 @@ def test_downstream_missing_claims_cannot_mask_or_advance_first_failure(failure_
         update={"economics": None, "portfolio": None}
     )
     if failure_gate == 1:
-        del source.market.candles["4H"]
+        del market.candles["4H"]
     elif failure_gate == 6:
         args["consumed_event_keys"] = frozenset(
             {event_identity(original.prefix.detection)}
@@ -283,7 +285,7 @@ def test_downstream_missing_claims_cannot_mask_or_advance_first_failure(failure_
         args["intent"] = args["intent"].model_copy(
             update={"candidate_entry": D("101.01")}
         )
-    run = evaluate_pre_evidence(source.market, **args)
+    run = evaluate_pre_evidence(market, **args)
     assert len(run.result.gates) == failure_gate
     assert all(gate.passed for gate in run.result.gates[:-1])
     assert not run.result.gates[-1].passed

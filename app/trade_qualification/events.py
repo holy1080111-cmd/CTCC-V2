@@ -46,6 +46,18 @@ class _InvalidSource(ValueError):
 
 def _checked_tree(value):
     """Copy finite source values, normalizing every instant before arithmetic."""
+    kind = type(value)
+    if kind is Decimal:
+        if not value.is_finite():
+            raise _InvalidSource("nonfinite_source")
+        parts = value.as_tuple()
+        if len(parts.digits) > 256 or abs(parts.exponent) > 256:
+            raise _InvalidSource("source_decimal_out_of_bounds")
+        return value
+    if kind is datetime and value.tzinfo is UTC:
+        return value
+    if value is None or kind is str or kind is int or kind is bool:
+        return value
     if isinstance(value, Decimal):
         if not value.is_finite():
             raise _InvalidSource("nonfinite_source")
@@ -97,6 +109,7 @@ def _copy_source(market, analysis, observed_at):
     ) != set(TIMEFRAMES):
         raise _InvalidSource("missing_or_extra_timeframe")
     confirmed = {}
+    price_limit = D("1e20")
     for timeframe in TIMEFRAMES:
         rows = market.candles[timeframe]
         if not 1 <= len(rows) <= MAX_BARS:
@@ -125,7 +138,7 @@ def _copy_source(market, analysis, observed_at):
             if min(row.open, row.high, row.low, row.close) <= 0:
                 raise _InvalidSource("nonpositive_ohlc")
             for price in (row.open, row.high, row.low, row.close):
-                if price >= D("1e20") or price.as_tuple().exponent < -20:
+                if price >= price_limit or price.as_tuple().exponent < -20:
                     raise _InvalidSource("ohlc_precision_out_of_bounds")
             if row.low > min(row.open, row.close) or row.high < max(
                 row.open, row.close
