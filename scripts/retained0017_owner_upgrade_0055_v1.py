@@ -268,10 +268,24 @@ class _FreshUpgradePinsV1:
     maintenance_settings_sha256: str
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class _StoppedTarget55PinsV1:
+    source: shared.OwnerUpgradePinsV1
+    maintenance_settings_sha256: str
+
+
 def _transaction_source_v1(pins):
     if type(pins) is Retained0017UpgradePinsV1:
         _need(type(pins.retained) is original.RetainedOwnerPins0017V1)
         return pins.retained
+    if type(pins) is _StoppedTarget55PinsV1:
+        _need(
+            type(pins.source) is shared.OwnerUpgradePinsV1
+            and type(pins.source.route) is shared.OwnerRoutePinsV1
+            and pins.source.route.database_head == "0055"
+            and original._digest(pins.maintenance_settings_sha256)
+        )
+        return pins.source
     _need(type(pins) is _FreshUpgradePinsV1 and type(pins.source) is _FreshSourcePinsV1)
     return pins.source
 
@@ -693,7 +707,7 @@ async def _before(connection, pins, *, read_only, _custody=None):
     return state
 
 
-async def _after(connection, pins, before, *, read_only):
+async def _target55_layouts_v1(connection, pins, *, read_only):
     await connection.exec_driver_sql(
         "SET LOCAL search_path TO pg_catalog, public, pg_temp"
     )
@@ -707,7 +721,42 @@ async def _after(connection, pins, before, *, read_only):
         else target55._observed(value, owner_mode=True, read_only="off")
     )
     _need(observed["native_definitions_sha256"] == target55._required_baseline())
-    layouts = await _layouts(connection, pins, expected_names=_target_tables())
+    return await _layouts(connection, pins, expected_names=_target_tables())
+
+
+async def _retained_target55_catalog_v1(connection):
+    control = await connection.scalar(
+        text(
+            "SELECT pg_catalog.jsonb_agg(pg_catalog.to_jsonb(s) ORDER BY id) FROM public.demo_automation_state s"
+        )
+    )
+    _need(type(control) is list and len(control) == 1)
+    item = control[0]
+    _need(
+        item["armed"] is False
+        and item["emergency_stop"]
+        is item["locked"]
+        is item["restart_latch_required"]
+        is True
+        and type(item["control_revision"]) is int
+        and item["control_revision"] == 0
+    )
+    approved, size, logical, mapped_size, mapped = (
+        await connection.execute(_RETAINED_CATALOG)
+    ).one()
+    _need(
+        approved is True,
+        "retained0017_upgrade0055_transport_check_identity_mismatch",
+    )
+    _need(
+        all(type(n) is int and 0 < n <= 32 * 1024 * 1024 for n in (size, mapped_size))
+        and all(original._digest(digest) for digest in (logical, mapped))
+    )
+    return {"logical_sha256": logical, "rehearsal_catalog_sha256": mapped}
+
+
+async def _after(connection, pins, before, *, read_only):
+    layouts = await _target55_layouts_v1(connection, pins, read_only=read_only)
     projection.require_preserved_old_layouts_v1(before["row_layouts"], layouts)
     await _maintenance(connection, pins, before_settings=False)
     state = await _state(connection, pins, layouts)
@@ -736,38 +785,55 @@ async def _after(connection, pins, before, *, read_only):
             if name not in original_names
         )
     )
-    control = await connection.scalar(
-        text(
-            "SELECT pg_catalog.jsonb_agg(pg_catalog.to_jsonb(s) ORDER BY id) FROM public.demo_automation_state s"
-        )
+    catalog = await _retained_target55_catalog_v1(connection)
+    return state | catalog | {"old_projection": actual}
+
+
+def _original_layouts_from_target55_v1(layouts):
+    names = baseline.source17_contract_v1()["columns"]
+    old = []
+    for name, oid, kind, columns in layouts:
+        if name in names:
+            original_columns = columns[: len(names[name])]
+            _need([column[0] for column in original_columns] == names[name])
+            old.append([name, oid, kind, original_columns])
+    _need({row[0] for row in old} == set(names))
+    projection.require_preserved_old_layouts_v1(old, layouts)
+    return old
+
+
+async def _replay_stopped0055_continuity_v1(connection, pins, *, expected_after_sha256):
+    """Reproduce the upgrade's exact target-state digest in a READ ONLY snapshot.
+
+    The caller must establish physical cold-copy custody separately. Neither a
+    matching digest nor the observations here grants any write authority.
+    """
+    _need(type(pins) is _StoppedTarget55PinsV1)
+    _transaction_source_v1(pins)
+    _require_reference_seal()
+    _need(original._digest(expected_after_sha256))
+    await rows.heap_am.lock_native_owner_marker_v1(connection)
+    await connection.exec_driver_sql(
+        "LOCK TABLE "
+        + ",".join('public."' + name + '"' for name in sorted(_target_tables()))
+        + " IN ACCESS SHARE MODE NOWAIT"
     )
-    _need(type(control) is list and len(control) == 1)
-    item = control[0]
+    layouts = await _target55_layouts_v1(connection, pins, read_only=True)
+    old = _original_layouts_from_target55_v1(layouts)
+    await _maintenance(connection, pins, before_settings=False)
+    state = await _state(connection, pins, layouts)
+    catalog = await _retained_target55_catalog_v1(connection)
+    actual = await _projection(
+        connection, old, phase=projection.OldColumnProjectionV1.ORIGINAL
+    )
+    after_sha256 = baseline.sha(
+        baseline.canonical(state | catalog | {"old_projection": actual})
+    )
     _need(
-        item["armed"] is False
-        and item["emergency_stop"]
-        is item["locked"]
-        is item["restart_latch_required"]
-        is True
-        and type(item["control_revision"]) is int
-        and item["control_revision"] == 0
+        after_sha256 == expected_after_sha256,
+        "retained0017_upgrade0055_stopped_continuity_digest_mismatch",
     )
-    approved, size, logical, mapped_size, mapped = (
-        await connection.execute(_RETAINED_CATALOG)
-    ).one()
-    _need(
-        approved is True,
-        "retained0017_upgrade0055_transport_check_identity_mismatch",
-    )
-    _need(
-        all(type(n) is int and 0 < n <= 32 * 1024 * 1024 for n in (size, mapped_size))
-        and all(original._digest(digest) for digest in (logical, mapped))
-    )
-    return state | {
-        "logical_sha256": logical,
-        "rehearsal_catalog_sha256": mapped,
-        "old_projection": actual,
-    }
+    return after_sha256
 
 
 def _migrate(sync_connection, script):
@@ -803,6 +869,7 @@ async def _commit_once(engine, pins, prepared, expected, *, _custody=None):
     else:
         from scripts import retained_pg_bootstrap_custody_v1 as custody
 
+        _need(type(pins) in (Retained0017UpgradePinsV1, _FreshUpgradePinsV1))
         custody._claim_owned_apply_v1(
             _custody, fixture=type(pins) is _FreshUpgradePinsV1
         )

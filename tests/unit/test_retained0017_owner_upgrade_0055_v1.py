@@ -474,6 +474,25 @@ def test_rehearsal_sql_does_not_bind_pg_node_tree_field_tokens():
     assert str(statement).count(" :funcresulttype ") == 6
 
 
+def test_stopped_target_continuity_recovers_only_exact_source17_projection_layouts():
+    names = subject.baseline.source17_contract_v1()["columns"]
+    original = [
+        [name, 20000 + index, "r", [[column] for column in names[name]]]
+        for index, name in enumerate(sorted(names))
+    ]
+    target = deepcopy(original)
+    state = next(row for row in target if row[0] == "demo_automation_state")
+    state[3].extend(deepcopy(projection._NEW_STATE_COLUMNS))
+    target.append(["new_0055_table", 21000, "r", [["unrelated"]]])
+    assert subject._original_layouts_from_target55_v1(target) == original
+    state[3][-1][1] = 23
+    with pytest.raises(projection.Retained0017ProjectionRefused):
+        subject._original_layouts_from_target55_v1(target)
+    state[3][-1][1] = 16
+    with pytest.raises(subject.Retained0017UpgradeRefused):
+        subject._original_layouts_from_target55_v1(target[1:])
+
+
 def test_native55_retained_readback_pins_private_owner_snapshot_isolation(monkeypatch):
     calls = []
 

@@ -18,6 +18,15 @@ column explicitly and obtains its timestamp from actual `CURRENT_TIMESTAMP`.
 This bounded negative-purpose proof is not a complete independent55 or58 drift
 observer and never reports exchange flatness or entry eligibility.
 
+The private stopped-copy planner uses two independent `REPEATABLE READ READ
+ONLY` sessions. Each checks both inherited catalog contexts and recomputes the
+original upgrade's target digest from the observed DB0055 generation, including
+the sealed old-column projection, retained rows, layouts, ACLs and sequences.
+The caller must separately establish the clean stopped physical inventory, its
+original operation journals, and the actual isolated copy. A matching digest
+allows the planner to issue read-only eligibility data. Confirmed mutation
+remains behind the live descendant-custody boundary.
+
 The live current row must already be disarmed, stopped, locked and latched at
 revision0. Unknown reason strings and duplicate entries remain in their
 original order. A fresh full SQL-null-aware row snapshot must match the

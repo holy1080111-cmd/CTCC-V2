@@ -5,6 +5,8 @@ from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
+from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.pool import NullPool
 
 from scripts import retained0055_negative_stop_guard_v1 as guard
 from scripts import retained0055_negative_stop_reassert_v1 as subject
@@ -13,6 +15,70 @@ NOW = (
     "{FUNCEXPR :funcid 1299 :funcresulttype 1184 :funcretset false :funcvariadic false"
     " :funcformat 0 :funccollid 0 :inputcollid 0 :args <> :location -1}"
 )
+
+
+def _pins(*, head="0055", settings="f" * 64):
+    route = subject.canonical.OwnerRoutePinsV1(
+        "a" * 64,
+        "b" * 64,
+        "c" * 64,
+        "127.0.0.1",
+        15439,
+        "declared_db",
+        "declared_owner",
+        100,
+        10,
+        head,
+    )
+    return subject.NegativeStopPinsV1(
+        subject.canonical.OwnerUpgradePinsV1("d" * 40, "e" * 40, "a" * 64, route),
+        settings,
+    )
+
+
+def test_negative_stop_requires_exact_stopped55_observation_pin():
+    pins = _pins()
+    converted = subject._inspection_pins_v1(pins)
+    assert type(converted) is subject.owner._StoppedTarget55PinsV1
+    assert subject.owner._transaction_source_v1(converted) is pins.retained
+    with pytest.raises(subject.owner.Retained0017UpgradeRefused):
+        subject._inspection_pins_v1(_pins(head="0056"))
+    with pytest.raises(subject.owner.Retained0017UpgradeRefused):
+        subject._inspection_pins_v1(_pins(settings=None))
+
+
+@pytest.mark.asyncio
+async def test_stopped_copy_plan_reads_continuity_twice_and_reports_no_mutation(
+    monkeypatch,
+):
+    pins = _pins()
+    expected = "a" * 64
+    events = []
+
+    def source(*_args):
+        events.append("source")
+
+    async def read(_engine, actual, *, expected_after_sha256):
+        assert actual is pins and expected_after_sha256 == expected
+        events.append("continuity")
+        return {"control": _control()}
+
+    monkeypatch.setattr(subject, "_source", source)
+    monkeypatch.setattr(subject, "_read", read)
+    engine = create_async_engine(
+        "postgresql+asyncpg://declared@127.0.0.1/db", poolclass=NullPool
+    )
+    try:
+        result = await subject._plan_stopped_copy_v1(
+            engine, pins, object(), expected_after_sha256=expected
+        )
+    finally:
+        await engine.dispose()
+    assert events == ["source", "continuity", "continuity", "source"]
+    assert result["independent_readbacks"] == 2
+    assert result["source_upgrade_after_sha256"] == expected
+    assert result["control_revision"] == 0
+    assert result["mutation_performed"] is result["execution_authority"] is False
 
 
 def _catalog():

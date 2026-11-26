@@ -18,7 +18,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from scripts import native_owner_upgrade_0056_v1 as canonical
@@ -111,12 +111,22 @@ def _source(pins, archive_file):
     )
 
 
+def _inspection_pins_v1(pins):
+    _need(type(pins) is NegativeStopPinsV1)
+    inspection = owner._StoppedTarget55PinsV1(
+        pins.retained, pins.maintenance_settings_sha256
+    )
+    owner._transaction_source_v1(inspection)
+    return inspection
+
+
 async def _begin(connection, pins, phase):
     _need(type(phase) is _Phase)
+    inspection = _inspection_pins_v1(pins)
     probe = await connection.begin()
     try:
         await owner.rows.heap_am.require_native_owner_storage_v1(connection)
-        await owner._maintenance(connection, pins, before_settings=True)
+        await owner._maintenance(connection, inspection, before_settings=True)
     finally:
         await probe.rollback()
     transaction = await connection.begin()
@@ -170,12 +180,13 @@ def _control(value, *, revision):
 
 async def _observe(connection, pins, phase):
     _need(type(phase) is _Phase)
+    inspection = _inspection_pins_v1(pins)
     # Native bootstrap before the first head/row/deparser. The marker and all
     # source55 tables remain locked through the entire current observation.
     await owner.rows.heap_am.lock_native_owner_marker_v1(connection)
-    await owner._actor(connection, pins, "0055", read_only=phase is _Phase.READ)
+    await owner._actor(connection, inspection, "0055", read_only=phase is _Phase.READ)
     layouts = await owner._layouts(
-        connection, pins, expected_names=owner._target_tables()
+        connection, inspection, expected_names=owner._target_tables()
     )
     await connection.exec_driver_sql(
         "LOCK TABLE "
@@ -193,28 +204,71 @@ async def _observe(connection, pins, phase):
         metadata, layouts, pins.retained.route.owner_oid
     )
     document = await connection.scalar(text(owner.target55.OWNER_CATALOG_SQL))
-    observed = owner.target55._observed(
-        document, owner_mode=True, read_only="on" if phase is _Phase.READ else "off"
+    observed = (
+        owner.target55._observe_retained_postcommit_owner_catalog_v1(document)
+        if phase is _Phase.READ
+        else owner.target55._observed(document, owner_mode=True, read_only="off")
     )
     _need(observed["native_definitions_sha256"] == owner.target55._required_baseline())
     _need(
-        await owner._layouts(connection, pins, expected_names=owner._target_tables())
+        await owner._layouts(
+            connection, inspection, expected_names=owner._target_tables()
+        )
         == layouts
     )
-    await owner._maintenance(connection, pins, before_settings=False)
-    state = await owner._state(connection, pins, layouts)
+    await owner._maintenance(connection, inspection, before_settings=False)
+    state = await owner._state(connection, inspection, layouts)
     state["control"] = await connection.scalar(_CONTROL_SQL)
     state["legacy_control_audit_metadata_sha256"] = meta_sha
     return state
 
 
-async def _read(engine, pins):
+async def _read(engine, pins, *, expected_after_sha256=None):
     async with engine.connect() as connection:
         transaction = await _begin(connection, pins, _Phase.READ)
         try:
+            if expected_after_sha256 is not None:
+                await owner._replay_stopped0055_continuity_v1(
+                    connection,
+                    _inspection_pins_v1(pins),
+                    expected_after_sha256=expected_after_sha256,
+                )
             return await _observe(connection, pins, _Phase.READ)
         finally:
             await transaction.rollback()
+
+
+async def _plan_stopped_copy_v1(engine, pins, archive_file, *, expected_after_sha256):
+    """Read the sealed target and negative Stop evidence twice. DATA only."""
+    _inspection_pins_v1(pins)
+    _need(type(engine) is AsyncEngine and type(engine.pool) is NullPool)
+    _need(owner.original._digest(expected_after_sha256))
+    _source(pins, archive_file)
+    async with asyncio.timeout(300):
+        before = await _read(engine, pins, expected_after_sha256=expected_after_sha256)
+        _control(before["control"], revision=0)
+        _need(
+            await _read(engine, pins, expected_after_sha256=expected_after_sha256)
+            == before
+        )
+    _source(pins, archive_file)
+    snapshot = _digest(before)
+    _need(
+        pins.reviewed_snapshot_sha256 is None
+        or pins.reviewed_snapshot_sha256 == snapshot
+    )
+    return {
+        "schema": SCHEMA,
+        "status": "READ_ONLY_STOPPED_COPY_NEGATIVE_ELIGIBILITY_DATA",
+        "database_head": "0055",
+        "control_revision": 0,
+        "source_upgrade_after_sha256": expected_after_sha256,
+        "snapshot_sha256": snapshot,
+        "independent_readbacks": 2,
+        "mutation_performed": False,
+        "exchange_flat": None,
+        "execution_authority": False,
+    }
 
 
 def _projection_sql(layouts, phase):
