@@ -381,14 +381,17 @@ class _Connection:
         self.events.append("migrate")
 
 
-def _inert_transaction(monkeypatch, *, commit_error=None, failure_phase=None):
+def _inert_transaction(
+    monkeypatch, *, commit_error=None, failure_phase=None, rehearsal_catalog_drift=False
+):
     # Deliberately inert orchestration only; this is not a lineage/source/SQL
     # acceptance fixture. The real public and internal apply denials above
     # remain mandatory until actual copy/bootstrap custody is implemented.
     monkeypatch.setattr(subject, "_require_apply_lineage", lambda: None)
     events = []
     conn = _Connection(events, commit_error)
-    before, final = {"original": "held"}, {"logical_sha256": "a" * 64}
+    before = {"original": "held"}
+    final = {"logical_sha256": "a" * 64, "rehearsal_catalog_sha256": "b" * 64}
     count = 0
 
     async def no_op(*_args, **_kwargs):
@@ -404,6 +407,12 @@ def _inert_transaction(monkeypatch, *, commit_error=None, failure_phase=None):
         events.append("after_read")
         if failure_phase == count:
             raise RuntimeError("declared inert fault")
+        if count == 1:
+            return final | {
+                "logical_sha256": "c" * 64,
+                "rehearsal_catalog_sha256": ("d" if rehearsal_catalog_drift else "b")
+                * 64,
+            }
         return final
 
     monkeypatch.setattr(subject, "_maintenance", no_op)
@@ -444,6 +453,25 @@ async def test_rehearsal_must_rollback_and_exact_before_replays_before_one_commi
         "commit_attempt",
         "commit_returned",
     ]
+
+
+@pytest.mark.asyncio
+async def test_rehearsal_catalog_semantic_drift_rolls_back_before_commit(monkeypatch):
+    events, engine, before, _final = _inert_transaction(
+        monkeypatch, rehearsal_catalog_drift=True
+    )
+    with pytest.raises(subject.Retained0017UpgradeRefused):
+        await subject._commit_once(
+            engine, object(), (None, None, None, object()), before
+        )
+    assert "commit_attempt" not in events and events[-1] == "outer_rollback"
+
+
+def test_rehearsal_sql_does_not_bind_pg_node_tree_field_tokens():
+    statement = subject._RETAINED_CATALOG.compile()
+    assert statement.params == {}
+    assert str(statement).count("{FUNCEXPR :funcid ") == 6
+    assert str(statement).count(" :funcresulttype ") == 6
 
 
 @pytest.mark.asyncio

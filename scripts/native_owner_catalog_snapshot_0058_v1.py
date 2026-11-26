@@ -9,7 +9,7 @@ This observer neither grants privileges nor confers any execution authority.
 
 from sqlalchemy import text
 
-LOGICAL_CATALOG = text("""
+LOGICAL_CATALOG_ENTRIES_V1 = """
 WITH relations AS (
  SELECT c.*,n.nspname FROM pg_catalog.pg_class c
  JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public'
@@ -88,14 +88,19 @@ WITH relations AS (
  SELECT 'sequence',to_jsonb(s) FROM pg_catalog.pg_sequences s WHERE schemaname='public'
  UNION ALL
  SELECT 'default_acl',to_jsonb(a)-'oid' FROM pg_catalog.pg_default_acl a
-), document AS (
+)"""
+
+LOGICAL_CATALOG = text(
+    LOGICAL_CATALOG_ENTRIES_V1
+    + """, document AS (
  SELECT jsonb_agg(jsonb_build_array(kind,value) ORDER BY kind,value::text)::text AS raw
  FROM entries
 )
 SELECT pg_catalog.octet_length(raw),
  pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(raw,'UTF8')),'hex')
 FROM document
-""")
+"""
+)
 
 LOGICAL_ACL = text("""
 SELECT kind,object_name,grantee,grantor,privilege,is_grantable FROM (

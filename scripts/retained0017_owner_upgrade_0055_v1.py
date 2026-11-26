@@ -38,7 +38,10 @@ from scripts import retained0017_catalog_baseline_v1 as baseline
 from scripts import retained0017_owner_plan_v1 as original
 from scripts import retained0017_upgrade_projection_v1 as projection
 from scripts.evidence_json import read_evidence_json
-from scripts.native_owner_catalog_snapshot_0058_v1 import LOGICAL_ACL, LOGICAL_CATALOG
+from scripts.native_owner_catalog_snapshot_0058_v1 import (
+    LOGICAL_ACL,
+    LOGICAL_CATALOG_ENTRIES_V1,
+)
 from scripts.native_owner_route_preflight_0056_v1 import _PROFILE_SQL
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -174,6 +177,56 @@ _COLUMN_ACL = text("""SELECT 'column'::pg_catalog.text,c.relname||'.'||a.attname
  CROSS JOIN LATERAL pg_catalog.aclexplode(a.attacl) x
  WHERE n.nspname='public' AND a.attnum>0
  ORDER BY c.relname COLLATE pg_catalog."C",a.attname COLLATE pg_catalog."C",x.grantee,x.grantor,x.privilege_type,x.is_grantable""")
+
+# Independent canonical55 PG17.11 artifact R451 (raw SHA256 1756e0ad43a255f76199be126ffd4dfd8197b133ae033efccfa27ab24a004d92).
+# These two CHECK trees are pinned in full with only three FUNCEXPR funcid
+# tokens mapped to exact qualified signatures. Keep the original fingerprint
+# for post-commit checks of the final generation's physical function bindings.
+_RETAINED_CATALOG = text(
+    LOGICAL_CATALOG_ENTRIES_V1
+    + r""", transport_pins(relation_name,constraint_name,ast_sha256) AS (VALUES
+ ('qualification_report_spool','ck_qualification_report_spool_transport_unverified',
+  '8e1831bd2ea990031d4629e5b0f78b2dddef4c5800c0c4e808d521fb45b2f7e6'),
+ ('qualification_report_projection_receipts','ck_qualification_report_projection_receipts_transport_unverifie',
+  '1a97bcc8629d4f41f5da4551f34854a044088696411d1443b7c084b264422f88')
+), callbacks AS (
+ SELECT pg_catalog.to_regprocedure('public.qualification_native_canonical_v55(pg_catalog.jsonb)')::pg_catalog.oid::pg_catalog.int8 AS canonical_id,
+ pg_catalog.to_regprocedure('public.qualification_native_report_eligible_v55(pg_catalog.text,pg_catalog.text,pg_catalog.text,pg_catalog.text)')::pg_catalog.oid::pg_catalog.int8 AS report_id,
+ pg_catalog.to_regprocedure('public.qualification_native_projection_eligible_v55(pg_catalog.text,pg_catalog.text,pg_catalog.text,pg_catalog.text,pg_catalog.timestamptz)')::pg_catalog.oid::pg_catalog.int8 AS projection_id
+), checked_entries AS (
+ SELECT e.kind,e.value,p.relation_name,p.ast_sha256,CASE WHEN p.relation_name IS NOT NULL THEN
+ pg_catalog.replace(pg_catalog.replace(pg_catalog.replace(e.value->>'conbin',
+  '{FUNCEXPR \:funcid '||f.canonical_id||' \:funcresulttype ',
+  '{FUNCEXPR \:funcid [public.qualification_native_canonical_v55(pg_catalog.jsonb)] \:funcresulttype '),
+  '{FUNCEXPR \:funcid '||f.report_id||' \:funcresulttype ',
+  '{FUNCEXPR \:funcid [public.qualification_native_report_eligible_v55(pg_catalog.text,pg_catalog.text,pg_catalog.text,pg_catalog.text)] \:funcresulttype '),
+  '{FUNCEXPR \:funcid '||f.projection_id||' \:funcresulttype ',
+  '{FUNCEXPR \:funcid [public.qualification_native_projection_eligible_v55(pg_catalog.text,pg_catalog.text,pg_catalog.text,pg_catalog.text,timestamp with time zone)] \:funcresulttype ')
+ END AS mapped_ast
+ FROM entries e CROSS JOIN callbacks f LEFT JOIN transport_pins p
+ ON e.kind='constraint' AND e.value->>'contype'='c'
+ AND e.value->>'relation'=pg_catalog.to_regclass('public.'||p.relation_name)::pg_catalog.text
+ AND e.value->>'conname'=p.constraint_name
+ WHERE f.canonical_id>=16384 AND f.report_id>=16384 AND f.projection_id>=16384
+ AND f.canonical_id<>f.report_id AND f.canonical_id<>f.projection_id AND f.report_id<>f.projection_id
+), mapped_entries AS (
+ SELECT kind,value,relation_name,CASE WHEN relation_name IS NULL THEN value
+ ELSE pg_catalog.jsonb_set(value,'{conbin}',pg_catalog.to_jsonb(mapped_ast),false) END AS mapped_value,
+ pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(mapped_ast,'UTF8')),'hex') IS NOT DISTINCT FROM ast_sha256 AS ast_matches
+ FROM checked_entries
+), documents AS (
+ SELECT pg_catalog.jsonb_agg(pg_catalog.jsonb_build_array(kind,value) ORDER BY kind,value::pg_catalog.text)::pg_catalog.text AS original,
+ pg_catalog.jsonb_agg(pg_catalog.jsonb_build_array(kind,mapped_value) ORDER BY kind,mapped_value::pg_catalog.text)::pg_catalog.text AS mapped,
+ count(relation_name)=2 AND count(DISTINCT relation_name)=2 AND bool_and(ast_matches) AS approved
+ FROM mapped_entries
+)
+SELECT approved,pg_catalog.octet_length(original),
+ pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(original,'UTF8')),'hex'),
+ pg_catalog.octet_length(mapped),
+ pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(mapped,'UTF8')),'hex')
+FROM documents
+"""
+)
 
 
 class Retained0017UpgradeRefused(ValueError):
@@ -697,11 +750,22 @@ async def _after(connection, pins, before, *, read_only):
         and type(item["control_revision"]) is int
         and item["control_revision"] == 0
     )
-    size, logical = (await connection.execute(LOGICAL_CATALOG)).one()
+    approved, size, logical, mapped_size, mapped = (
+        await connection.execute(_RETAINED_CATALOG)
+    ).one()
     _need(
-        type(size) is int and 0 < size <= 32 * 1024 * 1024 and original._digest(logical)
+        approved is True,
+        "retained0017_upgrade0055_transport_check_identity_mismatch",
     )
-    return state | {"logical_sha256": logical, "old_projection": actual}
+    _need(
+        all(type(n) is int and 0 < n <= 32 * 1024 * 1024 for n in (size, mapped_size))
+        and all(original._digest(digest) for digest in (logical, mapped))
+    )
+    return state | {
+        "logical_sha256": logical,
+        "rehearsal_catalog_sha256": mapped,
+        "old_projection": actual,
+    }
 
 
 def _migrate(sync_connection, script):
@@ -796,7 +860,11 @@ async def _commit_once(engine, pins, prepared, expected, *, _custody=None):
                 await connection.run_sync(_migrate, prepared[3])
                 _replay_source(prepared, pins)
                 final = await _after(connection, pins, before, read_only=False)
-                _need(final["logical_sha256"] == rehearsal["logical_sha256"])
+                _need(
+                    final["rehearsal_catalog_sha256"]
+                    == rehearsal["rehearsal_catalog_sha256"],
+                    "retained0017_upgrade0055_rehearsal_catalog_mismatch",
+                )
                 if _custody is not None:
                     await custody._replay_owned_connection_v1(_custody, connection)
                     _replay_source(prepared, pins)
