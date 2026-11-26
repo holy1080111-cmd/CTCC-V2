@@ -68,6 +68,9 @@ _READBACK_SETTINGS = (
     "SET LOCAL lock_timeout='1000ms'",
     "SET LOCAL statement_timeout='10000ms'",
 )
+_CATALOG_CONTEXT = text("""SELECT pg_catalog.current_setting('search_path'),
+ pg_catalog.current_setting('transaction_isolation'),
+ pg_catalog.current_setting('transaction_read_only')""")
 
 
 class NativeOwnerUpgradeRefusal(ValueError):
@@ -465,6 +468,32 @@ async def _marker_checked_v2(owner, pins):
             await transaction.rollback()
 
 
+async def _read_fitted_owner_catalog_v2(connection, *, read_only):
+    _need(type(read_only) is bool)
+    mode = ("repeatable read", "on") if read_only else ("read committed", "off")
+    original = ("pg_catalog, public, pg_temp", *mode)
+    _need(tuple((await connection.execute(_CATALOG_CONTEXT)).one()) == original)
+    phase = await connection.begin_nested()
+    try:
+        await connection.exec_driver_sql("SET LOCAL search_path TO pg_catalog, pg_temp")
+        _need(
+            tuple((await connection.execute(_CATALOG_CONTEXT)).one())
+            == ("pg_catalog, pg_temp", *mode)
+        )
+        return await connection.scalar(
+            text(
+                fitted56.CATALOG_SQL
+                if read_only
+                else fitted56.OWNER_READWRITE_CATALOG_SQL
+            )
+        )
+    finally:
+        # Rolling back the observation savepoint restores SET LOCAL even after
+        # a failed statement, without releasing any outer migration locks.
+        await phase.rollback()
+        _need(tuple((await connection.execute(_CATALOG_CONTEXT)).one()) == original)
+
+
 async def _catalog_v2(connection, pins, head, *, read_only):
     """Actual source-defined catalog admission precedes all application-row reads."""
     from app.core.native_role_preflight_v1 import _exact_existing_acl
@@ -493,13 +522,7 @@ async def _catalog_v2(connection, pins, head, *, read_only):
             if read_only
             else current56.observe_owner_readwrite_installation_0056(document)
         )
-        fitted = await connection.scalar(
-            text(
-                fitted56.CATALOG_SQL
-                if read_only
-                else fitted56.OWNER_READWRITE_CATALOG_SQL
-            )
-        )
+        fitted = await _read_fitted_owner_catalog_v2(connection, read_only=read_only)
         check = (
             fitted56.inspect_catalog_document
             if read_only

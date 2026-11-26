@@ -85,6 +85,23 @@ async def test_actual0055_v2_rehearsal_rollback_then_commit_preserves_all_rows_a
         current56.OWNER_CATALOG_SQL,
         current56.observe_owner_installation_0056,
     )
+    for read_only, settings, expected in (
+        (True, subject._READBACK_SETTINGS, ("repeatable read", "on")),
+        (False, subject._OWNER_SETTINGS, ("read committed", "off")),
+    ):
+        async with owner.connect() as connection, connection.begin():
+            for setting in settings:
+                await connection.exec_driver_sql(setting)
+            fitted = await subject._read_fitted_owner_catalog_v2(
+                connection, read_only=read_only
+            )
+            assert fitted["search_path"] == "pg_catalog, pg_temp"
+            assert tuple(
+                (await connection.execute(subject._CATALOG_CONTEXT)).one()
+            ) == (
+                "pg_catalog, public, pg_temp",
+                *expected,
+            )
     assert await subject._readonly_inventory_v2(owner, pins, "0056") == final
     assert await subject._role_observation_v2(selected, owner, pins, "0056") == actors
     assert len(final["relations"]) - len(before["relations"]) == 3
