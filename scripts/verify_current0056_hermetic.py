@@ -75,7 +75,11 @@ _FITTED_CASES = (
     ),
     (
         fitted_measurement.CASE[0],
-        "test_actual0056_non_superuser_owner_upgrades_0055_once_with_fresh_readback",
+        "test_actual0056_reviewed_superowner_upgrades_0055_once_with_fresh_readback",
+    ),
+    (
+        fitted_measurement.CASE[0],
+        "test_actual0056_demoted_owner_refuses_before_ddl_with_unchanged_0055",
     ),
     (
         fitted_measurement.CASE[0],

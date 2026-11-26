@@ -135,30 +135,36 @@ def test_source58_mandatory_report_rejects_each_new_owner_fault_omission(
         )
 
 
-def test_source58_preserves_the_existing_genuine_cli_once_on_historical_owner1():
-    case = (
-        "tests.integration.test_gate3_fitted_candidate_custody_pg",
-        "test_actual0056_non_superuser_owner_upgrades_0055_once_with_fresh_readback",
+def test_source58_requires_both_genuine_owner_cli_cases_on_postgres1():
+    expected = tuple(
+        ("tests.integration.test_gate3_fitted_candidate_custody_pg", name)
+        for name in (
+            "test_actual0056_reviewed_superowner_upgrades_0055_once_with_fresh_readback",
+            "test_actual0056_demoted_owner_refuses_before_ddl_with_unchanged_0055",
+        )
     )
-    assert full.REQUIRED_CASES.count(case) == 1
-    node = case[0].replace(".", "/") + ".py::" + case[1]
-    assert [
-        index
-        for index in range(5)
-        if full.collection.selected_for("postgres", index, node)
-    ] == [1]
+    assert full.OWNER0056_CLI_CASES == expected
+    for case in expected:
+        assert full.REQUIRED_CASES.count(case) == 1
+        node = case[0].replace(".", "/") + ".py::" + case[1]
+        assert [
+            index
+            for index in range(5)
+            if full.collection.selected_for("postgres", index, node)
+        ] == [1]
+        assert case in full.required_cases("postgres", 1)
     assert len(full.OWNER0056_V2_CASES) == len(set(full.OWNER0056_V2_CASES)) == 11
     assert all(case not in full.base.REQUIRED_CASES for case in full.OWNER0056_V2_CASES)
 
 
 @pytest.mark.parametrize(
-    "missing", (*full.OWNER0056_V2_CASES, full.OWNER0056_EXISTING_CLI_CASE)
+    "missing", (*full.OWNER0056_V2_CASES, *full.OWNER0056_CLI_CASES)
 )
 def test_source58_mandatory_report_rejects_each_new_owner55_case_omission(
     tmp_path, missing
 ):
     root = ET.Element("testsuites")
-    required = (*full.CANONICAL_OWNER_CASES, full.OWNER0056_EXISTING_CLI_CASE)
+    required = (*full.CANONICAL_OWNER_CASES, *full.OWNER0056_CLI_CASES)
     cases = [case for case in required if case != missing]
     suite = ET.SubElement(
         root, "testsuite", tests=str(len(cases)), failures="0", errors="0", skipped="0"
