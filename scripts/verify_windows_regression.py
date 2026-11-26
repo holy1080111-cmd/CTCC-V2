@@ -88,6 +88,7 @@ POSTGRES_INTEGRATION = (
     "test_native_owner_storage_diagnostic_0058_pg.py",
     "test_canonical0055_catalog_reference_v1_pg.py",
     "test_paper58_catalog_reference_v1_pg.py",
+    "test_paper58_owned_runtime_v1_pg.py",
     "test_retained0017_owner_plan_v1_pg.py",
     "test_retained0017_catalog_references_v1_pg.py",
     "test_native_postsubmit_profiles0057_pg.py",

@@ -53,7 +53,10 @@ CANONICAL_OWNER_PATHS = frozenset(
 )
 OWNER_PATHS = RETAINED0017_OWNER_PATHS | CANONICAL_OWNER_PATHS
 PAPER58_REFERENCE_PATHS = frozenset(
-    {"tests/integration/test_paper58_catalog_reference_v1_pg.py"}
+    {
+        "tests/integration/test_paper58_catalog_reference_v1_pg.py",
+        "tests/integration/test_paper58_owned_runtime_v1_pg.py",
+    }
 )
 _OBSERVED = set()
 # Keep every historical receipt producer together on its original observer.

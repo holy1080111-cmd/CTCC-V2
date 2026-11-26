@@ -410,6 +410,10 @@ REQUIRED_CASES = (
     *references17.CASES,
     *storage_diagnostic.CASES,
     *PAPER58_CASES,
+    (
+        "tests.integration.test_paper58_owned_runtime_v1_pg",
+        "test_actual58_owned_paper_http_recovers_real_restricted_state_after_commit_ack_fault",
+    ),
     SUCCESSOR_CASES[-1],
 )
 HISTORICAL_REPORTS = base.HISTORICAL_REPORTS
