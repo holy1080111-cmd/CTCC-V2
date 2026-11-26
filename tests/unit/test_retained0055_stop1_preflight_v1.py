@@ -1,9 +1,32 @@
+import subprocess
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from scripts import retained0055_stop1_preflight_v1 as subject
 from scripts import retained_pg_bootstrap_custody_v1 as custody
+
+
+def test_revision1_admission_imports_without_site_packages():
+    root = Path(__file__).resolve().parents[2]
+    program = """
+import sys
+sys.path.insert(0, sys.argv[1])
+from scripts import retained0055_stop1_preflight_v1 as subject
+assert sys.flags.isolated == sys.flags.no_site == 1
+assert sys.dont_write_bytecode
+assert subject.require_reference_data().fitted_dependency_count == 150
+assert 'scripts.retained0055_negative_stop_reassert_v1' not in sys.modules
+assert 'sqlalchemy' not in sys.modules
+"""
+    subprocess.run(
+        [sys.executable, "-I", "-S", "-B", "-c", program, str(root)],
+        check=True,
+        capture_output=True,
+        timeout=20,
+    )
 
 
 @pytest.mark.parametrize("fixture", (False, True))

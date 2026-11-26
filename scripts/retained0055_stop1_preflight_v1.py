@@ -2,11 +2,6 @@
 
 from __future__ import annotations
 
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncEngine
-from sqlalchemy.pool import NullPool
-
-from scripts import retained0055_negative_stop_reassert_v1 as negative
 from scripts import retained0056_bootstrap_reference_pin_v2 as fitted_reference
 from scripts import retained_pg_bootstrap_custody_v1 as custody
 from scripts.evidence_json import read_evidence_json
@@ -35,10 +30,10 @@ _EXPECTED_PRIOR = {
     "after_sha256": _AFTER_SHA256,
 }
 _PHASES = ("ready", "claimed", "commit_attempted", "readback_only")
-_SESSION = text("""SELECT pg_catalog.current_setting('default_transaction_read_only'),
+_SESSION = """SELECT pg_catalog.current_setting('default_transaction_read_only'),
  pg_catalog.current_setting('transaction_read_only'),
- pg_catalog.current_setting('transaction_isolation'), pg_catalog.pg_backend_pid()""")
-_AUDIT = text("""SELECT actor='source_owned_maintenance' AND action=:action
+ pg_catalog.current_setting('transaction_isolation'), pg_catalog.pg_backend_pid()"""
+_AUDIT = """SELECT actor='source_owned_maintenance' AND action=:action
  AND resource_type='demo_automation_state' AND resource_id='1'
  AND "before"->>'before_snapshot_sha256'=:before_sha256
  AND "before"->'control_revision'='0'::pg_catalog.jsonb
@@ -46,7 +41,7 @@ _AUDIT = text("""SELECT actor='source_owned_maintenance' AND action=:action
  AND "before"->'execution_authority'='false'::pg_catalog.jsonb
  AND "after"->'execution_authority'='false'::pg_catalog.jsonb
  AND ip_address IS NULL AND occurred_at IS NOT NULL
- FROM public.audit_logs WHERE id=CAST(:operation_id AS pg_catalog.uuid)""")
+ FROM public.audit_logs WHERE id=CAST(:operation_id AS pg_catalog.uuid)"""
 
 
 def require_request_lineage(request):
@@ -122,6 +117,12 @@ def require_reference_data():
     return fitted_reference.read_reviewed_bootstrap_fitted_data_v2()
 
 
+def provider_locator_sha256(sealed):
+    digest = sealed["private_parent_operation"]["observed_provider_locator_sha256"]
+    custody._need(type(digest) is str and custody._HEX.fullmatch(digest) is not None)
+    return digest
+
+
 def require_result(result):
     reference = require_reference_data()
     expected = {
@@ -143,12 +144,16 @@ def require_result(result):
 
 
 async def _read_one(lease, engine, pins, sealed):
+    from sqlalchemy import text
+
+    from scripts import retained0055_negative_stop_reassert_v1 as negative
+
     async with engine.connect() as connection:
         phase = negative._Phase.READ
         transaction = await negative._begin(connection, pins, phase)
         try:
             await custody._replay_owned_connection_v1(lease, connection)
-            row = tuple((await connection.execute(_SESSION)).one())
+            row = tuple((await connection.execute(text(_SESSION))).one())
             custody._need(row[:3] == ("on", "on", "repeatable read"))
             custody._need(type(row[3]) is int and row[3] > 0)
             state = await negative._observe(connection, pins, phase)
@@ -157,7 +162,7 @@ async def _read_one(lease, engine, pins, sealed):
             accepted = sealed["native_result"]
             custody._need(
                 await connection.scalar(
-                    _AUDIT,
+                    text(_AUDIT),
                     {
                         "action": negative.ACTION,
                         "operation_id": accepted["operation_id"],
@@ -174,6 +179,11 @@ async def _read_one(lease, engine, pins, sealed):
 
 async def observe_owned_stop1(lease, engine, pins, source_archive, sealed):
     """Two uncached owner readbacks without transaction write authority."""
+    from sqlalchemy.ext.asyncio import AsyncEngine
+    from sqlalchemy.pool import NullPool
+
+    from scripts import retained0055_negative_stop_reassert_v1 as negative
+
     custody._guard()
     record = custody._record(lease)
     custody._need(

@@ -1327,11 +1327,17 @@ def _checked_provider_locator(raw):
     return locator, Path(venv.as_posix()), Path(manifest_file.as_posix())
 
 
-def _require_runtime_provider(files, *, logical=False):
+def _require_runtime_provider(files, *, logical=False, expected_locator_sha256=None):
     # A locator is only a source-pinned inventory address. All program/vendor
     # bytes are reopened and rehashed, and this invocation establishes fresh
     # read-only mounts before any application/vendor import.
-    raw_locator = _private_bytes(Path(files.runtime_provider_file), 16384)
+    raw_locator = _private_bytes(
+        Path(files.runtime_provider_file), 16384, expected=expected_locator_sha256
+    )
+    return _require_runtime_provider_bytes(files, raw_locator, logical=logical)
+
+
+def _require_runtime_provider_bytes(files, raw_locator, *, logical=False):
     _locator, venv, manifest_file = _checked_provider_locator(raw_locator)
     if logical:
         # These paths are constructed by this module's fixed launcher. The
@@ -3388,7 +3394,9 @@ def _run_fixed_supervisor_v1(request, files, source, origin):
         type(files)
         is (RetainedBootstrapFilesV1 if has_cold_input else FreshCanonical17ResourcesV1)
     )
-    venv, vendor_manifest, _locator_sha256 = _require_runtime_provider(files)
+    provider_raw = None
+    if not stop1_preflight:
+        venv, vendor_manifest, _locator_sha256 = _require_runtime_provider(files)
     _verify_image(Path(files.pg_rootfs), Path(files.pg_inventory_file))
     source_raw = _private_bytes(
         Path(files.source_archive_file), 128 * 1024 * 1024, expected=source["archive"]
@@ -3411,6 +3419,17 @@ def _run_fixed_supervisor_v1(request, files, source, origin):
         manifest_raw = _private_bytes(
             Path(files.cold_manifest_file), 16 * 1024 * 1024, expected=expected
         )
+        if stop1_preflight:
+            stopped, cold_manifest = stop1.admit_manifest(manifest_raw, request)
+            _need(files.cold_directory == stopped["working_directory"])
+            provider_raw = _private_bytes(
+                Path(files.runtime_provider_file),
+                16384,
+                expected=stop1.provider_locator_sha256(stopped),
+            )
+            venv, vendor_manifest, _locator_sha256 = _require_runtime_provider_bytes(
+                files, provider_raw
+            )
         cold = os.open(
             files.cold_directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
         )
@@ -3418,12 +3437,11 @@ def _run_fixed_supervisor_v1(request, files, source, origin):
             if origin is _Origin.PRESERVED:
                 cold_manifest = _cold_manifest(manifest_raw, origin=_Origin.PRESERVED)
             else:
-                stopped, cold_manifest = (
-                    stop1.admit_manifest(manifest_raw, request)
-                    if stop1_preflight
-                    else _stopped55_manifest_v1(manifest_raw, request)
-                )
-                _need(files.cold_directory == stopped["working_directory"])
+                if not stop1_preflight:
+                    stopped, cold_manifest = _stopped55_manifest_v1(
+                        manifest_raw, request
+                    )
+                    _need(files.cold_directory == stopped["working_directory"])
                 _need(
                     tuple(stopped["stopped_directory_identity"])
                     == _directory_identity(os.fstat(cold))[:2]
@@ -3460,7 +3478,10 @@ def _run_fixed_supervisor_v1(request, files, source, origin):
         ("python-inventory.json", files.python_inventory_file),
     ):
         _write_private(
-            resources / name, _bounded_regular(Path(original), 2 * 1024 * 1024)
+            resources / name,
+            provider_raw
+            if name == "provider.json" and provider_raw is not None
+            else _bounded_regular(Path(original), 2 * 1024 * 1024),
         )
     _write_admitted_source_archive_v1(resources / "source.tar", source_raw, source)
     if has_cold_input:
@@ -3745,7 +3766,8 @@ async def _execute_stopped55_v1(
             == "/run/resources/negative-stop-eligibility.json"
         )
         _, snapshot = _stopped55_negative_eligibility_v1(request)
-    _runtime, _vendor, locator = _require_runtime_provider(files, logical=True)
+    if not stop1_preflight:
+        _runtime, _vendor, locator = _require_runtime_provider(files, logical=True)
     pins = negative.NegativeStopPinsV1(
         negative.canonical.OwnerUpgradePinsV1(
             source["commit"], source["tree"], source["archive"], route
@@ -3763,6 +3785,12 @@ async def _execute_stopped55_v1(
         if stop1_preflight
         else _stopped55_manifest_v1(raw, request)
     )
+    if stop1_preflight:
+        _runtime, _vendor, locator = _require_runtime_provider(
+            files,
+            logical=True,
+            expected_locator_sha256=stop1.provider_locator_sha256(stopped),
+        )
     cold = Path(files.cold_directory)
     _need(
         cold == Path("/run/resources/cold")
@@ -3990,7 +4018,22 @@ def _supervisor_stopped55_main_v1(*, negative_stop=False, stop1_preflight=False)
             stop1_preflight=stop1_preflight,
         )
         _need(_current_executable_sha() == PYTHON_ELF_SHA256)
-        _require_runtime_provider(files, logical=True)
+        if stop1_preflight:
+            from scripts import retained0055_stop1_preflight_v1 as stop1
+
+            raw = _private_bytes(
+                Path(files.cold_manifest_file),
+                16 * 1024 * 1024,
+                expected=stop1.INVENTORY_SHA256,
+            )
+            sealed, _parsed = stop1.admit_manifest(raw, request)
+            _require_runtime_provider(
+                files,
+                logical=True,
+                expected_locator_sha256=stop1.provider_locator_sha256(sealed),
+            )
+        else:
+            _require_runtime_provider(files, logical=True)
         _verify_image(Path(files.pg_rootfs), Path(files.pg_inventory_file))
         _verify_source(files, source)
         _require_runtime_metadata_v1()
