@@ -1,8 +1,9 @@
 """Static source predicates only; no runtime, credentials, DB or trading IO."""
 
 import asyncio
+import subprocess
+import sys
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from types import FunctionType
 
 import pytest
@@ -214,13 +215,11 @@ def test_factory_duplicate_common_mismatch_is_still_denied():
         guard._unique_static_function_pins_v3([first, _replace(first, 4, (99,))])
 
 
-def _install_alias_fixture(monkeypatch, *, extra_file=None):
+def _install_alias_fixture(monkeypatch):
     monkeypatch.setattr(fixture, "entry", ORIGINAL_ENTRY)
     monkeypatch.setattr(fixture, "async_entry", ORIGINAL_ASYNC_ENTRY)
     monkeypatch.setattr(fixture, "_NATIVE_GUARD", None, raising=False)
     monkeypatch.setattr(fixture, "leaf_alias", fixture.leaf, raising=False)
-    if extra_file is not None:
-        monkeypatch.setattr(fixture, "__file__", str(extra_file))
     fixture.closed.clear()
     guard.install_native_guards_v1(fixture, ("entry", "async_entry"))
     return fixture
@@ -257,28 +256,62 @@ def test_same_code_mutation_still_rejects_after_static_dedup(monkeypatch):
         module.entry()
 
 
-def test_changed_bytes_are_reread_after_real_yield_without_touching_source(monkeypatch):
-    temporary_base = (guard._ROOT / "validation-results").resolve()
-    temporary_base.mkdir(exist_ok=True)
-    assert temporary_base.is_relative_to(guard._ROOT.resolve())
-    with TemporaryDirectory(
-        prefix="unit-source-dedup-", dir=temporary_base
-    ) as directory:
-        target = Path(directory).resolve()
-        # Verified before the context's recursive cleanup; only this owned test
-        # child under the intended workspace can be removed.
-        assert target.is_relative_to(temporary_base)
-        extra = target / "source-sentinel.py"
-        extra.write_bytes(b"# original immutable-source sentinel\n")
-        module = _install_alias_fixture(monkeypatch, extra_file=extra)
-        pending = module.async_entry()
-        assert pending.send(None) is None
-        extra.write_bytes(b"# changed source sentinel\n")
-        with pytest.raises(guard.NativeSourceClosureError):
-            pending.send(None)
-        assert module.closed == ["closed"]
-        with pytest.raises(guard.NativeSourceClosureError):
-            pending.send(None)
+def test_changed_bytes_are_reread_after_real_yield_without_touching_source(tmp_path):
+    # The guard compiles its exact defining source and insists that each pinned
+    # module is under its source root. Import the original bytes in a writable
+    # isolated tree so the sentinel can change even when /app is read-only.
+    sandbox = tmp_path / "source"
+    source = Path(guard.__file__).resolve().parents[2]
+    for relative in (
+        "app/__init__.py",
+        "app/domain/__init__.py",
+        "app/domain/source_primitives.py",
+        "app/trade_qualification/__init__.py",
+        "app/trade_qualification/native_continuation_guard_v1.py",
+        "app/trade_qualification/native_sqlalchemy_factory_guard_v1.py",
+        "tests/unit/native_guard_fixture_v1.py",
+    ):
+        destination = sandbox / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes((source / relative).read_bytes())
+    # Force this fixture package to win over any installed package named tests.
+    (sandbox / "tests" / "__init__.py").touch()
+    program = r"""
+import sys
+from pathlib import Path
+
+root = Path.cwd().resolve()
+sys.path.insert(0, str(root))
+from app.trade_qualification import native_continuation_guard_v1 as guard
+from tests.unit import native_guard_fixture_v1 as fixture
+
+assert guard._ROOT == root
+assert Path(fixture.__file__).resolve() == root / "tests/unit/native_guard_fixture_v1.py"
+sentinel = root / "source-sentinel.py"
+sentinel.write_bytes(b"# original immutable-source sentinel\n")
+fixture.__file__ = str(sentinel)
+guard.install_native_guards_v1(fixture, ("entry", "async_entry"))
+pending = fixture.async_entry()
+assert pending.send(None) is None
+sentinel.write_bytes(b"# changed source sentinel\n")
+for _ in range(2):
+    try:
+        pending.send(None)
+    except guard.NativeSourceClosureError as error:
+        assert str(error) == "native_continuation_source_changed"
+    else:
+        raise AssertionError("modified source or retired coroutine was admitted")
+    assert fixture.closed == ["closed"]
+"""
+    result = subprocess.run(
+        [sys.executable, "-I", "-B", "-c", program],
+        cwd=sandbox,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.asyncio

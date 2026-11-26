@@ -66,29 +66,32 @@ def test_retained0017_all_actual_declared_cases_are_mandatory_once():
 
 
 def test_retained0017_owner_module_runs_only_in_current58_component3():
-    assert full.collection.RETAINED0017_OWNER_PATHS == {
+    expected = {
         PATH,
         "tests/integration/test_retained0017_catalog_references_v1_pg.py",
+        "tests/integration/test_retained0017_owner_upgrade_0055_v1_pg.py",
+        "tests/integration/test_retained0017_upgrade_projection_v1_pg.py",
+        "tests/integration/test_retained0055_negative_stop_v1_pg.py",
     }
-    assert Path(PATH).name in windows.POSTGRES_INTEGRATION
-    assert PATH not in legacy.POSTGRES_TEST_PATHS
+    assert full.collection.RETAINED0017_OWNER_PATHS == expected
+    assert {Path(path).name for path in expected} <= set(windows.POSTGRES_INTEGRATION)
+    assert expected.isdisjoint(legacy.POSTGRES_TEST_PATHS)
     assert len(legacy.POSTGRES_TEST_PATHS) == 108
     assert [len(legacy.postgres_paths(index)) for index in range(2)] == [48, 60]
-    assert all(
-        case not in full.base.REQUIRED_CASES for case in full.RETAINED0017_OWNER_CASES
-    )
-    for module, name in full.RETAINED0017_OWNER_CASES:
-        node = module.replace(".", "/") + ".py::" + name
+    for path in expected:
         assert [
             index
-            for index in range(5)
-            if full.collection.selected_for("postgres", index, node)
+            for index in range(full.collection.POSTGRES_COMPONENT_COUNT)
+            if full.collection.selected_for("postgres", index, path)
         ] == [3]
         assert not any(
-            full.collection.selected_for("shard", index, node) for index in range(8)
+            full.collection.selected_for("shard", index, path)
+            for index in range(full.collection.SHARD_COUNT)
         )
-        assert (module, name) in full.required_cases("postgres", 3)
-        assert (module, name) in full.required_cases("full", None)
+    for case in full.RETAINED0017_OWNER_CASES:
+        assert case not in full.base.REQUIRED_CASES
+        assert case in full.required_cases("postgres", 3)
+        assert case in full.required_cases("full", None)
 
 
 def test_retained0017_complete_synthetic_required_report_codec(tmp_path):
