@@ -77,38 +77,84 @@ def atr(candles: Sequence[Candle], period: int = 14) -> Decimal | None:
     return wilder_average(true_ranges(candles), period)
 
 
-def rsi(closes: Sequence[Decimal], period: int = 14) -> Decimal | None:
-    if len(closes) < period + 1:
-        return None
+def _rsi_changes(closes: Sequence[Decimal]) -> tuple[list[Decimal], list[Decimal]]:
     changes = [current - previous for previous, current in pairwise(closes)]
     gains = [max(change, D("0")) for change in changes]
     losses = [max(-change, D("0")) for change in changes]
-    avg_gain = sum(gains[:period], D("0")) / D(period)
-    avg_loss = sum(losses[:period], D("0")) / D(period)
-    for gain, loss in zip(gains[period:], losses[period:]):
-        avg_gain = (avg_gain * D(period - 1) + gain) / D(period)
-        avg_loss = (avg_loss * D(period - 1) + loss) / D(period)
+    return gains, losses
+
+
+def _rsi_value(avg_gain: Decimal, avg_loss: Decimal) -> Decimal:
     if avg_loss == 0:
         return D("100") if avg_gain > 0 else D("50")
     rs = avg_gain / avg_loss
     return D("100") - D("100") / (D("1") + rs)
 
 
+def rsi(closes: Sequence[Decimal], period: int = 14) -> Decimal | None:
+    if len(closes) < period + 1:
+        return None
+    gains, losses = _rsi_changes(closes)
+    avg_gain = sum(gains[:period], D("0")) / D(period)
+    avg_loss = sum(losses[:period], D("0")) / D(period)
+    for gain, loss in zip(gains[period:], losses[period:]):
+        avg_gain = (avg_gain * D(period - 1) + gain) / D(period)
+        avg_loss = (avg_loss * D(period - 1) + loss) / D(period)
+    return _rsi_value(avg_gain, avg_loss)
+
+
+def rsi_series(closes: Sequence[Decimal], period: int = 14) -> list[Decimal | None]:
+    """Each value equals RSI evaluated at that closed-bar prefix."""
+    output: list[Decimal | None] = [None] * len(closes)
+    if period <= 0 or len(closes) < period + 1:
+        return output
+    gains, losses = _rsi_changes(closes)
+    divisor, carried = D(period), D(period - 1)
+    avg_gain = sum(gains[:period], D("0")) / divisor
+    avg_loss = sum(losses[:period], D("0")) / divisor
+    output[period] = _rsi_value(avg_gain, avg_loss)
+    for index, (gain, loss) in enumerate(
+        zip(gains[period:], losses[period:]), start=period + 1
+    ):
+        avg_gain = (avg_gain * carried + gain) / divisor
+        avg_loss = (avg_loss * carried + loss) / divisor
+        output[index] = _rsi_value(avg_gain, avg_loss)
+    return output
+
+
+def _macd_values(closes: Sequence[Decimal], fast: int, slow: int) -> list[Decimal]:
+    return [
+        fast_value - slow_value
+        for fast_value, slow_value in zip(
+            ema_series(closes, fast), ema_series(closes, slow)
+        )
+        if fast_value is not None and slow_value is not None
+    ]
+
+
 def macd(
     closes: Sequence[Decimal], fast: int = 12, slow: int = 26, signal: int = 9
 ) -> tuple[Decimal | None, Decimal | None, Decimal | None]:
-    fast_series = ema_series(closes, fast)
-    slow_series = ema_series(closes, slow)
-    macd_values: list[Decimal] = []
-    for fast_value, slow_value in zip(fast_series, slow_series):
-        if fast_value is not None and slow_value is not None:
-            macd_values.append(fast_value - slow_value)
+    macd_values = _macd_values(closes, fast, slow)
     if not macd_values:
         return None, None, None
     macd_value = macd_values[-1]
     signal_value = ema(macd_values, signal)
     histogram = None if signal_value is None else macd_value - signal_value
     return macd_value, signal_value, histogram
+
+
+def macd_histogram_series(
+    closes: Sequence[Decimal], fast: int = 12, slow: int = 26, signal: int = 9
+) -> list[Decimal | None]:
+    """Each value equals the MACD histogram at that closed-bar prefix."""
+    values = _macd_values(closes, fast, slow)
+    output: list[Decimal | None] = [None] * (len(closes) - len(values))
+    output.extend(
+        None if signal_value is None else value - signal_value
+        for value, signal_value in zip(values, ema_series(values, signal))
+    )
+    return output
 
 
 def adx(candles: Sequence[Candle], period: int = 14) -> Decimal | None:

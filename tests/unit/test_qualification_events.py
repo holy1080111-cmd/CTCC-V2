@@ -16,12 +16,33 @@ from app.domain.market import (
     OrderBook,
     Ticker,
 )
-from app.indicators.core import macd
+from app.indicators.core import macd, macd_histogram_series, rsi, rsi_series
 from app.market.quality.candles import BAR_SECONDS, candle_closed_at
 from app.trade_qualification.events import STRATEGIES, extract_trigger
 
 D = Decimal
 OBSERVED = datetime(2024, 2, 20, 10, 10, tzinfo=UTC)
+
+
+@pytest.mark.parametrize("precision", [8, 50])
+def test_momentum_series_preserve_exact_indicator_value_at_each_prefix(precision):
+    def exact(value):
+        return None if value is None else value.as_tuple()
+
+    for closes in (
+        [D(100)] * 80,
+        [D("100.000301") + D(i) * D("0.0313709") for i in range(240)],
+        [D("97.010432") - D(i % 13) * D("0.08191") for i in range(240)],
+    ):
+        with localcontext() as context:
+            context.prec = precision
+            histograms = macd_histogram_series(closes)
+            strength = rsi_series(closes)
+            assert len(histograms) == len(strength) == len(closes)
+            for idx in range(len(closes)):
+                prefix = closes[: idx + 1]
+                assert exact(histograms[idx]) == exact(macd(prefix)[2])
+                assert exact(strength[idx]) == exact(rsi(prefix))
 
 
 def _row(time, close, *, open_=None, high=None, low=None):

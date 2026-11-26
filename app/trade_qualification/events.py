@@ -16,7 +16,7 @@ from typing import Literal
 
 from app.domain.analysis import MultiTimeframeAnalysis
 from app.domain.market import MarketSnapshot
-from app.indicators.core import atr, ema, macd, rsi
+from app.indicators.core import atr, ema, macd_histogram_series, rsi_series
 from app.market.quality.candles import BAR_SECONDS, candle_closed_at
 from app.structure.engine import analyze_structure, find_swings
 from app.trade_qualification.event_models import TriggerDetection
@@ -433,11 +433,11 @@ def _setups(rows, timeframe, strategy, direction):
 
 
 def _momentum(rows, direction):
+    closes = [row.close for row in rows]
     states = []
-    for end in range(1, len(rows) + 1):
-        closes = [row.close for row in rows[:end]]
-        histogram = macd(closes)[2]
-        relative_strength = rsi(closes, 14)
+    for histogram, relative_strength in zip(
+        macd_histogram_series(closes), rsi_series(closes, 14), strict=True
+    ):
         if histogram is None or relative_strength is None:
             states.append(None)
         else:
