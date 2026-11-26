@@ -1,0 +1,238 @@
+name: Native Live Windows TLS loopback timing cases
+
+on:
+  push:
+    branches: [work/native-live-loopback-nested-validation]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  exact-native-loopback:
+    if: github.ref == 'refs/heads/work/native-live-loopback-nested-validation'
+    name: Three unchanged Windows native TLS loopback cases
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - name: Check out the validation-only workflow topic
+        id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Export the exact canonical subject source
+        id: source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $subject = 'fc4a90af35cce2a2a48b2bf3174cb8d63619289c'
+          $expectedTree = '189a75dc5b835afa0722dabf573125083cea8a8c'
+          $expectedManifest = '4604e010cc015dae6443822154f1eec4dff6d3db581f86bb42a40d658b123928'
+          $topic = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $topic -cne $env:GITHUB_SHA) { throw 'LOOPBACK_WORKFLOW_SHA_MISMATCH' }
+          git merge-base --is-ancestor $subject $topic
+          if ($LASTEXITCODE -ne 0) { throw 'LOOPBACK_SUBJECT_ANCESTOR_REFUSED' }
+          $changed = @(git diff --name-only $subject $topic)
+          $expected = @('.github/workflows/native-live-loopback-windows.yml', 'MANIFEST.sha256')
+          if ($LASTEXITCODE -ne 0 -or $changed.Count -ne $expected.Count -or (Compare-Object $expected $changed -CaseSensitive)) {
+            throw 'LOOPBACK_VALIDATION_ONLY_TOPIC_REFUSED'
+          }
+          $tree = (git rev-parse ('{0}^{{tree}}' -f $subject)).Trim()
+          if ($LASTEXITCODE -ne 0 -or $tree -cne $expectedTree) { throw 'LOOPBACK_SUBJECT_TREE_MISMATCH' }
+          $result = Join-Path $env:RUNNER_TEMP 'ctcc-native-live-loopback'
+          New-Item -ItemType Directory -Path $result | Out-Null
+          $archive = Join-Path $result 'source.zip'
+          $source = Join-Path $result 'source'
+          git -c core.autocrlf=false -c core.eol=lf archive --format=zip --output="$archive" "$subject"
+          if ($LASTEXITCODE -ne 0) { throw 'LOOPBACK_SUBJECT_ARCHIVE_FAILED' }
+          Expand-Archive -LiteralPath $archive -DestinationPath $source
+          $manifest = (Get-FileHash -LiteralPath (Join-Path $source 'MANIFEST.sha256') -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($manifest -cne $expectedManifest) { throw 'LOOPBACK_SUBJECT_MANIFEST_MISMATCH' }
+          $identity = @{
+            schema = 'ctcc.native_live.windows_loopback_subject.v1'
+            subject_commit = $subject
+            subject_tree = $tree
+            subject_manifest_sha256 = $manifest
+            workflow_commit = $topic
+            workflow_sha256 = (Get-FileHash -LiteralPath $expected[0] -Algorithm SHA256).Hash.ToLowerInvariant()
+            archive_sha256 = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+            test_source_sha256 = (Get-FileHash -LiteralPath (Join-Path $source 'tests/unit/test_native_live_physical_callgraph_v1.py') -Algorithm SHA256).Hash.ToLowerInvariant()
+            dependency_lock_sha256 = (Get-FileHash -LiteralPath (Join-Path $source 'requirements/validation-windows-py312.lock') -Algorithm SHA256).Hash.ToLowerInvariant()
+            runtime_installer_sha256 = (Get-FileHash -LiteralPath (Join-Path $source '.github/scripts/install-windows-validation-runtime.ps1') -Algorithm SHA256).Hash.ToLowerInvariant()
+            runner_label = 'windows-2025'
+            runner_image_version = $env:ImageVersion
+            run_id = $env:GITHUB_RUN_ID
+          }
+          [IO.File]::WriteAllText((Join-Path $result 'source-identity.json'), (($identity | ConvertTo-Json -Compress) + "`n"), [Text.UTF8Encoding]::new($false))
+
+      - name: Install the subject's pinned Windows runtime
+        id: runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installer = Join-Path $env:RUNNER_TEMP 'ctcc-native-live-loopback/source/.github/scripts/install-windows-validation-runtime.ps1'
+          & $installer
+
+      - name: Verify exact archives and the isolated hash-locked dependency set
+        id: dependencies
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $result = Join-Path $env:RUNNER_TEMP 'ctcc-native-live-loopback'
+          python -B scripts/manifest.py --check
+          if ($LASTEXITCODE -ne 0) { throw 'LOOPBACK_WORKFLOW_TOPIC_MANIFEST_MISMATCH' }
+          Set-Location -LiteralPath (Join-Path $result 'source')
+          python -B scripts/manifest.py --check
+          if ($LASTEXITCODE -ne 0) { throw 'LOOPBACK_SUBJECT_MANIFEST_READBACK_FAILED' }
+          $venv = Join-Path $result 'venv'
+          python -m venv $venv
+          if ($LASTEXITCODE -ne 0) { throw 'LOOPBACK_VENV_CREATION_FAILED' }
+          $py = Join-Path $venv 'Scripts/python.exe'
+          & $py -m pip --isolated install --require-hashes --only-binary=:all: -r requirements/validation-windows-py312.lock
+          if ($LASTEXITCODE -ne 0) { throw 'LOOPBACK_LOCKED_INSTALL_FAILED' }
+          & $py -m pip --isolated install --no-deps --no-build-isolation '.[test,validation]'
+          if ($LASTEXITCODE -ne 0) { throw 'LOOPBACK_SOURCE_INSTALL_FAILED' }
+          & $py -m pip check
+          if ($LASTEXITCODE -ne 0) { throw 'LOOPBACK_PIP_CHECK_FAILED' }
+          $dependency = & $py -B -m scripts.verify_dependency_lock --target windows
+          if ($LASTEXITCODE -ne 0) { throw 'LOOPBACK_DEPENDENCY_IDENTITY_FAILED' }
+          [IO.File]::WriteAllText((Join-Path $result 'dependency-result.json'), (($dependency -join "`n") + "`n"), [Text.UTF8Encoding]::new($false))
+
+      - name: Execute and read back three exact unchanged pytest nodes
+        id: tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $result = Join-Path $env:RUNNER_TEMP 'ctcc-native-live-loopback'
+          Set-Location -LiteralPath (Join-Path $result 'source')
+          $py = Join-Path $result 'venv/Scripts/python.exe'
+          $env:DATABASE_URL = $null
+          $env:REDIS_URL = $null
+          @'
+          import hashlib
+          import json
+          import subprocess
+          import sys
+          from pathlib import Path
+          from xml.etree import ElementTree as ET
+
+          from scripts.verify_final_hermetic import verify_pytest_report
+
+          root = Path(sys.argv[1])
+          module = "tests.unit.test_native_live_physical_callgraph_v1"
+          method = "test_original_staged_worker_real_vendor_loopback_first_post_budget"
+          parameters = ("native_elapsed", "observed_call_counts", "stale_instrument_refused")
+          names = tuple(f"{method}[{param}]" for param in parameters)
+          case_path = module.replace(".", "/") + ".py"
+          nodes = [f"{case_path}::{name}" for name in names]
+          junit = root / "windows-junit.xml"
+          result = {
+              "schema": "ctcc.native_live.windows_loopback_timing_subject.v1",
+              "status": "FAIL",
+              "stage": "unchanged_pytest_nodes",
+              "nodeids": nodes,
+              "execution_authority": False,
+          }
+          try:
+              with (root / "pytest.stdout.log").open("xb") as stdout, (root / "pytest.stderr.log").open("xb") as stderr:
+                  completed = subprocess.run(
+                      [sys.executable, "-B", "-m", "scripts.hermetic_pytest", "-p", "no:cacheprovider",
+                       "-ra", f"--junitxml={junit}", *nodes],
+                      stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr, check=False,
+                  )
+              result["pytest_exit_code"] = completed.returncode
+              if completed.returncode != 0:
+                  raise ValueError("loopback_unchanged_tests_refused")
+              result["stage"] = "actual_junit_and_fixture_scope"
+              checked = verify_pytest_report(junit, required_cases=tuple((module, name) for name in names))
+              if checked["tests"] != 3 or checked["passed"] != 3 or checked["skipped"] != 0:
+                  raise ValueError("loopback_exact_junit_refused")
+              cases = {case.attrib["name"]: case for case in ET.fromstring(junit.read_bytes()).iter("testcase")}
+              local_posts = {}
+              for name, count in zip(names, (1, 1, 0), strict=True):
+                  properties = cases[name].findall("properties/property[@name='native_vendor_loopback_entry_callgraph']")
+                  if len(properties) != 1:
+                      raise ValueError("loopback_fixture_evidence_missing")
+                  raw = json.loads(properties[0].attrib["value"])
+                  if (
+                      raw["schema"] != "ctcc.synthetic_real_vendor_entry_callgraph.v1"
+                      or type(raw["source_venue_order_writes"]) is not int or raw["source_venue_order_writes"] != 0
+                      or type(raw["actual_database_connections"]) is not int or raw["actual_database_connections"] != 0
+                      or raw["operator_live_arm"] is not False or raw["execution_authority"] is not False
+                      or raw["configured_runtime_acceptance"] is not False
+                      or raw["original_worker_and_vendor_code_unchanged"] is not True
+                      or type(raw["local_synthetic_http_posts"]) is not int or raw["local_synthetic_http_posts"] != count
+                  ):
+                      raise ValueError("loopback_fixture_evidence_refused")
+                  local_posts[name] = count
+              identity = json.loads((root / "source-identity.json").read_bytes())
+              result.update({
+                  "status": "PASS", "stage": "complete", "tests": 3, "passed": 3, "skipped": 0,
+                  "subject_commit": identity["subject_commit"], "subject_tree": identity["subject_tree"],
+                  "workflow_commit": identity["workflow_commit"], "subject_archive_sha256": identity["archive_sha256"],
+                  "junit_sha256": checked["sha256"], "local_fixture_posts": local_posts,
+                  "external_order_writes": 0, "actual_database_connections": 0,
+                  "configured_runtime_acceptance": False, "operator_live_arm": False,
+              })
+          except Exception as error:
+              result["failure_type"] = type(error).__name__
+          finally:
+              for filename in ("pytest.stdout.log", "pytest.stderr.log", "windows-junit.xml"):
+                  path = root / filename
+                  if path.is_file():
+                      result.setdefault("raw_sha256", {})[filename] = hashlib.sha256(path.read_bytes()).hexdigest()
+              with (root / "test-measurement.json").open("x", encoding="utf-8", newline="\n") as output:
+                  json.dump(result, output, indent=2, sort_keys=True)
+                  output.write("\n")
+          raise SystemExit(0 if result["status"] == "PASS" else 2)
+          '@ | & $py -B - $result
+          if ($LASTEXITCODE -ne 0) { throw 'LOOPBACK_THREE_EXACT_CASES_NOT_VERIFIED' }
+
+      - name: Seal only the bounded source and test artifacts
+        if: always()
+        shell: pwsh
+        env:
+          CTCC_CHECKOUT_STATUS: ${{ steps.checkout.outcome }}
+          CTCC_SOURCE_STATUS: ${{ steps.source.outcome }}
+          CTCC_RUNTIME_STATUS: ${{ steps.runtime.outcome }}
+          CTCC_DEPENDENCY_STATUS: ${{ steps.dependencies.outcome }}
+          CTCC_TEST_STATUS: ${{ steps.tests.outcome }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $result = Join-Path $env:RUNNER_TEMP 'ctcc-native-live-loopback'
+          if (-not (Test-Path -LiteralPath $result)) { New-Item -ItemType Directory -Path $result | Out-Null }
+          $stages = @{
+            checkout = $env:CTCC_CHECKOUT_STATUS
+            source = $env:CTCC_SOURCE_STATUS
+            runtime = $env:CTCC_RUNTIME_STATUS
+            dependencies = $env:CTCC_DEPENDENCY_STATUS
+            tests = $env:CTCC_TEST_STATUS
+          }
+          $stagePath = Join-Path $result 'stages.json'
+          $indexPath = Join-Path $result 'results.sha256.json'
+          if ((Test-Path -LiteralPath $stagePath) -or (Test-Path -LiteralPath $indexPath)) { throw 'LOOPBACK_EVIDENCE_NO_CLOBBER_REFUSED' }
+          [IO.File]::WriteAllText($stagePath, (($stages | ConvertTo-Json -Compress) + "`n"), [Text.UTF8Encoding]::new($false))
+          $hashes = [ordered]@{}
+          foreach ($file in @('dependency-result.json', 'pytest.stderr.log', 'pytest.stdout.log', 'source-identity.json', 'source.zip', 'stages.json', 'test-measurement.json', 'windows-junit.xml')) {
+            $path = Join-Path $result $file
+            if (Test-Path -LiteralPath $path -PathType Leaf) {
+              $hashes[$file] = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+            }
+          }
+          [IO.File]::WriteAllText($indexPath, (($hashes | ConvertTo-Json -Compress) + "`n"), [Text.UTF8Encoding]::new($false))
+
+      - name: Retain full exact subject and redacted loopback diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ctcc-native-live-loopback-windows-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/ctcc-native-live-loopback/source.zip
+            ${{ runner.temp }}/ctcc-native-live-loopback/*.json
+            ${{ runner.temp }}/ctcc-native-live-loopback/pytest.stdout.log
+            ${{ runner.temp }}/ctcc-native-live-loopback/pytest.stderr.log
+            ${{ runner.temp }}/ctcc-native-live-loopback/windows-junit.xml
+          if-no-files-found: error
+          retention-days: 30
