@@ -16,12 +16,14 @@ with read-only requests. Actual readback succeeded. Worker delivery and an
 accepted source-backed report remain separate requirements. [Notion operator
 command](notion_outbox_runtime.md#verify-the-existing-private-binding)
 
-Exact `fc4a90af` passed the three original native Windows TLS loopback cases
-under the unchanged five-second execution freshness policy. Both fresh cases
-reached a local test POST and the stale case canceled before submission. The
-fixture used no exchange, confirmed neither real Demo nor Live acceptance, and
-left final matching-source Linux and production checks open. [Windows timing
+Exact `fc4a90af` on Windows and combined `529e758c` in hermetic Linux Docker
+each passed the three original native TLS loopback cases under the five-second
+freshness policy. On both platforms, each fresh case made one local test POST
+and the stale case canceled before submission. These cases used isolated
+fixtures and grant no trading authority. Full matching-source CI and configured
+Demo and Live activation remain open. [Windows timing
 verification](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/45856566392)
+[Linux timing verification](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/45858189255)
 
 The retained account database's original 0017 backup was preserved. A separate
 copy reached 0055, and a second stopped copy recorded one emergency Stop with

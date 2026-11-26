@@ -12,6 +12,7 @@ from dataclasses import asdict
 from pathlib import Path
 from uuid import uuid4
 
+import asyncpg
 import pytest
 from alembic.config import Config
 from alembic.migration import MigrationContext
@@ -431,9 +432,14 @@ async def test_actual0017_controlled_startup_blocks_preload_but_rejects_original
         )
     # Causal fixture: an ordinary subsequent session really attempts startup
     # preload and fails before it can issue SQL. No executable module exists.
-    with pytest.raises(DBAPIError):
+    with pytest.raises((asyncpg.UndefinedFileError, DBAPIError)) as uncontrolled:
         async with owner.connect():
             pytest.fail("uncontrolled missing preload unexpectedly connected")
+    original_error = uncontrolled.value
+    if isinstance(original_error, DBAPIError):
+        original_error = original_error.orig
+    assert getattr(original_error, "sqlstate", None) == "58P01"
+    assert "ctcc_declared_missing_preload_never_loaded" in str(original_error)
     controlled = create_async_engine(
         owner.url,
         poolclass=NullPool,
