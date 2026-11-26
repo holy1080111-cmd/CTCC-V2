@@ -131,7 +131,9 @@ async def test_actual0055_canonical_full_catalog_reference_has_native_source_and
     _canonical_fresh55,
 ):
     from app.domain import collector_current_0055_catalog_v1 as native55
+    from scripts import native_owner_retained_rows_v2 as retained_rows
     from scripts import retained0017_catalog_baseline_v1 as catalog_sql
+    from scripts import retained0055_negative_stop_reassert_v1 as negative_stop
 
     owner, cluster_sha256 = _canonical_fresh55
     raw_predicates = reference.raw_predicates_v1()
@@ -195,6 +197,20 @@ async def test_actual0055_canonical_full_catalog_reference_has_native_source_and
  WHERE d.datname=pg_catalog.current_database()""")
             )
         ).one()
+        # Run the same framed language predicate and exact Stop/audit metadata
+        # read as the isolated stopped-copy plan. No data mutation is needed.
+        native_layouts = tuple(
+            tuple(item)
+            for item in (await connection.execute(retained_rows._LAYOUT_SQL)).all()
+        )
+        relations = tuple(item[:3] for item in native_layouts)
+        layouts = retained_rows._checked_layouts(
+            native_layouts, retained_rows._expected_relations(relations), row[3]
+        )
+        guard_digest = await negative_stop._checked_control_audit_metadata_v1(
+            connection, layouts, row[3]
+        )
+        assert reference._HEX.fullmatch(guard_digest) is not None
         receipt = {
             "schema": reference.RECEIPT_SCHEMA,
             "database_target": "0055",

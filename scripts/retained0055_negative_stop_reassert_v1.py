@@ -143,6 +143,13 @@ async def _begin(connection, pins, phase):
     return transaction
 
 
+async def _checked_control_audit_metadata_v1(connection, layouts, owner_oid):
+    language_admission = text("SELECT " + owner.baseline._LANGUAGE_ADMISSION_SQL)
+    _need(await connection.scalar(language_admission) is True)
+    metadata = await connection.scalar(text(guard.CATALOG_SQL))
+    return guard.require_control_audit_v1(metadata, layouts, owner_oid)
+
+
 def _control(value, *, revision):
     _need(type(revision) is int and revision in (0, 1))
     keys = {
@@ -198,10 +205,8 @@ async def _observe(connection, pins, phase):
         )
     )
     await owner.rows.heap_am.require_native_owner_storage_v1(connection)
-    _need(await connection.scalar(text(owner.baseline._LANGUAGE_ADMISSION_SQL)) is True)
-    metadata = await connection.scalar(text(guard.CATALOG_SQL))
-    meta_sha = guard.require_control_audit_v1(
-        metadata, layouts, pins.retained.route.owner_oid
+    meta_sha = await _checked_control_audit_metadata_v1(
+        connection, layouts, pins.retained.route.owner_oid
     )
     document = await connection.scalar(text(owner.target55.OWNER_CATALOG_SQL))
     observed = (
