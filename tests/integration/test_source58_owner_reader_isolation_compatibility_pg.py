@@ -9,6 +9,7 @@ import os
 import shutil
 import subprocess
 import sys
+import traceback
 from pathlib import Path
 
 import pytest
@@ -144,6 +145,18 @@ def _writer55(value):
     return current55.observe_actual_writer_catalog(value, read_only="on")
 
 
+def _admit(callback, value, *, phase):
+    try:
+        return callback(value)
+    except current55.Current0055CatalogError as error:
+        cause = error.__context__ or error
+        coordinates = [
+            (Path(frame.filename).name, frame.name, frame.lineno)
+            for frame in traceback.extract_tb(cause.__traceback__)[-8:]
+        ]
+        pytest.fail(f"{phase}:{type(cause).__name__}:{coordinates}", pytrace=False)
+
+
 def _publish(evidence):
     target = Path("/validation-results/reader-isolation-compatibility.json")
     assert os.environ["CTCC_OWNER_READER_ISOLATION_COMPATIBILITY"] == str(target)
@@ -196,9 +209,13 @@ async def test_actual_source58_rc_owner_writer_and_explicit_owner_rr_match_froze
             observe_writer(raw["writer_rr"])
         with pytest.raises(current55.Current0055CatalogError):
             module._observe_owner_repeatable_read_catalog_v1(raw["owner_rc"])
-        own_rc = observe_owner(raw["owner_rc"])
-        writer_rc = observe_writer(raw["writer_rc"])
-        own_rr = module._observe_owner_repeatable_read_catalog_v1(raw["owner_rr"])
+        own_rc = _admit(observe_owner, raw["owner_rc"], phase=f"{head}_owner_rc")
+        writer_rc = _admit(observe_writer, raw["writer_rc"], phase=f"{head}_writer_rc")
+        own_rr = _admit(
+            module._observe_owner_repeatable_read_catalog_v1,
+            raw["owner_rr"],
+            phase=f"{head}_owner_rr",
+        )
         assert own_rr == own_rc
         assert all(
             row["execution_authority"] is False for row in (own_rc, writer_rc, own_rr)
