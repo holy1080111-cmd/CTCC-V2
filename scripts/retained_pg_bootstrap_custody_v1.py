@@ -68,6 +68,17 @@ BOOTSTRAP_SECONDS = 60
 OWNER_SECONDS = 600  # Existing owner API budget, unrelated to trading clocks.
 CLEANUP_SECONDS = 20
 PORT = 15439
+# PG17.11 sizes the heavyweight lock hash using max_locks_per_transaction
+# times (MaxBackends + max_prepared_transactions). Its two special backends
+# make this private maintenance profile 1,024 * (4 + 3 + 0 + 0 + 2 + 0).
+_MAINTENANCE_LOCK_GUCS = (
+    ("autovacuum_max_workers", "3"),
+    ("max_connections", "4"),
+    ("max_locks_per_transaction", "1024"),
+    ("max_prepared_transactions", "0"),
+    ("max_wal_senders", "0"),
+    ("max_worker_processes", "0"),
+)
 _HEX = re.compile(r"[0-9a-f]{64}\Z", re.ASCII)
 _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,62}\Z", re.ASCII)
 _GIT = re.compile(r"[0-9a-f]{40}\Z", re.ASCII)
@@ -303,6 +314,7 @@ class _LiveRecord:
     operation_id: str
     source_archive_sha256: str
     observed_provider_locator_sha256: str
+    maintenance_lock_profile_sha256: str
     engine: Any = None
     journal_step: int = 0
     commit_attempts: int = 0
@@ -1407,6 +1419,7 @@ def _journal(record, phase):
         "cold_manifest_sha256": record.cold_manifest_sha256,
         "source_archive_sha256": record.source_archive_sha256,
         "observed_provider_locator_sha256": record.observed_provider_locator_sha256,
+        "maintenance_lock_profile_sha256": record.maintenance_lock_profile_sha256,
         "system_identifier_sha256": record.system_identifier_sha256,
         "database_oid": record.database_oid,
         "owner_oid": record.owner_oid,
@@ -1441,6 +1454,26 @@ def _bind_engine_v1(owner, engine):
     value.engine = engine
 
 
+async def _read_maintenance_lock_profile_v1(connection):
+    names = ",".join("'" + name + "'" for name, _ in _MAINTENANCE_LOCK_GUCS)
+    observed = tuple(
+        tuple(row)
+        for row in await connection.exec_driver_sql(
+            "SELECT name, setting, context, source, pending_restart, "
+            "pg_catalog.current_setting('server_version_num') "
+            f"FROM pg_catalog.pg_settings WHERE name IN ({names}) "
+            'ORDER BY name COLLATE pg_catalog."C"'
+        )
+    )
+    expected = tuple(
+        (name, setting, "postmaster", "command line", False, "170011")
+        for name, setting in _MAINTENANCE_LOCK_GUCS
+    )
+    raw = _canonical(observed)
+    _need(raw == _canonical(expected), "retained_pg_maintenance_lock_profile_mismatch")
+    return _sha(raw)
+
+
 async def _replay_owned_connection_v1(owner, connection):
     _guard()
     value = _record(owner)
@@ -1469,8 +1502,13 @@ async def _replay_owned_connection_v1(owner, connection):
  WHERE d.datname=pg_catalog.current_database()""")
         )
     ).one()
+    lock_profile = await _read_maintenance_lock_profile_v1(connection)
     _guard()
     value = _record(owner)
+    _need(
+        lock_profile == value.maintenance_lock_profile_sha256,
+        "retained_pg_maintenance_lock_profile_mismatch",
+    )
     _need(
         tuple(observed[:6])
         == (
@@ -1786,10 +1824,9 @@ def _bootstrap_config(runtime, *, database, owner, cluster_name, tls):
         "ssl_min_protocol_version": "'TLSv1.2'",
         "default_transaction_read_only": "on",
         "shared_buffers": "'16MB'",
-        "max_connections": "4",
+        **dict(_MAINTENANCE_LOCK_GUCS),
         "superuser_reserved_connections": "1",
         "reserved_connections": "0",
-        "max_wal_senders": "0",
         "shared_preload_libraries": "''",
         "session_preload_libraries": "''",
         "local_preload_libraries": "''",
@@ -1803,7 +1840,6 @@ def _bootstrap_config(runtime, *, database, owner, cluster_name, tls):
         "primary_slot_name": "''",
         "external_pid_file": "''",
         "autovacuum": "off",
-        "max_worker_processes": "0",
         "max_logical_replication_workers": "0",
         "max_parallel_workers": "0",
         "max_parallel_maintenance_workers": "0",
@@ -1888,6 +1924,7 @@ async def _capture_current_bootstrap_v1(
             )
             await connection.exec_driver_sql("SET LOCAL search_path TO pg_catalog")
             await connection.exec_driver_sql("SET LOCAL TIME ZONE 'UTC'")
+            lock_profile = await _read_maintenance_lock_profile_v1(connection)
             await storage.lock_native_owner_marker_v1(connection)
             observed = (
                 await connection.execute(
@@ -1915,7 +1952,7 @@ async def _capture_current_bootstrap_v1(
             _need(observed[9] is True and observed[10] in ("TLSv1.2", "TLSv1.3"))
             raw = await baseline.capture_catalog17_v1(connection)
             bootstrap.require_bootstrap_catalog17_v2(raw)
-            return observed[8]
+            return observed[8], lock_profile
         finally:
             await transaction.rollback()
 
@@ -2116,7 +2153,7 @@ async def _owned_bootstrap_generator_v1(files, pins, origin):
                 },
                 hide_parameters=True,
             )
-            started = await _capture_current_bootstrap_v1(
+            started, lock_profile = await _capture_current_bootstrap_v1(
                 engine,
                 _source_pin_object(pins).route,
                 cluster_name=cluster_name,
@@ -2155,6 +2192,7 @@ async def _owned_bootstrap_generator_v1(files, pins, origin):
                 source_archive_sha256=source["archive"],
                 postmaster_started=started,
                 observed_provider_locator_sha256=locator_sha256,
+                maintenance_lock_profile_sha256=lock_profile,
             )
             _journal(record, _Phase.READY)
             _RECORDS[id(lease)] = record
@@ -2522,6 +2560,7 @@ async def _fresh_cold_generator_v1(resources, source):
         )
         async with engine.connect() as connection:
             await connection.execution_options(isolation_level="AUTOCOMMIT")
+            await _read_maintenance_lock_profile_v1(connection)
             await connection.exec_driver_sql(
                 'CREATE DATABASE "ctcc_fixture_db" OWNER "ctcc_fixture_owner" TEMPLATE template0 ENCODING \'UTF8\''
             )
@@ -2533,6 +2572,7 @@ async def _fresh_cold_generator_v1(resources, source):
             hide_parameters=True,
         )
         async with engine.begin() as connection:
+            await _read_maintenance_lock_profile_v1(connection)
             await connection.exec_driver_sql(
                 "SET LOCAL search_path TO public, pg_catalog, pg_temp"
             )

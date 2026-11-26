@@ -13,6 +13,81 @@ import pytest
 from scripts import retained_pg_bootstrap_custody_v1 as subject
 
 
+def test_private_maintenance_config_pins_lock_capacity_and_existing_limits(
+    tmp_path, monkeypatch
+):
+    written = {}
+
+    def collect(path, raw, **_kwargs):
+        written[path.name] = raw
+
+    monkeypatch.setattr(subject, "_write_private", collect)
+    settings = subject._bootstrap_config(
+        tmp_path,
+        database="fixture_db",
+        owner="fixture_owner",
+        cluster_name="fixture_cluster",
+        tls=(b"ca", b"cert", b"key"),
+    )
+    assert settings["max_locks_per_transaction"] == "1024"
+    assert settings["autovacuum_max_workers"] == "3"
+    assert settings["max_connections"] == "4"
+    assert settings["max_prepared_transactions"] == "0"
+    assert settings["max_wal_senders"] == "0"
+    assert settings["max_worker_processes"] == "0"
+    assert settings["shared_buffers"] == "'16MB'"
+    assert settings["fsync"] == settings["full_page_writes"] == "on"
+    assert written["maintenance.conf"].count(b"max_locks_per_transaction=1024\n") == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "row_change",
+    (
+        None,
+        (1, "64"),
+        (1, "2048"),
+        (3, "configuration file"),
+        (4, True),
+        (4, 0),
+        (5, "170012"),
+    ),
+)
+async def test_maintenance_lock_profile_requires_exact_server_readback(row_change):
+    rows = tuple(
+        (name, value, "postmaster", "command line", False, "170011")
+        for name, value in (
+            ("autovacuum_max_workers", "3"),
+            ("max_connections", "4"),
+            ("max_locks_per_transaction", "1024"),
+            ("max_prepared_transactions", "0"),
+            ("max_wal_senders", "0"),
+            ("max_worker_processes", "0"),
+        )
+    )
+
+    async def execute(sql):
+        assert "FROM pg_catalog.pg_settings" in sql
+        assert "'max_locks_per_transaction'" in sql
+        if row_change is None:
+            return rows
+        index, replacement = row_change
+        lock = rows[2][:index] + (replacement,) + rows[2][index + 1 :]
+        return rows[:2] + (lock,) + rows[3:]
+
+    connection = SimpleNamespace(exec_driver_sql=execute)
+    if row_change is None:
+        assert await subject._read_maintenance_lock_profile_v1(connection) == (
+            hashlib.sha256(subject._canonical(rows)).hexdigest()
+        )
+    else:
+        with pytest.raises(
+            subject.RetainedBootstrapRefused,
+            match="retained_pg_maintenance_lock_profile_mismatch",
+        ):
+            await subject._read_maintenance_lock_profile_v1(connection)
+
+
 def test_safe_chain_recovers_suppressed_context_without_messages_or_values():
     secret = "PRIVATE_DIAG_CANARY_7a7d492a"
     try:
