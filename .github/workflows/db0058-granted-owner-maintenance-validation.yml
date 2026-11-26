@@ -1,0 +1,57 @@
+name: Source58 granted owner maintenance validation
+
+on:
+  push:
+    branches: [work/db0058-granted-owner-maintenance-validation]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  actual-granted-owner-maintenance:
+    if: github.ref == 'refs/heads/work/db0058-granted-owner-maintenance-validation'
+    name: Actual DB0055 and DB0056 granted owner maintenance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact validation topic
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify the exact candidate subject and run the 12 granted owner cases
+        shell: bash
+        run: |
+          set -euo pipefail
+          subject=2f52afeb2b61827533b4abeae6826428df3cb7b8
+          commit=$(git rev-parse HEAD)
+          test "$commit" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD^)" = "$subject"
+          test "$(git rev-parse "$subject^{tree}")" = '7e7728a26915a8ee6082a114363aeeb662b64e6a'
+          test "$(git show "$subject:MANIFEST.sha256" | sha256sum | cut -d ' ' -f 1)" = '4ac140efb59ccf3f91ec3a89501e30736ab92460a8c3da633cda514918a3c781'
+          diff -u <(printf '%s\n' \
+            .github/workflows/db0058-granted-owner-maintenance-validation.yml MANIFEST.sha256 \
+            scripts/run_retained0017_reference_probe_v1.py) \
+            <(git diff --name-only "$subject" "$commit")
+          python3 scripts/manifest.py --check
+          tree=$(git rev-parse 'HEAD^{tree}')
+          archive="$RUNNER_TEMP/ctcc-source.tar"
+          git -c core.autocrlf=false -c core.eol=lf archive --format=tar --output="$archive" "$commit"
+          digest=$(sha256sum "$archive" | cut -d ' ' -f 1)
+          options=(--archive "$archive" --archive-sha256 "$digest" --commit "$commit" --tree "$tree"
+            --granted-owner-maintenance --output "$RUNNER_TEMP/ctcc-granted-owner-maintenance")
+          python3 -m scripts.run_retained0017_reference_probe_v1 "${options[@]}"
+          python3 -m scripts.run_retained0017_reference_probe_v1 "${options[@]}" --verify-only
+      - name: Preserve exact source, case results and disposable cleanup
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ctcc-granted-owner-maintenance-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/ctcc-source.tar
+            ${{ runner.temp }}/ctcc-granted-owner-maintenance/*.json
+            ${{ runner.temp }}/ctcc-granted-owner-maintenance/*.log
+            ${{ runner.temp }}/ctcc-granted-owner-maintenance/test-results/*.xml
+          if-no-files-found: error
+          retention-days: 30
