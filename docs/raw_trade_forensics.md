@@ -49,23 +49,30 @@ key-sorted JSON without a trailing newline. It has exactly these keys:
   the original capture's plan digest.
 - `holding_path_sha256`, either the original path digest or JSON `null`.
 
-Use the independently retained SHA-256 of that pins file. Reconstruction
-creates `forensics-receipt.json` without replacing any existing file. The
-command then reopens the directory, reads the original sources and receipt,
-and reruns the computation.
+Use the independently retained SHA-256 of that pins file. Run `--inspect` to
+replay the case in memory before creating a receipt. The read-only command
+reports `CASE_INSPECTED` and prints a redacted summary of stream coverage,
+position status, and metric availability. Unknown metrics include evaluator
+reason codes for gross realized, net cash and final PnL, fees, funding, MFE and
+MAE. Execution authority remains false.
+
+Reconstruction creates `forensics-receipt.json` without replacing an existing
+file. The command then reopens the directory, reads the original sources and
+receipt, and reruns the computation.
 
 ```text
+python -B -m scripts.replay_raw_trade_forensics --source-directory /private/case --source-pins-sha256 <original pins digest> --inspect
 python -B -m scripts.replay_raw_trade_forensics --source-directory /private/case --source-pins-sha256 <original pins digest> --reconstruct
 python -B -m scripts.replay_raw_trade_forensics --source-directory /private/case --source-pins-sha256 <original pins digest> --verify-receipt-sha256 <retained receipt digest>
 ```
 
 Keep the receipt private. It contains account-linked forensic data. The
-terminal prints the receipt digest and fixed authority flags. Exit `0`
-reports a verified offline replay. Bad or changed inputs, a publication
-conflict or a failed readback produce a fixed refusal with exit `1`. If a
-late failure left a receipt file, retain it and use verify mode against its
-original source bytes. Successful replay leaves exchange authenticity,
-coverage and trading authority unverified.
+terminal prints the receipt digest and fixed authority flags after reconstruction
+or verification. Exit `0` reports success for the selected mode. Bad or changed
+inputs, a publication conflict or a failed readback produce a fixed refusal with
+exit `1`. If a late failure left a receipt file, retain it and use verify mode
+against its original source bytes. Successful replay leaves exchange
+authenticity, coverage and trading authority unverified.
 
 The submission must be an explicitly acknowledged Demo report. A previously
 uncertain submission needs the upstream reconciliation workflow first; this module

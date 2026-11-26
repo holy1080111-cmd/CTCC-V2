@@ -82,12 +82,47 @@ def test_create_reopen_verify_and_refuse_overwrite(
     assert receipt.read_bytes() == original
 
 
+def test_inspect_reports_only_status_without_publication(workspace, capsys):
+    root, _ = workspace
+    original = {path.name: path.read_bytes() for path in root.iterdir()}
+
+    assert cli.main(_arguments(workspace, "--inspect")) == 0
+    response = capsys.readouterr()
+    assert not response.err
+    assert json.loads(response.out) == {
+        "schema": "ctcc.raw_trade_forensics_case_inspection.v1",
+        "status": "CASE_INSPECTED",
+        "position_status": "unknown",
+        "metrics_complete": False,
+        "coverage": dict.fromkeys(("fills", "fees", "funding", "path"), "partial"),
+        "metrics": {
+            metric: {"available": False, "unknown_reason": reason}
+            for metric, reason in {
+                "gross_realized_pnl": "fill_coverage_incomplete",
+                "net_cash_pnl_to_date": "fills_or_costs_incomplete",
+                "pnl": "position_not_closed",
+                "fees": "fees_coverage_incomplete",
+                "funding": "funding_coverage_incomplete",
+                "mfe": "fill_coverage_incomplete",
+                "mae": "fill_coverage_incomplete",
+            }.items()
+        },
+        "ingestion_completeness_verified": False,
+        "source_authenticity_verified": False,
+        "real_trade_sample_verified": False,
+        "execution_authority": False,
+        "admission": "DENY",
+    }
+    assert {path.name: path.read_bytes() for path in root.iterdir()} == original
+
+
+@pytest.mark.parametrize("mode", ["--reconstruct", "--inspect"])
 @pytest.mark.parametrize(
     "change",
     ["digest", "canonical", "duplicate", "account", "holding", "wrong-plan", "alias"],
 )
 def test_pinning_and_original_bytes_refuse_without_publication(
-    workspace, capsys, change
+    workspace, capsys, change, mode
 ):
     root, pin_raw = workspace
     pins = json.loads(pin_raw)
@@ -108,7 +143,7 @@ def test_pinning_and_original_bytes_refuse_without_publication(
         os.link(root / "submission.json", root / "second-link.json")
     if change != "digest":
         (root / "source-pins.json").write_bytes(pin_raw)
-    assert cli.main(_arguments((root, pin_raw), "--reconstruct")) == 1
+    assert cli.main(_arguments((root, pin_raw), mode)) == 1
     refusal = capsys.readouterr()
     assert not refusal.out
     assert refusal.err == '{"admission":"DENY","status":"REFUSED"}\n'

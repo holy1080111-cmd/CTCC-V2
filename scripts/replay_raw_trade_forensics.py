@@ -1,4 +1,4 @@
-"""Reconstruct or verify one private retained Demo forensic receipt offline."""
+"""Inspect one private retained Demo case, or reconstruct or verify its receipt."""
 
 from __future__ import annotations
 
@@ -30,6 +30,34 @@ _PIN_FIELDS = {
     "account_plan_sha256",
     "attribution_sha256",
     "holding_path_sha256",
+}
+
+
+_EXCURSION_UNKNOWN_REASONS = (
+    "fill_coverage_incomplete",
+    "no_entry_fill",
+    "equal_time_fills_have_unknown_path_order",
+    "path_coverage_incomplete",
+    "path_does_not_match_holding_period",
+    "path_gap",
+    "path_crosses_fill_unknown_extrema_order",
+    "path_outside_open_inventory",
+)
+_METRIC_UNKNOWN_REASONS = {
+    "gross_realized_pnl": ("fill_coverage_incomplete",),
+    "net_cash_pnl_to_date": ("fills_or_costs_incomplete",),
+    "pnl": ("position_not_closed", "cost_coverage_incomplete"),
+    "fees": ("fees_coverage_incomplete", "fees_currency_unconverted"),
+    "funding": ("funding_coverage_incomplete", "funding_currency_unconverted"),
+    "mfe": _EXCURSION_UNKNOWN_REASONS,
+    "mae": _EXCURSION_UNKNOWN_REASONS,
+}
+_OFFLINE_FLAGS = {
+    "ingestion_completeness_verified": False,
+    "source_authenticity_verified": False,
+    "real_trade_sample_verified": False,
+    "execution_authority": False,
+    "admission": "DENY",
 }
 
 
@@ -113,6 +141,42 @@ def _sources(directory, pins_sha256: str) -> tuple[bytes, dict]:
     }
 
 
+def inspect_raw_trade_forensics(
+    source_directory: Path, *, source_pins_sha256: str
+) -> dict[str, object]:
+    """Recompute a pinned case and return only statuses and known reason codes."""
+    try:
+        _require(_is_digest(source_pins_sha256))
+        root = _root_path(require_private_evidence_base_v2(str(source_directory)))
+        open_root = _windows_root if os.name == "nt" else _posix_root
+        with open_root(root) as directory:
+            submission, operands = _sources(directory, source_pins_sha256)
+            result = raw_forensics.reconstruct_trade_forensics(submission, **operands)
+
+        analysis = result.analysis
+        metrics = {}
+        for name, allowed_reasons in _METRIC_UNKNOWN_REASONS.items():
+            metric = getattr(analysis, name)
+            available = metric.value is not None
+            reason = metric.unknown_reason
+            _require(reason is None if available else reason in allowed_reasons)
+            metrics[name] = {"available": available, "unknown_reason": reason}
+
+        return {
+            "schema": "ctcc.raw_trade_forensics_case_inspection.v1",
+            "status": "CASE_INSPECTED",
+            "position_status": analysis.position_status,
+            "metrics_complete": analysis.metrics_complete,
+            "coverage": {item.stream: item.status for item in analysis.inputs.coverage},
+            "metrics": metrics,
+            **_OFFLINE_FLAGS,
+        }
+    except ForensicReplayRefused:
+        raise
+    except Exception:  # noqa: BLE001 -- use the same redacted refusal as replay.
+        raise ForensicReplayRefused("raw_trade_forensics_offline_refused") from None
+
+
 def replay_raw_trade_forensics(
     source_directory: Path,
     *,
@@ -166,36 +230,33 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--source-directory", type=Path, required=True)
     parser.add_argument("--source-pins-sha256", required=True)
     mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--inspect", action="store_true")
     mode.add_argument("--reconstruct", action="store_true")
     mode.add_argument("--verify-receipt-sha256")
     try:
         args = parser.parse_args(argv)
-        if not args.reconstruct:
-            _require(_is_digest(args.verify_receipt_sha256))
-        digest = replay_raw_trade_forensics(
-            args.source_directory,
-            source_pins_sha256=args.source_pins_sha256,
-            receipt_sha256=args.verify_receipt_sha256,
-        )
-    except (ForensicReplayRefused, KeyboardInterrupt):
-        print('{"admission":"DENY","status":"REFUSED"}', file=sys.stderr)
-        return 1
-    print(
-        json.dumps(
-            {
+        if args.inspect:
+            summary = inspect_raw_trade_forensics(
+                args.source_directory, source_pins_sha256=args.source_pins_sha256
+            )
+        else:
+            if not args.reconstruct:
+                _require(_is_digest(args.verify_receipt_sha256))
+            digest = replay_raw_trade_forensics(
+                args.source_directory,
+                source_pins_sha256=args.source_pins_sha256,
+                receipt_sha256=args.verify_receipt_sha256,
+            )
+            summary = {
                 "schema": "ctcc.raw_trade_forensics_offline_replay_summary.v1",
                 "status": "REPLAY_VERIFIED",
                 "receipt_sha256": digest,
-                "ingestion_completeness_verified": False,
-                "source_authenticity_verified": False,
-                "real_trade_sample_verified": False,
-                "execution_authority": False,
-                "admission": "DENY",
-            },
-            separators=(",", ":"),
-            sort_keys=True,
-        )
-    )
+                **_OFFLINE_FLAGS,
+            }
+    except (ForensicReplayRefused, KeyboardInterrupt):
+        print('{"admission":"DENY","status":"REFUSED"}', file=sys.stderr)
+        return 1
+    print(json.dumps(summary, separators=(",", ":"), sort_keys=True))
     return 0
 
 
