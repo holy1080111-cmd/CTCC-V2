@@ -716,7 +716,7 @@ async def _target55_layouts_v1(connection, pins, *, read_only):
     # observed rehearsal substituted for an independent expected definition.
     value = await connection.scalar(text(target55.OWNER_CATALOG_SQL))
     observed = (
-        target55._observe_retained_postcommit_owner_catalog_v1(value)
+        target55._observe_owner_repeatable_read_catalog_v1(value)
         if read_only
         else target55._observed(value, owner_mode=True, read_only="off")
     )

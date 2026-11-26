@@ -481,13 +481,15 @@ async def _catalog_v2(connection, pins, head, *, read_only):
     repeated = await connection.scalar(text(query))
     _need(document == repeated)
     if head == "0055":
-        observed = current55._observed(
-            document, owner_mode=True, read_only="on" if read_only else "off"
+        observed = (
+            current55._observe_owner_repeatable_read_catalog_v1(document)
+            if read_only
+            else current55._observed(document, owner_mode=True, read_only="off")
         )
         _need(observed["native_definitions_sha256"] == current55._required_baseline())
     else:
         observed = (
-            current56.observe_owner_installation_0056(document)
+            current56._observe_owner_repeatable_read_catalog_v1(document)
             if read_only
             else current56.observe_owner_readwrite_installation_0056(document)
         )

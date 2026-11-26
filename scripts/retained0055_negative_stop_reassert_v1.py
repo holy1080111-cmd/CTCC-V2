@@ -210,7 +210,7 @@ async def _observe(connection, pins, phase):
     )
     document = await connection.scalar(text(owner.target55.OWNER_CATALOG_SQL))
     observed = (
-        owner.target55._observe_retained_postcommit_owner_catalog_v1(document)
+        owner.target55._observe_owner_repeatable_read_catalog_v1(document)
         if phase is _Phase.READ
         else owner.target55._observed(document, owner_mode=True, read_only="off")
     )

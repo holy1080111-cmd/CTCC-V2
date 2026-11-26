@@ -2300,9 +2300,9 @@ def _observe(value, *, owner_mode, read_only, isolation):
     }
 
 
-def _observed(value, *, owner_mode, read_only, _retained_postcommit=False):
-    if type(_retained_postcommit) is not bool or (
-        _retained_postcommit and (owner_mode is not True or read_only != "on")
+def _observed(value, *, owner_mode, read_only, _owner_repeatable_read=False):
+    if type(_owner_repeatable_read) is not bool or (
+        _owner_repeatable_read and (owner_mode is not True or read_only != "on")
     ):
         _deny()
     try:
@@ -2310,7 +2310,7 @@ def _observed(value, *, owner_mode, read_only, _retained_postcommit=False):
             value,
             owner_mode=owner_mode,
             read_only=read_only,
-            isolation="repeatable read" if _retained_postcommit else "read committed",
+            isolation="repeatable read" if _owner_repeatable_read else "read committed",
         )
     except Current0055CatalogError:
         raise
@@ -2322,10 +2322,11 @@ def observe_actual_owner_catalog(value):
     return _observed(value, owner_mode=True, read_only="on")
 
 
-def _observe_retained_postcommit_owner_catalog_v1(value):
-    # The two new NullPool maintenance readbacks use a stable read-only
-    # snapshot. Both native catalog mappings must report this exact isolation.
-    return _observed(value, owner_mode=True, read_only="on", _retained_postcommit=True)
+def _observe_owner_repeatable_read_catalog_v1(value):
+    # Maintenance inventory uses a stable read-only owner snapshot.
+    return _observed(
+        value, owner_mode=True, read_only="on", _owner_repeatable_read=True
+    )
 
 
 def observe_actual_writer_catalog(value, *, read_only):

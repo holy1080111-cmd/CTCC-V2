@@ -217,12 +217,20 @@ async def test_wrapper_will_not_open_a_transaction_or_accept_unbound_object(
 def test_rw_inherited_observer_never_projects_onto_read_only_or_owner(monkeypatch):
     checked = []
 
-    def observe(value, *, owner_mode, read_only):
-        checked.append((value, owner_mode, read_only))
+    def observe(value, *, owner_mode, read_only, isolation="read committed"):
+        checked.append((value, owner_mode, read_only, isolation))
         return value
 
     monkeypatch.setattr(inherited, "_observe_inherited_graph", observe)
     assert inherited.observe_readwrite_writer_0056("rw") == "rw"
     assert inherited.observe_writer_0056("ro") == "ro"
     assert inherited.observe_owner_installation_0056("owner") == "owner"
-    assert checked == [("rw", False, "off"), ("ro", False, "on"), ("owner", True, "on")]
+    assert (
+        inherited._observe_owner_repeatable_read_catalog_v1("inventory") == "inventory"
+    )
+    assert checked == [
+        ("rw", False, "off", "read committed"),
+        ("ro", False, "on", "read committed"),
+        ("owner", True, "on", "read committed"),
+        ("inventory", True, "on", "repeatable read"),
+    ]

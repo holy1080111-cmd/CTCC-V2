@@ -28,7 +28,9 @@ OWNER_CATALOG_SQL = inherited.old54._once(
 )
 
 
-def _context(value, *, role, read_only, parents, schema_name, profile=profiles.DB0056):
+def _context(
+    value, *, role, read_only, isolation, parents, schema_name, profile=profiles.DB0056
+):
     profiles.checked(profile)
     if (
         value["schema_version"] != schema_name
@@ -79,7 +81,7 @@ def _context(value, *, role, read_only, parents, schema_name, profile=profiles.D
         ("role_setting", "none"),
         ("timezone", "UTC"),
         ("search_path", "pg_catalog, public, pg_temp"),
-        ("isolation", "read committed"),
+        ("isolation", isolation),
         ("read_only", read_only),
         ("synchronous_commit", "on"),
         ("fsync", "on"),
@@ -321,9 +323,21 @@ def observe_controlled_history_0056(
     }
 
 
-def _observe_inherited_graph(value, *, owner_mode, read_only, profile=profiles.DB0056):
+def _observe_inherited_graph(
+    value, *, owner_mode, read_only, profile=profiles.DB0056, isolation="read committed"
+):
     profiles.checked(profile)
     if profile in (profiles.DB0057, profiles.DB0058) and owner_mode:
+        inherited._deny()
+    if type(isolation) is not str or not (
+        isolation == "read committed"
+        or (
+            isolation == "repeatable read"
+            and owner_mode is True
+            and read_only == "on"
+            and profile is profiles.DB0056
+        )
+    ):
         inherited._deny()
     if (
         type(value) is not dict
@@ -492,6 +506,7 @@ def _observe_inherited_graph(value, *, owner_mode, read_only, profile=profiles.D
         current,
         role=role,
         read_only=read_only,
+        isolation=isolation,
         parents=inherited.PARENTS,
         schema_name="ctcc.collector_current0054.actual_issued_catalog.v1",
         **profiles.arguments(profile),
@@ -500,6 +515,7 @@ def _observe_inherited_graph(value, *, owner_mode, read_only, profile=profiles.D
         previous,
         role=role,
         read_only=read_only,
+        isolation=isolation,
         parents=inherited.old53.PARENTS,
         schema_name="ctcc.collector_current0053.actual_owner_catalog.v1",
         **profiles.arguments(profile),
@@ -686,10 +702,16 @@ def _observe_inherited_graph(value, *, owner_mode, read_only, profile=profiles.D
     }
 
 
-def _observe_readonly(value, *, owner_mode, profile=profiles.DB0056):
+def _observe_readonly(
+    value, *, owner_mode, profile=profiles.DB0056, isolation="read committed"
+):
     try:
         return _observe_inherited_graph(
-            value, owner_mode=owner_mode, read_only="on", **profiles.arguments(profile)
+            value,
+            owner_mode=owner_mode,
+            read_only="on",
+            isolation=isolation,
+            **profiles.arguments(profile),
         )
     except inherited.Current0055CatalogError:
         raise
@@ -717,6 +739,10 @@ def observe_readwrite_writer_0056(value, *, profile=profiles.DB0056):
 def observe_owner_installation_0056(value):
     """Validate the actual read-only pre-grant owner graph, without admission."""
     return _observe_readonly(value, owner_mode=True)
+
+
+def _observe_owner_repeatable_read_catalog_v1(value):
+    return _observe_readonly(value, owner_mode=True, isolation="repeatable read")
 
 
 def observe_owner_readwrite_installation_0056(value):

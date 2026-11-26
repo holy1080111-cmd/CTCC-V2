@@ -503,7 +503,7 @@ def test_native55_retained_readback_pins_private_owner_snapshot_isolation(monkey
     target = subject.target55
     monkeypatch.setattr(target, "_observe", observe)
     marker = object()
-    assert target._observe_retained_postcommit_owner_catalog_v1(marker) is marker
+    assert target._observe_owner_repeatable_read_catalog_v1(marker) is marker
     assert target.observe_actual_owner_catalog(marker) is marker
     assert target.observe_actual_writer_catalog(marker, read_only="on") is marker
     assert calls == [
@@ -514,7 +514,10 @@ def test_native55_retained_readback_pins_private_owner_snapshot_isolation(monkey
     for owner, read_only in ((True, "off"), (False, "on")):
         with pytest.raises(target.Current0055CatalogError):
             target._observed(
-                marker, owner_mode=owner, read_only=read_only, _retained_postcommit=True
+                marker,
+                owner_mode=owner,
+                read_only=read_only,
+                _owner_repeatable_read=True,
             )
     assert len(calls) == 3
 
