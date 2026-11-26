@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import (
     AsyncConnection,
     async_sessionmaker,
@@ -43,6 +44,33 @@ class Paper58RuntimeRefused(RuntimeError):
 def _need(condition):
     if condition is not True:
         raise Paper58RuntimeRefused("paper58_runtime_refused") from None
+
+
+def _startup_failure(stage, error):
+    kinds = []
+    sqlstate = None
+    for _ in range(4):
+        name = type(error).__name__
+        kinds.append(
+            name
+            if len(name) <= 80 and name.isascii() and name.isidentifier()
+            else "Exception"
+        )
+        if isinstance(error, DBAPIError):
+            state = getattr(error.orig, "sqlstate", None)
+            if (
+                type(state) is str
+                and len(state) == 5
+                and state.isascii()
+                and state.isalnum()
+                and state == state.upper()
+            ):
+                sqlstate = state
+        error = error.__cause__
+        if error is None:
+            break
+    code = ".".join(("paper58_runtime_startup_refused", stage, *kinds))
+    return Paper58RuntimeRefused(code + (f".sqlstate_{sqlstate}" if sqlstate else ""))
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,6 +172,7 @@ async def open_fresh_owned_paper58_runtime_v1(
     This path accepts no caller success data, config environment, or provider.
     """
     async with AsyncExitStack() as resources:
+        stage = "route_and_tls"
         try:
             owner_route, actor_route = _routes(owner_database_url, actor_database_url)
             tls = verified_native_pg_tls_context_v1(ca_file, ca_sha256)
@@ -152,8 +181,10 @@ async def open_fresh_owned_paper58_runtime_v1(
                 actor_route, tls, search_path="pg_catalog, public, pg_temp"
             )
             resources.push_async_callback(actor_engine.dispose)
+            stage = "owner_connection"
             async with owner_engine.connect() as held, held.begin():
                 await _read_only_catalog_transaction(held)
+                stage = "owner_actor_identity"
                 actor_oid = await held.scalar(
                     text("""
 SELECT oid::pg_catalog.int8 FROM pg_catalog.pg_roles
@@ -164,6 +195,7 @@ SELECT oid::pg_catalog.int8 FROM pg_catalog.pg_roles
                     {"actor_name": actor_route.username},
                 )
                 _need(type(actor_oid) is int and actor_oid >= 16384)
+                stage = "owner_acl_overlay"
                 (
                     _,
                     preprovision,
@@ -173,16 +205,20 @@ SELECT oid::pg_catalog.int8 FROM pg_catalog.pg_roles
                     actor_oid=actor_oid,
                     actor_name=actor_route.username,
                 )
+                stage = "actor_connection"
                 actual = await resources.enter_async_context(actor_engine.connect())
                 async with actual.begin():
                     await _read_only_catalog_transaction(actual)
+                    stage = "actor_catalog_query"
                     inventory = await capture_restricted_actor_inventory_data_v1(actual)
+                    stage = "actor_acl_comparison"
                     require_restricted_actor_inventory_data_v1(
                         inventory,
                         preprovision_catalog=preprovision,
                         actor_oid=actor_oid,
                         actor_name=actor_route.username,
                     )
+                    stage = "actor_process_lease"
                     _need(
                         await actual.scalar(
                             text("""
@@ -192,9 +228,11 @@ SELECT pg_catalog.pg_try_advisory_lock(CAST(:lease_key AS pg_catalog.int8))
                         )
                         is True
                     )
+                stage = "paper_recovery"
                 runtime = await _recover_paper_service(actual)
-        except Exception:  # noqa: BLE001 - do not reveal connection or recovery details
-            raise Paper58RuntimeRefused("paper58_runtime_startup_refused") from None
+                stage = "owner_transaction_close"
+        except Exception as error:  # noqa: BLE001 - only fixed stages, types and SQLSTATE are returned
+            raise _startup_failure(stage, error) from None
         finally:
             if "owner_engine" in locals():
                 await owner_engine.dispose()
