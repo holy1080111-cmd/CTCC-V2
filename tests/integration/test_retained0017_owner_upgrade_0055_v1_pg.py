@@ -549,9 +549,22 @@ async def test_actual0017_controlled_owner_read_rejects_exact_stored_default(
             stored = await connection.scalar(subject._SETTINGS_HASH, identity)
         assert stored != pins.maintenance_settings_sha256
         reviewed_bad = replace(pins, maintenance_settings_sha256=stored)
+        async with controlled.connect() as connection:
+            with pytest.raises(
+                subject.Retained0017UpgradeRefused,
+                match=r"^retained0017_upgrade0055_stored_maintenance_policy_refused$",
+            ):
+                await subject._begin_reviewed(
+                    connection,
+                    reviewed_bad,
+                    purpose=subject._TransactionPurpose.READ_SOURCE17,
+                )
+            assert connection.in_transaction() is False
+        # The public wrapper deliberately collapses the internal cause to a
+        # fixed nonprivate refusal. This still exercises its actual read entry.
         with pytest.raises(
             subject.Retained0017UpgradeRefused,
-            match=r"^retained0017_upgrade0055_stored_maintenance_policy_refused$",
+            match=r"^retained0017_upgrade0055_refused$",
         ):
             await subject.upgrade_preserved_owner_0017_to_0055_v1(
                 reviewed_bad, confirmation=None, **arguments
