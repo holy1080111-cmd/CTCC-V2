@@ -6,7 +6,7 @@ param(
     [string] $PackageIdentitySha256,
     [string] $Wheelhouse,
     [string] $ProfileFile,
-    [ValidateSet('analysis', 'demo', 'live')] [string] $Tool = 'analysis',
+    [ValidateSet('analysis', 'demo', 'live', 'paper')] [string] $Tool = 'analysis',
     [ValidateRange(1024, 65535)] [int] $Port = 8128,
     [string] $Python = 'python.exe',
     [switch] $DryRun
@@ -54,7 +54,8 @@ try {
     }
     if ([string]::IsNullOrWhiteSpace($ProfileFile)) { throw 'CTCC_STOP:PRIVATE_PROFILE_REQUIRED' }
     $Operation = if ($Mode -eq 'Check') { '--check' } else { '--serve' }
-    Invoke-CTCCPython $RuntimePython $RuntimeSource 'scripts.launch_windows_tool_0058_v1' @('--profile', ([IO.Path]::GetFullPath($ProfileFile)), $Operation)
+    $Launcher = if ($Tool -eq 'paper') { 'scripts.run_paper58_owned_v1' } else { 'scripts.launch_windows_tool_0058_v1' }
+    Invoke-CTCCPython $RuntimePython $RuntimeSource $Launcher @('--profile', ([IO.Path]::GetFullPath($ProfileFile)), $Operation)
     exit 0
 }
 catch {

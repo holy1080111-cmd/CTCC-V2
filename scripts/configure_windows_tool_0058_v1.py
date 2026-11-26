@@ -119,22 +119,90 @@ def _link_existing_notion(values, root):
     print("既有設定已連結；同步程式與報告佇列仍關閉，沒有送出任何內容。")
 
 
+def _configure_paper(package_root, identity, port):
+    from app.config.windows_tool_profile_0058_v1 import _private
+    from scripts.run_paper58_owned_v1 import (
+        _PROFILE_FILE,
+        _SCHEMA,
+        _SECRET_FILES,
+        _read_secrets,
+        _require_closed_environment,
+        _require_installed_runtime,
+        _require_pg_inputs,
+        _secret_text,
+    )
+
+    _require_closed_environment()
+    _require_installed_runtime(package_root)
+    owner_url = _secret("Paper 專用 PostgreSQL 管理角色連線")
+    actor_url = _secret("Paper 專用 PostgreSQL 限權角色連線")
+    ca_file = _path("Paper 專用 PostgreSQL CA 檔案")
+    ca_sha256 = input("已獨立核對的 CA SHA256：").strip().lower()
+    _require_pg_inputs(owner_url, actor_url, ca_file, ca_sha256)
+    values = {
+        "api_token_file": secrets.token_urlsafe(48),
+        "owner_database_url_file": owner_url,
+        "actor_database_url_file": actor_url,
+    }
+    encoded = {key: value.encode("utf-8") for key, value in values.items()}
+    package.need(
+        all(_secret_text(data) == values[key] for key, data in encoded.items())
+    )
+    root = create_private_root()
+    profile = root / _PROFILE_FILE
+    document = {
+        "schema": _SCHEMA,
+        "package_root": str(package_root),
+        "package_identity_sha256": identity,
+        "port": port,
+        "ca_file": str(ca_file),
+        "ca_sha256": ca_sha256,
+        "secret_files_sha256": {},
+    }
+    for key, name in _SECRET_FILES.items():
+        data = encoded[key]
+        path = root / name
+        package._new(path, data)
+        document[key] = str(path)
+        document["secret_files_sha256"][key] = package.sha(data)
+    exact = package.canonical(document)
+    package.need(_read_secrets(profile, document, _private) == values)
+    package._new(profile, exact)
+    package.need(_private(profile) == exact)
+    print(
+        package.canonical(
+            {
+                "status": "PRIVATE_PAPER_CONFIGURATION_CREATED",
+                "profile_file": str(profile),
+                "token_file": document["api_token_file"],
+                "dashboard_url": f"http://127.0.0.1:{port}/dashboard/local-analysis",
+                "database_observed": False,
+                "execution_authority": False,
+            }
+        ).decode()
+    )
+    return profile
+
+
 def configure(package_root, identity, mode, port):
+    package.verify(package_root, identity)
+    package.need(package_root / "source" == package._SOURCE)
+    package.verify_dependencies(package_root)
+    package.need(
+        mode in ("analysis", "demo", "live", "paper")
+        and type(port) is int
+        and 1024 <= port <= 65535
+    )
+    package.need(sys.stdin.isatty() and sys.stderr.isatty())
+    if mode == "paper":
+        return _configure_paper(package_root, identity, port)
+
     from app.config.settings import Settings
     from app.config.windows_tool_profile_0058_v1 import SCHEMA, _values
     from app.trade_evidence.native_private_root_v2 import (
         mkdir_private_evidence_child_v2,
     )
 
-    package.verify(package_root, identity)
-    package.need(package_root / "source" == package._SOURCE)
-    package.verify_dependencies(package_root)
-    package.need(
-        mode in ("analysis", "demo", "live")
-        and type(port) is int
-        and 1024 <= port <= 65535
-    )
-    package.need(sys.stdin.isatty() and sys.stderr.isatty())
     root = create_private_root()
     token = secrets.token_urlsafe(48)
     values = {"api_token": token}
@@ -225,7 +293,9 @@ def main(arguments=None):
     parser = package.PrivateParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--package", required=True, type=Path)
     parser.add_argument("--identity-sha256", required=True)
-    parser.add_argument("--mode", required=True, choices=("analysis", "demo", "live"))
+    parser.add_argument(
+        "--mode", required=True, choices=("analysis", "demo", "live", "paper")
+    )
     parser.add_argument("--port", required=True, type=int)
     args = parser.parse_args(arguments)
     try:
