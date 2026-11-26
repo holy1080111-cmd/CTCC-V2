@@ -1,0 +1,332 @@
+name: Native fresh PostgreSQL custody
+
+on:
+  push:
+    branches: [work/native-fresh-custody-0b65959-linux]
+
+permissions:
+  contents: read
+
+jobs:
+  fresh-custody:
+    if: github.ref == 'refs/heads/work/native-fresh-custody-0b65959-linux'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CTCC_SUBJECT_COMMIT: '0b659591076f168fe42d1be6bd784e4c986b0626'
+      CTCC_SUBJECT_TREE: '9d858db49b4c62faf3e75dde54931fb6dbb3586b'
+      CTCC_SUBJECT_TAR_SHA256: '037f2868786c9473550a474be544269f115c78a179e79def2e4988d8c5f61e8f'
+      CTCC_SUBJECT_MANIFEST: '459457ecf98a1c0c9c19dc5bec9101766708fa0cced30b5de253e20b25b7a31b'
+    steps:
+      - name: Check out the validation-only topic
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify the exact source and run the stock fresh custody proof
+        id: prove
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          stage=host_admission
+          trap 'printf "::error::Fresh custody validation failed at %s\n" "$stage" >&2' ERR
+          [[ $GITHUB_EVENT_NAME == push && $GITHUB_ACTIONS == true && $RUNNER_ENVIRONMENT == github-hosted ]]
+          [[ $GITHUB_REF == refs/heads/work/native-fresh-custody-0b65959-linux && $EUID != 0 ]]
+          [[ $(uname -sm) == 'Linux x86_64' ]]
+          private=$(mktemp -d -- "$RUNNER_TEMP/ctcc-fresh-custody.XXXXXXXX")
+          support="$private/support"
+          archive="$private/source.tar"
+          result="$private/result"
+          publish="$RUNNER_TEMP/ctcc-fresh-custody-publish"
+          [[ ! -e $publish && ! -L $publish ]]
+
+          stage=overlay_admission
+          /usr/bin/python3 -I -S -B - "$support" > "$private/admission.stdout" 2> "$private/admission.stderr" <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+          import sys
+
+          def need(condition):
+              if not condition:
+                  raise ValueError("fresh_validation_overlay_refused")
+
+          def git(*args):
+              return subprocess.check_output(["git", *args], stderr=subprocess.DEVNULL)
+
+          subject = os.environ["CTCC_SUBJECT_COMMIT"]
+          head = os.environ["GITHUB_SHA"]
+          prefix = "ci-validation/native-fresh-custody"
+          workflow = ".github/workflows/ctcc-native-fresh-custody.yml"
+          need(git("rev-list", "--parents", "-n", "1", "HEAD").decode("ascii").split() == [head, subject])
+          need(git("rev-parse", f"{subject}^{{tree}}").decode("ascii").strip() == os.environ["CTCC_SUBJECT_TREE"])
+
+          local_runners = {
+              "download_pinned_public_oci.py": "fe53bb76c16ab0c0e376ebfaa52b745331f9f0f2cbcc9a75d9e284b6d2e4d914",
+              "download_pinned_wheels.py": "15d2e8f50898eba1f134db5b28f4c91e622a6445064c408fd263aed19c72824c",
+              "hosted_fresh_stock_runner.sh": "65626279c68376d64944eaa6e05225a6abd14ae7cf584be37279b69220a8cac5",
+          }
+          common = {
+              "PINNED_OCI_COMPRESSED_CHAIN_VERIFIED.json",
+              "PINNED_OCI_ALL_DIFFIDS_VERIFIED.json",
+              "PINNED_OCI_VIRTUAL_ROOTFS_INVENTORY.json",
+          }
+          members = set(local_runners)
+          members.update("validation-results/N397-validation-wsl-pg-authenticity-20261121/" + name for name in common | {
+              "materialize_ci_rootfs.py",
+              "public-assets/sha256-f02121de6f74d30d8a94cd1d9584125e2178d7e6c377d8130112d4e52d867995.json",
+              "public-assets/sha256-aa90e97ee862e558111d34cfb8b2c4bec768c2b039fb791341686928560263b3.json",
+          })
+          members.update("validation-results/N434-pinned-linux-python-runtime-20261121/" + name for name in common | {
+              "materialize_private_pinned_python_rootfs_v1.py",
+              "probe_pinned_python_execution_v1.py",
+              "prepare_offline_vendor_environment_v1.py",
+              "OFFLINE_DEPENDENCY_INPUTS_VERIFIED_V1.json",
+              "public-assets/sha256-2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9.json",
+              "public-assets/sha256-44ff437bba879d4941b710a369a8f19266aea34b29002807f0c487fabc9eec9b.json",
+          })
+          members.add("validation-results/N470-native-maintenance-fresh-acceptance-20261126/run_fresh_custody_once_linux_v1.py")
+
+          allowed = {workflow} | {f"{prefix}/{name}" for name in members | {"SHA256SUMS"}}
+          diff = git("diff", "--no-renames", "--name-status", "-z", subject, head).decode("ascii").split("\0")
+          need(diff.pop() == "" and len(diff) == 2 * len(allowed))
+          need(all(status == "A" for status in diff[::2]) and set(diff[1::2]) == allowed)
+
+          def exact_blob(name, limit):
+              entry = git("ls-tree", "-z", head, "--", name).decode("ascii")
+              match = re.fullmatch(r"100(?:644|755) blob ([a-f0-9]{40})\t([^\0]+)\0", entry)
+              need(match is not None and match[2] == name)
+              need(0 < int(git("cat-file", "-s", match[1])) <= limit)
+              return git("cat-file", "blob", match[1])
+
+          sums = exact_blob(f"{prefix}/SHA256SUMS", 16384)
+          need(sums.endswith(b"\n") and b"\r" not in sums)
+          digests = {}
+          for line in sums.decode("ascii").splitlines():
+              match = re.fullmatch(r"([a-f0-9]{64})  ([A-Za-z0-9_./-]+)", line)
+              need(match is not None and match[2] in members and match[2] not in digests)
+              digests[match[2]] = match[1]
+          need(set(digests) == members and all(digests[path] == digest for path, digest in local_runners.items()))
+
+          support = Path(sys.argv[1])
+          support.mkdir(mode=0o700)
+          for name, digest in digests.items():
+              raw = exact_blob(f"{prefix}/{name}", 4194304)
+              need(hashlib.sha256(raw).hexdigest() == digest)
+              target = support / name
+              target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+              with target.open("xb") as stream:
+                  stream.write(raw)
+              need(hashlib.sha256(target.read_bytes()).hexdigest() == digest)
+          need(exact_blob(workflow, 65536) == Path(workflow).read_bytes())
+          PY
+
+          stage=source_admission
+          git -c core.autocrlf=false -c core.eol=lf archive --format=tar \
+            --output="$archive" "$CTCC_SUBJECT_COMMIT"
+          printf '%s  %s\n' "$CTCC_SUBJECT_TAR_SHA256" "$archive" | sha256sum --check --status
+          [[ $(tar -xOf "$archive" MANIFEST.sha256 | sha256sum) == "$CTCC_SUBJECT_MANIFEST  -" ]]
+          tar -tf "$archive" > "$private/source-roster"
+          [[ $(grep -Fxc 'migrations/versions/0058_protected_hold_and_live_intent.py' "$private/source-roster") == 1 ]]
+          lock_dir="$support/validation-results/n330runtime58/requirements"
+          mkdir -m 0700 -p -- "$lock_dir"
+          tar -xOf "$archive" requirements/validation-linux-py312.json > "$lock_dir/validation-linux-py312.json"
+          tar -xOf "$archive" requirements/validation-linux-py312.lock > "$lock_dir/validation-linux-py312.lock"
+          printf '%s  %s\n' \
+            fb6a8895dcec10ffc85ae2a12e5038ecc6a54afbf4e7d0b2370346c8258faa2d "$lock_dir/validation-linux-py312.json" \
+            a44e649cb1d21d3790e132c21699cc172e77ed87682929320cf8f6190fe014e4 "$lock_dir/validation-linux-py312.lock" \
+            | sha256sum --check --status
+
+          stage=public_oci_fetch
+          /usr/bin/env -i PATH=/usr/bin:/bin /usr/bin/python3 -I -S -B \
+            "$support/download_pinned_public_oci.py" "$support" > "$private/oci.stdout" 2> "$private/oci.stderr"
+          stage=public_wheel_fetch
+          /usr/bin/env -i PATH=/usr/bin:/bin /usr/bin/python3 -I -S -B \
+            "$support/download_pinned_wheels.py" "$support" > "$private/pinned-wheels-receipt.json" 2> "$private/wheels.stderr"
+
+          stage=stock_fresh_custody_runner
+          [[ ! -e $result && ! -L $result ]]
+          run_status=0
+          /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+            GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted \
+            CTCC_SUBJECT_TAR="$archive" CTCC_SUBJECT_TAR_SHA256="$CTCC_SUBJECT_TAR_SHA256" \
+            CTCC_SUBJECT_COMMIT="$CTCC_SUBJECT_COMMIT" CTCC_SUBJECT_TREE="$CTCC_SUBJECT_TREE" \
+            CTCC_SUBJECT_MANIFEST="$CTCC_SUBJECT_MANIFEST" CTCC_SUPPORT_ROOT="$support" CTCC_RESULT_DIR="$result" \
+            /usr/bin/bash "$support/hosted_fresh_stock_runner.sh" \
+            > "$private/runner.stdout" 2> "$private/runner.stderr" || run_status=$?
+
+          stage=bounded_public_readback
+          /usr/bin/python3 -I -S -B - "$private" "$publish" "$run_status" > "$private/publication.stdout" 2> "$private/publication.stderr" <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import stat
+          import sys
+
+          def need(condition):
+              if not condition:
+                  raise ValueError("fresh_validation_publication_refused")
+
+          def unique(pairs):
+              value = dict(pairs)
+              need(len(value) == len(pairs))
+              return value
+
+          def read_public(path):
+              with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as stream:
+                  info = os.fstat(stream.fileno())
+                  need(stat.S_ISREG(info.st_mode) and info.st_nlink == 1)
+                  raw = stream.read(16385)
+                  need(0 < len(raw) == info.st_size <= 16384 and raw.endswith(b"\n"))
+              data = json.loads(raw.decode("ascii"), object_pairs_hook=unique)
+              need(type(data) is dict)
+              return raw, data
+
+          private, publish = (Path(name) for name in sys.argv[1:3])
+          run_status = int(sys.argv[3])
+          result_name = "fresh-custody-hosted-result.json"
+          oci_name = "PINNED_PUBLIC_OCI_COMPRESSED_BLOBS_VERIFIED.json"
+          wheel_name = "pinned-wheels-receipt.json"
+          result = private / "result"
+          need(result.is_dir() and not result.is_symlink())
+          need([path.name for path in result.iterdir()] == [result_name])
+          result_bytes, report = read_public(result / result_name)
+          oci_bytes, oci = read_public(private / "support" / oci_name)
+          wheel_bytes, wheels = read_public(private / wheel_name)
+          sha = re.compile(r"[a-f0-9]{64}\Z")
+          fixed_report = {
+              "schema": "ctcc.validation.hosted_fresh_custody.v1",
+              "source": {
+                  "commit": os.environ["CTCC_SUBJECT_COMMIT"],
+                  "tree": os.environ["CTCC_SUBJECT_TREE"],
+                  "archive": os.environ["CTCC_SUBJECT_TAR_SHA256"],
+                  "manifest": os.environ["CTCC_SUBJECT_MANIFEST"],
+              },
+              "execution_authority": False,
+          }
+          for key, expected in fixed_report.items():
+              need(type(report.get(key)) is type(expected) and report[key] == expected)
+          status_stage = {"status", "stage"}
+          if run_status == 0:
+              fixed_success = {
+                  "stage": "canonical_quiescent_readback",
+                  "status": "PASS_FRESH_DISPOSABLE_0017_TO_0055",
+                  "postgres_tree_sha256": "a4413022a5e18d5c8b4e3221be80bd7d21aa13c85093ae1adb7e01423da78556",
+                  "python_tree_sha256": "a601e5ccc5a8a43752448bf394ee481e18b8048b085300dc448b5192186439f4",
+                  "vendor_tree_sha256": "f2864cee254e795416117789eda90fd97d6d3c9492fde7090737d08f34a3ae28",
+                  "vendor_count": 41,
+                  "fresh_request_rejected_by_preserved_entry": True,
+              }
+              need(set(report) == set(fixed_report) | set(fixed_success) | {"canonical_result", "canonical_stdout_sha256"})
+              need(all(type(report[key]) is type(value) and report[key] == value for key, value in fixed_success.items()))
+              need(sha.fullmatch(report["canonical_stdout_sha256"]) is not None)
+              native = report["canonical_result"]
+              expected_native = {
+                  "schema": "ctcc.retained_pg.fresh_acceptance_result.v1",
+                  "status": "FRESH_CANONICAL17_COLD_TO_STOPPED0055_VERIFIED",
+                  "origin": "fresh_canonical17_cold_fixture",
+                  "database_head": "0055",
+                  "row_encoding": "ctcc.owner.retained_row_sql_null_bitmap.v2",
+                  "exchange_flat": None,
+                  "independent_readbacks": 2,
+                  "commit_attempts": 1,
+                  "preserved_pg_inputs_read": 0,
+                  "control_revision": 0,
+              }
+              expected_native.update(dict.fromkeys((
+                  "migration_performed", "source17_bootstrap_catalog_verified",
+                  "rehearsal_rolled_back_verified", "cold_source_unchanged_verified",
+                  "distinct_working_copy_verified", "owned_server_fast_shutdown_verified",
+                  "emergency_stop", "restart_latch_required",
+              ), True))
+              expected_native.update(dict.fromkeys((
+                  "armed", "preserved_backup_lineage_verified", "schema_upgrade_authorized",
+                  "account_complete", "execution_authority",
+              ), False))
+              native_digests = {
+                  "cold_manifest_sha256", "origin_sha256", "system_identifier_sha256", "before_sha256", "after_sha256",
+              }
+              need(type(native) is dict and set(native) == set(expected_native) | native_digests)
+              need(all(type(native[key]) is type(value) and native[key] == value for key, value in expected_native.items()))
+              need(all(sha.fullmatch(native[key]) is not None for key in native_digests))
+          else:
+              refusals = {
+                  "REFUSED": {
+                      "namespace_preflight", "verify_public_inputs", "postgres_image_materialization",
+                      "python_image_materialization", "offline_vendor_materialization",
+                      "synthetic_tls_preflight", "synthetic_request_staging",
+                  },
+                  "HOST_RUN_OUTCOME_UNKNOWN_DO_NOT_RETRY": {
+                      "canonical_fresh_supervisor", "verify_canonical_readback", "isolated_runner",
+                  },
+                  "COMMITTED_READBACK_REQUIRED": {"canonical_fresh_supervisor"},
+                  "COMMIT_UNKNOWN_DO_NOT_RETRY": {"canonical_fresh_supervisor"},
+                  "FRESH_NATIVE_ACCEPTANCE_REFUSED": {"canonical_fresh_supervisor"},
+              }
+              need(set(report) == set(fixed_report) | status_stage)
+              need(report["stage"] in refusals.get(report["status"], set()))
+
+          need(wheels == {
+              "status": "PINNED_WHEELS_VERIFIED",
+              "input_sha256": "cc4eec913361243481206d76a87d9f9b76296d2ab9df85ea018c4891792f2caf",
+              "wheel_count": 41,
+              "wheel_bytes": 40556618,
+          })
+          need(set(oci) == {"schema", "status", "images", "layer_count", "compressed_bytes", "execution_authority"})
+          need(oci["schema"] == "ctcc.hosted.fresh_custody_pinned_public_oci_blobs.v1")
+          need(oci["status"] == "PINNED_PUBLIC_OCI_COMPRESSED_BLOBS_VERIFIED" and oci["execution_authority"] is False)
+          need(oci["layer_count"] == 14 and oci["compressed_bytes"] == 160431899)
+          bundles = (
+              ("N397-validation-wsl-pg-authenticity-20261121", "library/postgres", 10, 117190808),
+              ("N434-pinned-linux-python-runtime-20261121", "library/python", 4, 43241091),
+          )
+          need(type(oci["images"]) is list and len(oci["images"]) == len(bundles))
+          for image, (bundle, repository, count, total) in zip(oci["images"], bundles, strict=True):
+              base = private / "support" / "validation-results" / bundle
+              chain_name = "PINNED_OCI_COMPRESSED_CHAIN_VERIFIED.json"
+              chain_bytes = (base / chain_name).read_bytes()
+              chain = json.loads(chain_bytes)
+              expected_image = {
+                  "repository": repository,
+                  "index_digest": chain["source_pinned_index"],
+                  "manifest_digest": chain["linux_amd64_child"]["digest"],
+                  "compressed_chain_sha256": hashlib.sha256(chain_bytes).hexdigest(),
+                  "diffid_receipt_sha256": hashlib.sha256((base / "PINNED_OCI_ALL_DIFFIDS_VERIFIED.json").read_bytes()).hexdigest(),
+                  "rootfs_inventory_sha256": hashlib.sha256((base / "PINNED_OCI_VIRTUAL_ROOTFS_INVENTORY.json").read_bytes()).hexdigest(),
+                  "layers": [{"name": row["file"], "digest": row["digest"], "bytes": row["size"]} for row in chain["layers"]],
+              }
+              need(image == expected_image and len(image["layers"]) == count)
+              need(sum(layer["bytes"] for layer in image["layers"]) == total)
+
+          originals = {result_name: result_bytes, oci_name: oci_bytes, wheel_name: wheel_bytes}
+          publish.mkdir(mode=0o700)
+          for name, raw in originals.items():
+              target = publish / name
+              with target.open("xb") as stream:
+                  stream.write(raw)
+              reread, _ = read_public(target)
+              need(reread == raw)
+          need({path.name for path in publish.iterdir()} == set(originals))
+          PY
+          printf 'public_result_eligible=true\n' >> "$GITHUB_OUTPUT"
+          stage=stock_fresh_custody_outcome
+          (( run_status == 0 ))
+
+      - name: Upload only the verified public result and fetch receipts
+        if: ${{ !cancelled() && steps.prove.outputs.public_result_eligible == 'true' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ctcc-native-fresh-custody-0b65959-linux
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            ${{ runner.temp }}/ctcc-fresh-custody-publish/fresh-custody-hosted-result.json
+            ${{ runner.temp }}/ctcc-fresh-custody-publish/PINNED_PUBLIC_OCI_COMPRESSED_BLOBS_VERIFIED.json
+            ${{ runner.temp }}/ctcc-fresh-custody-publish/pinned-wheels-receipt.json
