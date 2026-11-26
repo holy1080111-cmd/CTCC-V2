@@ -77,12 +77,12 @@ SELECT pg_catalog.jsonb_build_object(
  'column_privileges',COALESCE((SELECT pg_catalog.jsonb_object_agg(c.relname,
    (SELECT pg_catalog.jsonb_object_agg(x.attname,
     (SELECT pg_catalog.jsonb_object_agg(p,
-     pg_catalog.has_column_privilege(a.oid,c.oid,x.attnum::pg_catalog.int4,p)) FROM cp))
+     pg_catalog.has_column_privilege(a.oid,c.oid,x.attnum::pg_catalog.int2,p)) FROM cp))
     FROM attrs x WHERE x.attrelid=c.oid)) FROM rels c),'{}'::pg_catalog.jsonb),
  'column_grant_options',COALESCE((SELECT pg_catalog.jsonb_object_agg(c.relname,
    (SELECT pg_catalog.jsonb_object_agg(x.attname,
     (SELECT pg_catalog.jsonb_object_agg(p,
-     pg_catalog.has_column_privilege(a.oid,c.oid,x.attnum::pg_catalog.int4,p||' WITH GRANT OPTION')) FROM cp))
+     pg_catalog.has_column_privilege(a.oid,c.oid,x.attnum::pg_catalog.int2,p||' WITH GRANT OPTION')) FROM cp))
     FROM attrs x WHERE x.attrelid=c.oid)) FROM rels c),'{}'::pg_catalog.jsonb),
  'sequence_privileges',COALESCE((SELECT pg_catalog.jsonb_object_agg(c.relname,
    (SELECT pg_catalog.jsonb_object_agg(p,pg_catalog.has_sequence_privilege(a.oid,c.oid,p)) FROM sp))

@@ -307,6 +307,13 @@ def test_source_query_has_no_sqlalchemy_binds_or_application_function_call():
     assert text(query)._bindparams == {}
     assert "pg_control_system(" not in query
     assert "pg_catalog.has_function_privilege" in query
+    # REL_17_11 pg_proc.dat OID 3019 takes the physical int2 attribute number.
+    assert (
+        query.count(
+            "pg_catalog.has_column_privilege(a.oid,c.oid,x.attnum::pg_catalog.int2,"
+        )
+        == 2
+    )
     assert "pg_catalog.pg_init_privs" in query
     assert "MAINTAIN" in query and "WITH GRANT OPTION" in query
     assert "split_part(v,'=',1)" in query  # Stored-setting values never leave PG.
