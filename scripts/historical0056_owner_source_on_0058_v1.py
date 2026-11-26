@@ -44,6 +44,22 @@ _REVIEWED_SOURCE58_FILES = {
     "scripts/current0056_reviewed_owner_portable_v1.py": "745dfb240fdc5e163044a6725d32ae6b71aa8a7efb7655e105d99fc61e8b7388",
     "scripts/current0057_native_g12_acl_v1.py": "67ac11bb11f601c43efaf36a977954d3216d0fa30959f90c5179b0ea5e70ec14",
 }
+_OWNER_READER_PATHS = (
+    "app/domain/collector_current_0055_catalog_v1.py",
+    "app/domain/collector_current_0056_inherited_catalog_v1.py",
+)
+_REVIEWED_OWNER_READER_PAIR58_V2 = (
+    "e27ea4f7ff2577b81d3f6d920436f8054266629846549e074fed9ef1668d9a04",
+    "7ef3e52af3eefd006a16ef0bc9d274ebf8d8e81917ad90c48994a78d39f1c3f1",
+)
+# Run 45851484777 measured the original and revised readers against the same
+# actual RC owner/writer catalogs, and independently checked the owner-only RR
+# profile on both physical revisions. Artifact 15132414357, ZIP SHA256
+# 2aa98eb879ac0e9220896c9e182d0462ec7ecdf8dd59512bdc95f8014c1107c1.
+_OWNER_READER_PAIR58_V2_MEASUREMENT = (
+    "scripts/db0056_owner_reference_43465801180/source58-reader-isolation-45851484777.json",
+    "0498c16366661410e7ca821464e76f62da99f2723434e1c364b592a0f30edab8",
+)
 
 
 class HistoricalOwnerSource0058Error(ValueError):
@@ -55,6 +71,14 @@ def _need(value):
         raise HistoricalOwnerSource0058Error(
             "historical0056_owner_source0058_refused"
         ) from None
+
+
+def _requires_owner_reader_compatibility58(reader_hashes):
+    original = tuple(_REVIEWED_SOURCE58_FILES[name] for name in _OWNER_READER_PATHS)
+    if reader_hashes == original:
+        return False
+    _need(reader_hashes == _REVIEWED_OWNER_READER_PAIR58_V2)
+    return True
 
 
 def require_historical_owner_source58(source):
@@ -73,12 +97,20 @@ def require_historical_owner_source58(source):
         and scope.historical_prefix_sha256 == scopes._PREFIX["0056"][0]
         and scope.account_complete is scope.execution_authority is False
     )
+    measured_readers = tuple(
+        sha(previous._read(source, name)) for name in _OWNER_READER_PATHS
+    )
+    revised = _requires_owner_reader_compatibility58(measured_readers)
     _need(
         all(
             sha(previous._read(source, name)) == pin
             for name, pin in _REVIEWED_SOURCE58_FILES.items()
+            if name not in _OWNER_READER_PATHS
         )
     )
+    if revised:
+        name, pin = _OWNER_READER_PAIR58_V2_MEASUREMENT
+        _need(sha(previous._read(source, name, 8192)) == pin)
     return scope
 
 
