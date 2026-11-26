@@ -21,6 +21,20 @@ def digest(value):
 _INVOCATION = object()
 
 
+def test_exact_wire_digest_preserves_empty_values_and_reference_order():
+    shared = [None, b"\x00report", "", 0, False, Decimal("1.20")]
+    value = {
+        "owner": _INVOCATION,
+        "values": shared,
+        "mirror": MappingProxyType({"same": shared}),
+        "end": (),
+    }
+    assert (
+        digest(value)
+        == "d9a17783a7d611baad2b6a4b9311cbb8aedb0511be9402b38a909276c6cd893c"
+    )
+
+
 def test_repeated_calls_reobserve_actual_values_and_keep_all_field_types():
     value = ClockStamp(utc_ns=100, monotonic_ns=100)
     first = digest({"left": value, "right": value})

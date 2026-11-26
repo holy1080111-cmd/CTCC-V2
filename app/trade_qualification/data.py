@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Context, Decimal, DecimalException, localcontext
@@ -544,15 +545,36 @@ def _prepare_market_data(market, *, instrument_id, policy, now):
 
 
 @dataclass(frozen=True, slots=True)
+class _G1Analysis:
+    """Analysis computed inside the same synchronous G1 and protection replay."""
+
+    market_json: bytes
+    evaluated_at: datetime
+    version: str
+    analyzer: Callable[..., MultiTimeframeAnalysis]
+    analysis: MultiTimeframeAnalysis
+    analysis_json: str
+
+
+@dataclass(frozen=True, slots=True)
 class _DataTail:
     code: str
     reason: str
     measured: dict
     evidence: dict
+    current_analysis: _G1Analysis | None
 
 
 def _evaluate_data_tail(
-    market, *, report_id, instrument_id, current_quote, reference, checked_policy, now
+    market,
+    *,
+    report_id,
+    instrument_id,
+    current_quote,
+    reference,
+    checked_policy,
+    now,
+    retain_current_analysis=False,
 ):
     """Shared exact arithmetic/indicator evaluation after versioned quote replay.
 
@@ -564,8 +586,8 @@ def _evaluate_data_tail(
     evidence = {}
     measured = {"quality_recomputed": False, "analysis_recomputed": False}
 
-    def result(code, reason):
-        return _DataTail(code, reason, dict(measured), dict(evidence))
+    def result(code, reason, current_analysis=None):
+        return _DataTail(code, reason, dict(measured), dict(evidence), current_analysis)
 
     if reference is None:
         return result(
@@ -686,20 +708,22 @@ def _evaluate_data_tail(
     market = market.model_copy(update={"quality": qualities})
     measured["quality_recomputed"] = True
     try:
-        analysis = analyze_snapshot_at(
+        computed = analyze_snapshot_at(
             market, evaluated_at=now, version=checked_policy.analysis_version
         )
-        if not _indicator_values_valid(analysis, market):
+        if not _indicator_values_valid(computed, market):
             return result(
                 "indicator_invalid",
                 "Required recomputed indicators are missing or misaligned.",
             )
+        analysis_json = computed.model_dump_json()
         analysis = MultiTimeframeAnalysis.model_validate_json(
-            analysis.model_dump_json(), strict=True
+            analysis_json, strict=True
         )
+        market_payload = market.model_dump(mode="json")
         source = _canonical(
             {
-                "market": market.model_dump(mode="json"),
+                "market": market_payload,
                 "analysis": analysis.model_dump(mode="json"),
             }
         )
@@ -709,6 +733,18 @@ def _evaluate_data_tail(
                 "Rebuilt evidence exceeds the source byte bound.",
             )
         evidence.update(source_json=source.decode("utf-8"), source_sha256=_sha(source))
+        current_analysis = (
+            _G1Analysis(
+                _canonical(market_payload),
+                now,
+                checked_policy.analysis_version,
+                analyze_snapshot_at,
+                computed,
+                analysis_json,
+            )
+            if retain_current_analysis
+            else None
+        )
     except _INVALID:
         return result(
             "indicator_invalid",
@@ -718,6 +754,7 @@ def _evaluate_data_tail(
     return result(
         "passed",
         "G1 data consistency passed; source adapters and later gates remain separate.",
+        current_analysis,
     )
 
 

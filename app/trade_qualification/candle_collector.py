@@ -66,6 +66,17 @@ RawText = Annotated[
     str, StringConstraints(strip_whitespace=False), Field(max_length=MAX_RESPONSE_BYTES)
 ]
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+_CAPTURED_CANDLE_FIELDS = (
+    "timestamp",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume_contracts",
+    "volume_currency",
+    "volume_quote",
+    "confirmed",
+)
 
 
 class CandleCollectionError(ValueError):
@@ -141,8 +152,30 @@ def _guard(value, depth=0, budget=None):
             if isinstance(value, BaseModel):
                 raise CandleCollectionError("capture_model_type_invalid")
             raise CandleCollectionError("capture_value_invalid")
-        if set(value.__dict__) != set(kind.model_fields) or value.__pydantic_extra__:
+        values = value.__dict__
+        fields = kind.model_fields
+        ordinary_candle = (
+            kind is CapturedCandle
+            and type(values) is dict
+            and type(fields) is dict
+            and len(values) == len(fields) == len(_CAPTURED_CANDLE_FIELDS)
+            and all(
+                actual is declared is expected
+                for actual, declared, expected in zip(
+                    values, fields, _CAPTURED_CANDLE_FIELDS
+                )
+            )
+        )
+        if (
+            not ordinary_candle and set(values) != set(fields)
+        ) or value.__pydantic_extra__:
             raise CandleCollectionError("capture_model_fields_invalid")
+        if ordinary_candle:
+            # These exact field names carry no raw pins or bounded sequences.
+            # Visit every value again in the same order and charge its budget.
+            for item in reversed(values.values()):
+                pending.append((item, depth + 1))
+            continue
         for name, part in value.__dict__.items():
             pattern = None
             if name.endswith("_sha256"):
@@ -189,10 +222,12 @@ def _copy(value, expected):
 
 def _hash(value, *, omit):
     _guard(value)
-    raw = _canonical(value.model_dump(mode="json", round_trip=True, exclude={omit}))
-    if len(raw.encode()) > 32 * 1024 * 1024:
+    raw = _canonical(
+        value.model_dump(mode="json", round_trip=True, exclude={omit})
+    ).encode()
+    if len(raw) > 32 * 1024 * 1024:
         raise CandleCollectionError("capture_bundle_too_large")
-    return _sha(raw.encode())
+    return _sha(raw)
 
 
 class FrameRequest(QualificationModel):

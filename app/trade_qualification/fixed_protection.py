@@ -58,11 +58,13 @@ from app.trade_qualification import (
 from app.trade_qualification.data import (
     DataQualificationPolicy,
     _bounded_scalars,
+    _G1Analysis,
     _indicator_values_valid,
     _market_copy,
     _positive_price,
     _validate_market_quotes,
 )
+from app.trade_qualification.data import _canonical as _canonical_g1
 from app.trade_qualification.engine import ProtectionPolicy
 from app.trade_qualification.event_models import Digest, StrategyName, TriggerDetection
 from app.trade_qualification.events import _copy_source
@@ -486,7 +488,7 @@ def _price(value):
     return value
 
 
-def _source(market, supplied_analysis, *, at, data_policy):
+def _source(market, supplied_analysis, *, at, data_policy, g1_analysis=None):
     market = _market_copy(market)
     supplied = _copy(supplied_analysis, MultiTimeframeAnalysis)
     if set(market.candles) != set(BAR_SECONDS):
@@ -525,9 +527,20 @@ def _source(market, supplied_analysis, *, at, data_policy):
         ):
             raise FixedProtectionError("source_candle_age_invalid")
     market = market.model_copy(update={"quality": quality})
-    analysis = analyze_snapshot_at(
-        market, evaluated_at=at, version=data_policy.analysis_version
-    )
+    if (
+        type(g1_analysis) is _G1Analysis
+        and g1_analysis.analyzer is analyze_snapshot_at
+        and g1_analysis.evaluated_at == at
+        and g1_analysis.version == data_policy.analysis_version
+        and g1_analysis.market_json == _canonical_g1(market.model_dump(mode="json"))
+        and type(g1_analysis.analysis) is MultiTimeframeAnalysis
+        and g1_analysis.analysis_json == g1_analysis.analysis.model_dump_json()
+    ):
+        analysis = g1_analysis.analysis
+    else:
+        analysis = analyze_snapshot_at(
+            market, evaluated_at=at, version=data_policy.analysis_version
+        )
     if not _indicator_values_valid(analysis, market) or analysis != supplied:
         raise FixedProtectionError("source_analysis_recompute_mismatch")
     return _copy_source(market, analysis, at)
@@ -1089,6 +1102,7 @@ def _evaluate_owned_fixed_protection_profile(
     quote: _owned_quote_v2.ExecutableQuoteV2,
     observed_at: datetime,
     _quote_profile: _OwnedQuoteProfile,
+    _current_analysis: _G1Analysis | None = None,
 ) -> FixedProtectionResult:
     """Compare original prices only; current-source history continuity is separate.
 
@@ -1270,7 +1284,11 @@ def _evaluate_owned_fixed_protection_profile(
         )
         try:
             new_market, _new_analysis, frames, new_sha = _source(
-                current_market, current_analysis, at=now, data_policy=data
+                current_market,
+                current_analysis,
+                at=now,
+                data_policy=data,
+                g1_analysis=_current_analysis,
             )
             if (new_market.instrument_id, new_market.symbol) != (
                 old_market.instrument_id,

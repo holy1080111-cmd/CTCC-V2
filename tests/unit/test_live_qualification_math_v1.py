@@ -232,10 +232,10 @@ async def test_post_g12_reuses_original_event_zone_prices_and_distinct_publicati
     ):
         fresh[0].count = old_clock.count + 10
         fresh[0].stamp()
-        await _current_checks(fresh, original)
+        await _current_checks(fresh, original, fresh_patch)
 
 
-async def _current_checks(live_source, original):
+async def _current_checks(live_source, original, monkeypatch):
     _, _, _, _, key, request = live_source
     g12_digest = "a" * 64
     opaque, _ = request(
@@ -243,12 +243,42 @@ async def _current_checks(live_source, original):
     )
     current_owner = await public.capture_owned_live_public_v1(opaque, key=key)
     current = public._replay_owned_live_public_v1(current_owner, key=key)
-    result = subject.recheck_live_qualification_math_v1(
-        current,
-        original=original,
-        consumed_event_keys=frozenset(),
-        publication_candidate_sha256=g12_digest,
-    )
+    inputs = {
+        "original": original,
+        "consumed_event_keys": frozenset(),
+        "publication_candidate_sha256": g12_digest,
+    }
+    analyze = subject.data.analyze_snapshot_at
+    evaluate_tail = subject.data._evaluate_data_tail
+    current_calls = []
+
+    def count_analysis(snapshot, *, evaluated_at, version):
+        if evaluated_at == current.evaluated_at:
+            current_calls.append(evaluated_at)
+        return analyze(snapshot, evaluated_at=evaluated_at, version=version)
+
+    def change_analysis_binding(*args, **kwargs):
+        tail = evaluate_tail(*args, **kwargs)
+        if tail.current_analysis is None:
+            return tail
+        return replace(
+            tail,
+            current_analysis=replace(
+                tail.current_analysis,
+                analysis_json=tail.current_analysis.analysis_json + " ",
+            ),
+        )
+
+    with monkeypatch.context() as counted:
+        counted.setattr(subject.data, "analyze_snapshot_at", count_analysis)
+        counted.setattr(fixed_protection, "analyze_snapshot_at", count_analysis)
+        result = subject.recheck_live_qualification_math_v1(current, **inputs)
+        assert len(current_calls) == 1
+        current_calls.clear()
+        counted.setattr(subject.data, "_evaluate_data_tail", change_analysis_binding)
+        replayed = subject.recheck_live_qualification_math_v1(current, **inputs)
+        assert len(current_calls) == 2
+    assert replayed.receipt_json == result.receipt_json
     assert result.market_math_complete, [
         (g.gate.value, g.code) for g in result.result.gates
     ]

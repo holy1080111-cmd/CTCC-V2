@@ -13,6 +13,8 @@ from decimal import Decimal
 from enum import EnumType
 from fractions import Fraction
 from gc import get_referents
+from itertools import chain
+from struct import Struct
 from types import (
     GetSetDescriptorType,
     MappingProxyType,
@@ -31,6 +33,9 @@ _MAX_CONTAINER = 8192
 _MAX_DEPTH = 40
 _MODEL_META = type(BaseModel)
 _ABSENT = object()
+_NODE_HEADER = Struct(">cQcQ")
+_WIRE_UINT = Struct(">Q")
+_EMPTY_REFERENCE_LENGTH = _WIRE_UINT.pack(0)
 
 
 def _need(value):
@@ -173,7 +178,7 @@ def exact_input_dag_digest_v2(value, *, invocation):
     def visit(item, depth=0):
         nonlocal wire_total
         _need(depth <= _MAX_DEPTH)
-        identity, kind = id(item), type(item)
+        identity = id(item)
         _need(identity not in active)
         found = memo.get(identity)
         if found is not None:
@@ -183,6 +188,7 @@ def exact_input_dag_digest_v2(value, *, invocation):
                 and depth + heights[found] <= _MAX_DEPTH
             )
             return found
+        kind = type(item)
         _need(len(items) < _MAX_NODES)
         index = len(items)
         memo[identity] = index
@@ -240,7 +246,7 @@ def exact_input_dag_digest_v2(value, *, invocation):
             values = _mapping(item)
             _need(len(values) <= _MAX_CONTAINER)
             tag = b"o" if kind is dict else b"p"
-            children = (child for pair in values.items() for child in pair)
+            children = chain.from_iterable(values.items())
         elif type(kind) is EnumType:
             declared, _fields, cost = schema(kind, b"E")
             member = object.__getattribute__(item, "_name_")
@@ -265,8 +271,9 @@ def exact_input_dag_digest_v2(value, *, invocation):
             expanded_bytes += cost
         else:
             _need(False)
-        references = bytearray()
+        references = b""
         if children is not None:
+            references = bytearray()
             active.add(identity)
             for child in children:
                 target = visit(child, depth + 1)
@@ -287,12 +294,14 @@ def exact_input_dag_digest_v2(value, *, invocation):
         # Bytes/bytearrays and flat cost lists avoid a tracked container per node.
         wire_total += 26 + len(payload) + len(references)
         _need(wire_total <= _MAX_BYTES)
-        digest.update(
-            b"N" + index.to_bytes(8, "big") + tag + len(payload).to_bytes(8, "big")
-        )
-        digest.update(payload)
-        digest.update(len(references).to_bytes(8, "big"))
-        digest.update(references)
+        digest.update(_NODE_HEADER.pack(b"N", index, tag, len(payload)))
+        if payload:
+            digest.update(payload)
+        if references:
+            digest.update(_WIRE_UINT.pack(len(references)))
+            digest.update(references)
+        else:
+            digest.update(_EMPTY_REFERENCE_LENGTH)
         node_costs[index], byte_costs[index], heights[index] = (
             expanded_nodes,
             expanded_bytes,

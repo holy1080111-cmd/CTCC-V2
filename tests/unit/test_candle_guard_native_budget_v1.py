@@ -198,6 +198,25 @@ def test_random_nested_values_match_frozen_depth_first_rejection_order():
         )
 
 
+def test_reordered_or_aliased_model_keys_keep_legacy_guard_behavior():
+    class FieldAlias(str):
+        def endswith(self, suffix, *args):
+            return self == "open" or super().endswith(suffix, *args)
+
+    reordered = _candle()
+    data = reordered.__dict__
+    object.__setattr__(reordered, "__dict__", dict(reversed(tuple(data.items()))))
+    aliased = _candle()
+    data = {
+        FieldAlias(name) if name == "open" else name: item
+        for name, item in aliased.__dict__.items()
+    }
+    object.__setattr__(aliased, "__dict__", data)
+    legacy = _legacy()
+    for value in (reordered, aliased):
+        assert _outcome(subject._guard, value) == _outcome(legacy, value)
+
+
 def test_every_call_and_shared_occurrence_is_rewalked_after_mutation():
     candle = _candle()
     pair = (candle, candle)

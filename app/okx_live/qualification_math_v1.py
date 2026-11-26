@@ -654,6 +654,7 @@ def _evaluate(source, *, intent, policy, consumed_event_keys, risk_inputs, origi
         reference=reference,
         checked_policy=prepared.policy,
         now=now,
+        retain_current_analysis=original is not None,
     )
     evidence.update(tail.evidence)
     if not gate(QualificationGate.DATA, tail.code, tail.reason, tail.measured):
@@ -885,7 +886,7 @@ def _evaluate(source, *, intent, policy, consumed_event_keys, risk_inputs, origi
             == (original.result.stop_loss, original.result.take_profit),
             "live_original_prices_changed",
         )
-        checked = fixed_protection.evaluate_live_owned_fixed_protection_v1(
+        checked = fixed_protection._evaluate_owned_fixed_protection_profile(
             old_market,
             old_analysis,
             market,
@@ -900,6 +901,8 @@ def _evaluate(source, *, intent, policy, consumed_event_keys, risk_inputs, origi
             data_policy=policy.prefix.data,
             quote=quote,
             observed_at=now,
+            _quote_profile=fixed_protection._OwnedQuoteProfile.LIVE,
+            _current_analysis=tail.current_analysis,
         )
         fixed_hash = checked.evaluation_sha256
         if not checked.passed:
