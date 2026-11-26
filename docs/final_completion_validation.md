@@ -1,5 +1,35 @@
 # Final completion validation state
 
+## 2026-11-27 Windows tools and production acceptance
+
+Windows Analysis was installed from exact `d847b997` and verified by loading
+two retained public snapshots and their receipts through its local dashboard
+backend. Paper ran on genuine isolated PostgreSQL 0058 with restricted TLS
+roles. A simulated fill survived two application starts and independent ledger
+readback. The clean operator Paper database is dedicated to simulation and has
+also been reopened and stopped independently twice. The locked Windows desktop
+limited acceptance to processes, HTTP routes and verified launcher targets.
+
+Exact `a46b5af3` adds a command that rereads the existing private Notion
+configuration and verifies the bound database, data source and four properties
+with read-only requests. Actual readback succeeded. Worker delivery and an
+accepted source-backed report remain separate requirements. [Notion operator
+command](notion_outbox_runtime.md#verify-the-existing-private-binding)
+
+Exact `fc4a90af` passed the three original native Windows TLS loopback cases
+under the unchanged five-second execution freshness policy. Both fresh cases
+reached a local test POST and the stale case canceled before submission. The
+fixture used no exchange, confirmed neither real Demo nor Live acceptance, and
+left final matching-source Linux and production checks open. [Windows timing
+verification](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/45856566392)
+
+The retained account database's original 0017 backup was preserved. A separate
+copy reached 0055, and a second stopped copy recorded one emergency Stop with
+independent readback. Retained 0055 through 0058, account reconciliation,
+complete matching-source regression and production activation remain pending.
+Gate 3 and actual trading examples are deferred by the operator. The validated
+local tools remain available during this work.
+
 ## 2026-11-14 DB0056 current Demo source observation
 
 `python -B -m scripts.observe_demo_current_source_0056 --instrument BTC-USDT-SWAP`

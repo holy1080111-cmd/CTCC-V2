@@ -117,6 +117,74 @@ def test_original_global_public_data_api_and_full_semantics_are_preserved(
     )
 
 
+def test_packet_validation_rebuilds_nested_candles_and_direct_replay_rechecks(
+    canonical_bank, monkeypatch
+):
+    root, _directory, _calls, args = canonical_bank
+    packet = subject.read_global_public_capture_v1(root, **args).packet
+    replayed = subject.candles.validate_collected_candles
+    calls = []
+
+    def counted(value):
+        calls.append(value)
+        return replayed(value)
+
+    monkeypatch.setattr(subject.candles, "validate_collected_candles", counted)
+    cls = subject.GlobalPublicComponentPacketV1
+    original = packet.packet_json
+    for view in (
+        cls(**packet.__dict__),
+        cls.model_validate_json(original),
+        cls.model_validate(packet),
+    ):
+        assert view is not packet
+        assert view.candles is not packet.candles
+        assert view.packet_json == original
+        assert view.execution_authority is False
+    assert calls == []
+    assert packet.replay() is packet
+    assert calls == [packet.candles]
+
+
+@pytest.mark.parametrize("field", ("raw_page", "confirmed_candle"))
+def test_constructed_candle_tamper_refused_in_every_packet_validation_mode(
+    canonical_bank, field
+):
+    root, _directory, _calls, args = canonical_bank
+    packet = subject.read_global_public_capture_v1(root, **args).packet
+    candles = packet.candles
+    frame = candles.frames[0]
+    if field == "raw_page":
+        page = frame.pages[0]
+        changed = type(page).model_construct(
+            **(page.__dict__ | {"response_body": page.response_body + b" "})
+        )
+        replacement = {"pages": (changed, *frame.pages[1:])}
+        failure = "candle_page_digest_mismatch"
+    else:
+        row = frame.confirmed[0]
+        changed = type(row).model_construct(**(row.__dict__ | {"confirmed": False}))
+        replacement = {"confirmed": (changed, *frame.confirmed[1:])}
+        failure = "frame_source_reconstruction_mismatch"
+    bad_frame = type(frame).model_construct(**(frame.__dict__ | replacement))
+    bad_candles = type(candles).model_construct(
+        **(candles.__dict__ | {"frames": (bad_frame, *candles.frames[1:])})
+    )
+    cls = subject.GlobalPublicComponentPacketV1
+    forged = cls.model_construct(**(packet.__dict__ | {"candles": bad_candles}))
+
+    with pytest.raises(ValueError, match=failure):
+        cls(**forged.__dict__)
+    with pytest.raises(ValueError, match=failure):
+        cls.model_validate_json(forged.packet_json)
+    with pytest.raises(ValueError, match=failure):
+        cls.model_validate(forged)
+    with pytest.raises(
+        subject.candles.CandleCollectionError, match="collected_candles_invalid"
+    ):
+        forged.replay()
+
+
 def test_live_audit_metadata_uses_same_one_full_validator_and_exact_old_inventory(
     canonical_bank,
 ):
@@ -151,9 +219,21 @@ def test_live_audit_metadata_uses_same_one_full_validator_and_exact_old_inventor
     assert result[4:7] == live._inventory(directory)
     assert result[3] is result[0].packet
     assert result[0].execution_authority is False
+    assert result[-1] is None
+    packet = result[3]
+    at = packet.completed_at
+
+    # A caller-created packet still goes through the original checked path.
+    tampered = packet.model_copy(deep=True)
+    stored = tampered.candles.frames[0].confirmed[0]
+    object.__setattr__(stored, "confirmed", False)
+    with pytest.raises(ValueError, match="frame_source_reconstruction_mismatch"):
+        live.projection.project_global_public_market_snapshot_v2(
+            tampered, evaluated_at=at
+        )
 
 
-@pytest.mark.parametrize("changed", ("authority", "raw_body"))
+@pytest.mark.parametrize("changed", ("authority", "raw_body", "packet_confirmed"))
 def test_rehashed_invalid_complete_source_is_still_semantically_refused(
     canonical_bank, changed
 ):
@@ -162,10 +242,13 @@ def test_rehashed_invalid_complete_source_is_still_semantically_refused(
         if not name.startswith("event-") or not name.endswith(".json"):
             continue
         event = decode(directory.files[name])
-        if changed == "authority" and event["kind"] == "packet":
+        if changed in {"authority", "packet_confirmed"} and event["kind"] == "packet":
             raw_name = f"event-{event['index']:04d}.raw"
             packet = decode(directory.files[raw_name])
-            packet["execution_authority"] = True
+            if changed == "authority":
+                packet["execution_authority"] = True
+            else:
+                packet["candles"]["frames"][0]["confirmed"][0]["confirmed"] = False
             directory.files[raw_name] = canonical(packet)
             break
         if changed == "raw_body" and event["kind"] == "chunk":

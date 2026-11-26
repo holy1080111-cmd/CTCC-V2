@@ -13,6 +13,8 @@ import httpx
 import pytest
 
 from app.domain.source_primitives import ClockStamp, canonical, decode, sha, utc_from_ns
+from app.okx_live import qualification_math_v1 as math
+from app.okx_live.entry_input_dag_v2 import exact_input_dag_digest_v2
 from app.public_market_source import public_runtime_journal as journal
 from app.trade_qualification import global_public_staged_v2 as lower
 from app.trade_qualification import native_live_public_source_v1 as subject
@@ -97,6 +99,30 @@ async def test_staged_exact_wire_ohlc_then_account_then_mutable_and_full_replay(
     assert value.execution_authority is value.account_complete is False
     assert value.packet.candles == data.candles
     assert decode(value.receipt_json)["policy_sha256"] == subject.STAGED_POLICY_SHA256
+    legacy = subject._project(
+        value.packet, report_id=value.report_id, at=value.evaluated_at
+    )
+    staged_view = (value.market, value.quote, value.reference)
+    assert legacy == staged_view
+    assert legacy[0].candles["4H"][0] is not value.market.candles["4H"][0]
+    assert exact_input_dag_digest_v2(
+        (value.packet, legacy), invocation=params.invocation
+    ) == exact_input_dag_digest_v2(
+        (value.packet, staged_view), invocation=params.invocation
+    )
+    market_view, quote, reference = math._source(value)
+    assert (market_view, quote, reference) == (
+        value.market,
+        value.quote,
+        value.reference,
+    )
+    assert market_view.candles["4H"][0] is not value.market.candles["4H"][0]
+    changed_market = value.market.model_copy(deep=True)
+    changed_market.candles["4H"][0].confirmed = False
+    with pytest.raises(
+        math.LiveQualificationMathError, match="live_qualification_math_invalid"
+    ):
+        math._source(replace(value, market=changed_market))
     assert (
         decode(raw.content["plan.json"])["schema_version"] == journal.GLOBAL_STAGED_PLAN
     )

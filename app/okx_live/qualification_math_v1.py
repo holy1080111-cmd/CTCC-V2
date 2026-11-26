@@ -266,8 +266,11 @@ def _source(value):
                         for name in ("utc_ns", "monotonic_ns")
                     )
                 )
+    # The staged packet was independently reconstructed from the entire raw
+    # journal in this call. No projected candle is shared with the owner view.
+    series = public._copy_locally_replayed_candle_series(packet) if staged else None
     market, quote, reference = public._project(
-        packet, report_id=value.report_id, at=now
+        packet, report_id=value.report_id, at=now, replayed_series=series
     )
     _need(
         market == value.market and quote == value.quote and reference == value.reference
