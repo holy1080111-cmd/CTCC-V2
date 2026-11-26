@@ -185,6 +185,7 @@ OWNER_STORAGE_CASES = (
 )
 CANONICAL_OWNER_CASES = (
     *OWNER_STORAGE_CANONICAL_CASES,
+    *storage_diagnostic.CASES,
     *OWNER0056_V2_CASES,
     *(
         case

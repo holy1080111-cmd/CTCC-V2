@@ -54,7 +54,7 @@ def _actual_owner_cases():
 
 def test_actual_owner_cases_all_run_once_on_source58_component3():
     expected = _actual_owner_cases()
-    assert len(expected) == len(set(expected)) == 28
+    assert len(expected) == len(set(expected)) == len(full.CANONICAL_OWNER_CASES) == 31
     assert set(full.CANONICAL_OWNER_CASES) == set(expected)
     assert len(NEW_CASES) == 6 and set(NEW_CASES) <= set(expected)
     assert set(expected).isdisjoint(full.SUCCESSOR_CASES)
@@ -81,8 +81,8 @@ def test_actual_owner_cases_all_run_once_on_source58_component3():
 
 def test_source58_all_storage_callback_cases_are_mandatory_once_on_owner3():
     cases = full.OWNER_STORAGE_CASES
-    assert len(cases) == len(set(cases)) == 8
-    assert len(full.OWNER_STORAGE_CANONICAL_CASES) == 7
+    assert len(cases) == len(set(cases)) == 9
+    assert len(full.OWNER_STORAGE_CANONICAL_CASES) == 8
     for case in cases:
         assert full.REQUIRED_CASES.count(case) == 1
         assert case not in full.base.REQUIRED_CASES
