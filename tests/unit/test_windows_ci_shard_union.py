@@ -16,6 +16,7 @@ import pytest
 from scripts import manifest
 from scripts import verify_windows_shard as shard_plugin
 from scripts.verify_windows_regression import (
+    COLLECTION_JSON_MAX_BYTES,
     NO_DB_INTEGRATION,
     POSIX_SKIP_POLICY,
     POSTGRES_INTEGRATION,
@@ -192,6 +193,31 @@ def test_whole_module_partition_and_exact_full_suite_union(tmp_path: Path):
     assert len(result["regression"]["junit"]["required_windows_cases_passed"]) == len(
         WINDOWS_REQUIRED_CASES
     )
+
+
+def test_only_collection_accepts_artifact_larger_than_metadata_budget(tmp_path: Path):
+    artifacts, root, manifest_hash, full = _fixture(tmp_path)
+    component = artifacts / f"ctcc-windows-shard-0-{COMMIT}"
+    record = component / "windows-collection.json"
+    with record.open("ab") as stream:
+        stream.write(b" " * (8 * 1024 * 1024))
+
+    result = _verify(tmp_path, artifacts, root, manifest_hash)
+    assert result["full_suite_union"] == "PASS"
+    assert result["selected_cases"] == len(full)
+
+    identity = component / "source-identity.json"
+    original_identity = identity.read_bytes()
+    with identity.open("ab") as stream:
+        stream.write(b" " * (8 * 1024 * 1024))
+    with pytest.raises(WindowsRegressionError, match="json_evidence_missing_or_unsafe"):
+        _verify(tmp_path / "oversized-identity", artifacts, root, manifest_hash)
+
+    identity.write_bytes(original_identity)
+    with record.open("ab") as stream:
+        stream.truncate(COLLECTION_JSON_MAX_BYTES + 1)
+    with pytest.raises(WindowsRegressionError, match="json_evidence_missing_or_unsafe"):
+        _verify(tmp_path / "oversized-collection", artifacts, root, manifest_hash)
 
 
 def test_zip_timestamp_change_keeps_exact_source_member_identity(tmp_path: Path):

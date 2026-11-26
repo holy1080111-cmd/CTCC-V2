@@ -289,6 +289,9 @@ WINDOWS_REQUIRED_CASES = (
 )
 HEX40 = re.compile(r"[0-9a-f]{40}\Z")
 HEX64 = re.compile(r"[0-9a-f]{64}\Z")
+# A shard includes the full collection plus separate selected and observed
+# nodeid lists. Only collection readers need a larger bounded input.
+COLLECTION_JSON_MAX_BYTES = 12 * 1024 * 1024
 
 
 class WindowsRegressionError(ValueError):
@@ -299,20 +302,24 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _json(path: Path) -> dict:
-    if (
-        path.is_symlink()
-        or not path.is_file()
-        or not 0 < path.stat().st_size <= 8 * 1024 * 1024
-    ):
+def _json(path: Path, *, max_bytes: int = 8 * 1024 * 1024) -> dict:
+    if path.is_symlink() or path.is_junction() or not path.is_file():
+        raise WindowsRegressionError("json_evidence_missing_or_unsafe")
+    with path.open("rb") as stream:
+        raw = stream.read(max_bytes + 1)
+    if not 0 < len(raw) <= max_bytes:
         raise WindowsRegressionError("json_evidence_missing_or_unsafe")
     try:
-        value = read_evidence_json(path.read_text(encoding="utf-8-sig"))
+        value = read_evidence_json(raw.decode("utf-8-sig"))
     except (ValueError, RecursionError):
         raise WindowsRegressionError("json_evidence_invalid") from None
     if not isinstance(value, dict):
         raise WindowsRegressionError("json_object_required")
     return value
+
+
+def _collection_json(path: Path) -> dict:
+    return _json(path, max_bytes=COLLECTION_JSON_MAX_BYTES)
 
 
 def test_selection(root: Path) -> tuple[str, ...]:
@@ -400,13 +407,13 @@ def pytest_collection_finish(session) -> None:
     with output.open("x", encoding="utf-8", newline="\n") as stream:
         json.dump(record, stream, sort_keys=True, separators=(",", ":"))
         stream.write("\n")
-    if _json(output) != record:
+    if _collection_json(output) != record:
         raise WindowsRegressionError("windows_collection_readback_changed")
 
 
 def verify_collection(path: Path, root: Path) -> tuple[set[tuple[str, str]], dict]:
     """Reject subset collection, changed source, or altered nodeid mapping."""
-    record = _json(path)
+    record = _collection_json(path)
     if (
         record.get("schema") != "ctcc.windows_ci_collection.v1"
         or record.get("requested_paths") != list(test_selection(root))

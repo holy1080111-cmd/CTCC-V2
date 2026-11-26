@@ -19,6 +19,7 @@ from pathlib import Path, PurePosixPath
 from scripts.verify_windows_regression import (
     NO_DB_INTEGRATION,
     WindowsRegressionError,
+    _collection_json,
     _json,
     _junit_key,
     _sha256,
@@ -44,8 +45,6 @@ def _write_json(path: Path, value: dict) -> None:
     with path.open("x", encoding="utf-8", newline="\n") as stream:
         json.dump(value, stream, sort_keys=True, separators=(",", ":"))
         stream.write("\n")
-    if _json(path) != value:
-        raise WindowsRegressionError("windows_union_json_readback_changed")
 
 
 def _zip_members(path: Path) -> dict[str, bytes]:
@@ -272,7 +271,7 @@ def verify_union(
         elif source_key != common_source or dependency_key != common_dependency:
             raise WindowsRegressionError("windows_union_source_or_lock_drift")
         record_path = component / "windows-collection.json"
-        record = _json(record_path)
+        record = _collection_json(record_path)
         current_full = _shard_record(record, index=index, root=root)
         if full is None:
             full = current_full
@@ -314,6 +313,8 @@ def verify_union(
         "cases": full,
     }
     _write_json(collection, merged_record)
+    if _collection_json(collection) != merged_record:
+        raise WindowsRegressionError("windows_union_json_readback_changed")
     suite = ET.Element(
         "testsuite",
         name="pytest",
@@ -352,6 +353,8 @@ def verify_union(
         "execution_authority": False,
     }
     _write_json(output / "windows-union.json", result)
+    if _json(output / "windows-union.json") != result:
+        raise WindowsRegressionError("windows_union_json_readback_changed")
     return result
 
 
