@@ -3,9 +3,10 @@
 This explicit owner-maintenance command reasserts an already stopped legacy
 singleton at revision0. It never clears Stop, Arms, grants a role, changes a
 schema or places an order. It does not run automatically after17→55. Confirmed
-mutation is currently **LINEAGE PENDING / DENIED before connection**, using the
-same source-owned prerequisite as the preserved owner upgrade. No caller flag,
-saved report or matching snapshot hash enables that boundary.
+mutation through the direct owner connection is denied before connection. A
+dedicated fixed supervisor can hold a source-owned lease on a separate working
+copy of the sealed stopped DB0055 generation. A saved report or matching
+snapshot hash carries data only.
 
 Read-only mode uses the existing reviewed source/archive/private owner-route/CA
 machinery, controlled SUPER-owner startup and original stored-GUC checks. It
@@ -24,8 +25,18 @@ original upgrade's target digest from the observed DB0055 generation, including
 the sealed old-column projection, retained rows, layouts, ACLs and sequences.
 The caller must separately establish the clean stopped physical inventory, its
 original operation journals, and the actual isolated copy. A matching digest
-allows the planner to issue read-only eligibility data. Confirmed mutation
-remains behind the live descendant-custody boundary.
+allows the planner to issue read-only eligibility data.
+
+`run_stopped0055_negative_stop_supervisor_v1` accepts the root-private
+`ctcc.retained_pg.stopped0055_negative_stop_request.v1` packet with the exact
+negative Stop confirmation and reviewed read-only eligibility result digest.
+It repeats both observations on its new copy, binds a no-clobber launch marker
+to the sealed predecessor inventory, and holds a dedicated capability through
+the sole COMMIT and two independent readbacks. The native journal and database
+audit share the same operation UUID. The supervisor fast-stops the copy,
+verifies clean PostgreSQL control and repeats the original cold file hashes
+before reporting the committed result. A failed or uncertain launch remains
+bound to its marker for reconciliation.
 
 The live current row must already be disarmed, stopped, locked and latched at
 revision0. Unknown reason strings and duplicate entries remain in their

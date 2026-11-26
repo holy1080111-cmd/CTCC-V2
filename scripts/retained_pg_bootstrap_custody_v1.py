@@ -119,6 +119,9 @@ _FRESH_SUCCESS_STATUS = "FRESH_CANONICAL17_COLD_TO_STOPPED0055_VERIFIED"
 _PRESERVED_PLAN_STATUS = "PRESERVED_COLD_0017_READ_ONLY_ELIGIBILITY_VERIFIED"
 _PRESERVED_UPGRADE_STATUS = "PRESERVED_COLD_0017_TO_STOPPED0055_VERIFIED"
 _STOPPED55_READONLY_STATUS = "READ_ONLY_STOPPED_COPY_NEGATIVE_ELIGIBILITY_DATA"
+_STOPPED55_NEGATIVE_STATUS = "COMMITTED_NEGATIVE_STOP_READBACK_VERIFIED"
+_STOPPED55_NEGATIVE_CONFIRMATION = "REASSERT STORED STOP AT DB0055 REVISION ZERO"
+_STOPPED55_NEGATIVE_LAUNCHES = "/root/ctcc-stopped0055-negative-stop-launches"
 
 
 def _need(value, code="retained_pg_bootstrap_refused"):
@@ -237,6 +240,7 @@ class _Origin(Enum):
     PRESERVED = "preserved_8ef_cold_cluster"
     FRESH_FIXTURE = "fresh_canonical17_cold_fixture"
     STOPPED55_READER = "preserved_stopped0055_reader"
+    STOPPED55_NEGATIVE = "preserved_stopped0055_negative_stop"
 
 
 class _Phase(Enum):
@@ -1584,6 +1588,8 @@ def _journal(record, phase):
         "owner_oid": record.owner_oid,
         "execution_authority": False,
     }
+    if record.origin is _Origin.STOPPED55_NEGATIVE:
+        value["reviewed_snapshot_sha256"] = record.pins.reviewed_snapshot_sha256
     _write_private(
         record.private_runtime
         / (f"operation-{record.journal_step:02d}-{phase.value}.json"),
@@ -1707,6 +1713,7 @@ def _claim_owned_apply_v1(owner, *, fixture=False):
 def _advance_owned_apply_v1(owner, phase):
     _guard()
     value = _record(owner)
+    _need(value.origin in (_Origin.PRESERVED, _Origin.FRESH_FIXTURE))
     expected = {
         _Phase.CLAIMED: _Phase.REHEARSAL,
         _Phase.REHEARSAL: _Phase.ROLLED_BACK,
@@ -1722,6 +1729,47 @@ def _advance_owned_apply_v1(owner, phase):
     if target is _Phase.COMMIT_ATTEMPTED:
         value.commit_attempts += 1
     value.phase = target
+
+
+def _require_stopped55_negative_v1(owner, engine, pins):
+    _guard()
+    value = _record(owner)
+    _need(
+        value.origin is _Origin.STOPPED55_NEGATIVE
+        and value.phase is _Phase.READY
+        and value.engine is engine
+        and value.pins is pins
+    )
+    return value
+
+
+def _claim_stopped55_negative_v1(owner, engine, pins, snapshot_sha256):
+    value = _require_stopped55_negative_v1(owner, engine, pins)
+    _need(
+        value.postmaster_started is not None
+        and snapshot_sha256 == pins.reviewed_snapshot_sha256
+    )
+    _journal(value, _Phase.CLAIMED)
+    value.phase = _Phase.CLAIMED
+    return uuid.UUID(hex=value.operation_id)
+
+
+def _advance_stopped55_negative_v1(owner, phase):
+    _guard()
+    value = _record(owner)
+    expected = {
+        _Phase.CLAIMED: _Phase.COMMIT_ATTEMPTED,
+        _Phase.COMMIT_ATTEMPTED: _Phase.READBACK_ONLY,
+    }
+    _need(
+        value.origin is _Origin.STOPPED55_NEGATIVE
+        and type(phase) is _Phase
+        and expected.get(value.phase) is phase
+    )
+    _journal(value, phase)
+    if phase is _Phase.COMMIT_ATTEMPTED:
+        value.commit_attempts += 1
+    value.phase = phase
 
 
 def _mark_owned_unknown_v1(owner):
@@ -1877,6 +1925,9 @@ def _install_owner_guard_v1():
             "_replay_owned_connection_v1",
             "_claim_owned_apply_v1",
             "_advance_owned_apply_v1",
+            "_claim_stopped55_negative_v1",
+            "_require_stopped55_negative_v1",
+            "_advance_stopped55_negative_v1",
             "_owned_route_v1",
         ),
         dependencies=(
@@ -2981,21 +3032,35 @@ def _read_request(path):
     return value, RetainedBootstrapFilesV1(**value["files"]), source
 
 
-def _read_stopped55_request(path):
+def _read_stopped55_request(path, *, apply=False):
+    _need(type(apply) is bool)
     value = json.loads(_private_bytes(path, 65536))
-    _need(
-        type(value) is dict
-        and set(value)
-        == {
-            "schema",
-            "files",
-            "source",
-            "predecessor",
-            "route",
-            "maintenance_settings_sha256",
-        }
-        and value["schema"] == "ctcc.retained_pg.stopped0055_readonly_request.v1"
-    )
+    keys = {
+        "schema",
+        "files",
+        "source",
+        "predecessor",
+        "route",
+        "maintenance_settings_sha256",
+    }
+    schema = "ctcc.retained_pg.stopped0055_readonly_request.v1"
+    if apply:
+        keys |= {"confirmation", "eligibility"}
+        schema = "ctcc.retained_pg.stopped0055_negative_stop_request.v1"
+    _need(type(value) is dict and set(value) == keys and value["schema"] == schema)
+    if apply:
+        eligibility = value["eligibility"]
+        _need(
+            value["confirmation"] == _STOPPED55_NEGATIVE_CONFIRMATION
+            and type(eligibility) is dict
+            and set(eligibility) == {"file", "sha256"}
+            and type(eligibility["sha256"]) is str
+            and _HEX.fullmatch(eligibility["sha256"]) is not None
+            and type(eligibility["file"]) is str
+            and 0 < len(eligibility["file"]) <= 2048
+            and Path(eligibility["file"]).is_absolute()
+            and ".." not in Path(eligibility["file"]).parts
+        )
     files, source, previous, route = (
         value[name] for name in ("files", "source", "predecessor", "route")
     )
@@ -3075,6 +3140,83 @@ def _read_stopped55_request(path):
         )
     )
     return value, RetainedBootstrapFilesV1(**files), source
+
+
+def _stopped55_negative_eligibility_v1(request):
+    pin = request["eligibility"]
+    raw = _private_bytes(Path(pin["file"]), 65536, expected=pin["sha256"])
+    envelope = json.loads(raw)
+    _need(
+        type(envelope) is dict
+        and set(envelope)
+        == {
+            "canonical_result",
+            "execution_authority",
+            "returncode",
+            "source",
+            "stderr_sha256",
+            "stdout_sha256",
+        }
+        and envelope["execution_authority"] is False
+        and type(envelope["returncode"]) is int
+        and envelope["returncode"] == 0
+        and envelope["stderr_sha256"] == _sha(b"")
+    )
+    seen = envelope["canonical_result"]
+    previous = request["predecessor"]
+    _need(
+        type(seen) is dict
+        and set(seen)
+        == {
+            "schema",
+            "status",
+            "database_head",
+            "control_revision",
+            "source_upgrade_after_sha256",
+            "snapshot_sha256",
+            "independent_readbacks",
+            "mutation_performed",
+            "exchange_flat",
+            "account_complete",
+            "execution_authority",
+            "stopped_inventory_sha256",
+            "native_predecessor_acceptance_sha256",
+            "stopped_source_unchanged_verified",
+            "distinct_working_copy_verified",
+            "owned_server_fast_shutdown_verified",
+            "commit_attempts",
+        }
+        and envelope["stdout_sha256"] == _sha(_canonical(seen) + b"\n")
+        and seen["schema"] == "ctcc.retained0055.negative_stop_reassertion.v1"
+        and seen["status"] == _STOPPED55_READONLY_STATUS
+        and seen["database_head"] == "0055"
+        and type(seen["control_revision"]) is int
+        and seen["control_revision"] == 0
+        and type(seen["commit_attempts"]) is int
+        and seen["commit_attempts"] == 0
+        and type(seen["independent_readbacks"]) is int
+        and seen["independent_readbacks"] == 2
+        and seen["account_complete"]
+        is seen["mutation_performed"]
+        is seen["execution_authority"]
+        is False
+        and seen["exchange_flat"] is None
+        and all(
+            seen[name] is True
+            for name in (
+                "stopped_source_unchanged_verified",
+                "distinct_working_copy_verified",
+                "owned_server_fast_shutdown_verified",
+            )
+        )
+        and seen["stopped_inventory_sha256"] == previous["physical_inventory_sha256"]
+        and seen["native_predecessor_acceptance_sha256"]
+        == previous["native_acceptance_sha256"]
+        and seen["source_upgrade_after_sha256"] == previous["after_sha256"]
+        and type(seen["snapshot_sha256"]) is str
+        and _HEX.fullmatch(seen["snapshot_sha256"]) is not None
+    )
+    return raw, seen["snapshot_sha256"]
 
 
 def _read_fresh_request(path):
@@ -3180,6 +3322,28 @@ def _raise_owned_supervisor_terminal_v1(outcome):
                 raise error(error.status) from None
 
 
+def _reserve_stopped55_negative_launch_v1(request, snapshot):
+    manifest = request["predecessor"]["physical_inventory_sha256"]
+    _need(type(manifest) is str and _HEX.fullmatch(manifest) is not None)
+    parent = Path(_STOPPED55_NEGATIVE_LAUNCHES)
+    parent.mkdir(mode=0o700, exist_ok=True)
+    _private_parent(parent)
+    _write_private(
+        parent / (manifest + ".json"),
+        _canonical(
+            {
+                "schema": "ctcc.retained_pg.stopped0055_negative_stop_launch.v1",
+                "stopped_inventory_sha256": manifest,
+                "negative_eligibility_sha256": request["eligibility"]["sha256"],
+                "reviewed_snapshot_sha256": snapshot,
+                "source_archive_sha256": request["source"]["archive"],
+                "automatic_retry": False,
+                "execution_authority": False,
+            }
+        ),
+    )
+
+
 def _run_fixed_supervisor_v1(request, files, source, origin):
     """One fixed genuine-runtime launcher, no external proof/listener adapter.
 
@@ -3190,6 +3354,7 @@ def _run_fixed_supervisor_v1(request, files, source, origin):
     _linux()
     _need(type(origin) is _Origin)
     has_cold_input = origin is not _Origin.FRESH_FIXTURE
+    negative_stop = origin is _Origin.STOPPED55_NEGATIVE
     _need(
         type(files)
         is (RetainedBootstrapFilesV1 if has_cold_input else FreshCanonical17ResourcesV1)
@@ -3206,6 +3371,8 @@ def _run_fixed_supervisor_v1(request, files, source, origin):
         == this_raw
     )
     manifest_raw = None
+    if negative_stop:
+        eligibility_raw, snapshot = _stopped55_negative_eligibility_v1(request)
     if has_cold_input:
         expected = (
             PRESERVED_MANIFEST_SHA256
@@ -3265,6 +3432,8 @@ def _run_fixed_supervisor_v1(request, files, source, origin):
     _write_admitted_source_archive_v1(resources / "source.tar", source_raw, source)
     if has_cold_input:
         _write_private(resources / "cold-manifest.json", manifest_raw)
+    if negative_stop:
+        _write_private(resources / "negative-stop-eligibility.json", eligibility_raw)
     for name, raw in zip(("ca.pem", "server.pem", "server.key"), tls, strict=True):
         _write_private(resources / name, raw)
     common_resources = {
@@ -3289,6 +3458,11 @@ def _run_fixed_supervisor_v1(request, files, source, origin):
     else:
         mapped = FreshCanonical17ResourcesV1(**common_resources)
         inner_request = {**request, "resources": asdict(mapped)}
+    if negative_stop:
+        inner_request["eligibility"] = {
+            **request["eligibility"],
+            "file": "/run/resources/negative-stop-eligibility.json",
+        }
     _write_private(runtime / "request.json", _canonical(inner_request))
     _readonly_bind(Path(files.python_rootfs), python_mount)
     # runtime already contains source/image/vendor bind-submounts. A plain
@@ -3307,6 +3481,7 @@ def _run_fixed_supervisor_v1(request, files, source, origin):
         _Origin.PRESERVED: "_supervisor_main_v1",
         _Origin.FRESH_FIXTURE: "_supervisor_fresh_main_v1",
         _Origin.STOPPED55_READER: "_supervisor_stopped55_main_v1",
+        _Origin.STOPPED55_NEGATIVE: "_supervisor_stopped55_negative_main_v1",
     }[origin]
     program = (
         "import sys;sys.path.insert(0,'/run/resources/source');"
@@ -3322,6 +3497,8 @@ def _run_fixed_supervisor_v1(request, files, source, origin):
     }
     # The only child entry point and all paths are source literals. Request
     # contents never become Python source, shell text, argv or an environment.
+    if negative_stop:
+        _reserve_stopped55_negative_launch_v1(request, snapshot)
     outcome = _run_image(
         ["/run/venv/bin/python", "-I", "-B", "-c", program],
         common,
@@ -3350,6 +3527,7 @@ def _run_fixed_supervisor_v1(request, files, source, origin):
         else {
             _Origin.FRESH_FIXTURE: _FRESH_SUCCESS_STATUS,
             _Origin.STOPPED55_READER: _STOPPED55_READONLY_STATUS,
+            _Origin.STOPPED55_NEGATIVE: _STOPPED55_NEGATIVE_STATUS,
         }[origin]
     )
     _need(result.get("status") == expected_status)
@@ -3377,6 +3555,14 @@ def run_stopped0055_readonly_supervisor_v1(request_file):
     _need(type(request_file) is type(Path()))
     request, files, source = _read_stopped55_request(request_file)
     return _run_fixed_supervisor_v1(request, files, source, _Origin.STOPPED55_READER)
+
+
+def run_stopped0055_negative_stop_supervisor_v1(request_file):
+    """Explicit one-shot negative Stop on a distinct, sealed-source copy."""
+    _linux()
+    _need(type(request_file) is type(Path()))
+    request, files, source = _read_stopped55_request(request_file, apply=True)
+    return _run_fixed_supervisor_v1(request, files, source, _Origin.STOPPED55_NEGATIVE)
 
 
 def _completed_owned_data_v1(owned, origin, *, committed):
@@ -3483,7 +3669,7 @@ async def _execute_fresh_acceptance_v1(resources, source):
     }
 
 
-async def _execute_stopped55_readonly_v1(request, files):
+async def _execute_stopped55_v1(request, files, *, negative_stop):
     from sqlalchemy.engine import URL
     from sqlalchemy.ext.asyncio import create_async_engine
     from sqlalchemy.pool import NullPool
@@ -3493,11 +3679,20 @@ async def _execute_stopped55_readonly_v1(request, files):
 
     route = negative.canonical.OwnerRoutePinsV1(**request["route"])
     source, previous = request["source"], request["predecessor"]
+    snapshot = None
+    if negative_stop:
+        _need(
+            request["eligibility"]["file"]
+            == "/run/resources/negative-stop-eligibility.json"
+        )
+        _, snapshot = _stopped55_negative_eligibility_v1(request)
+    _runtime, _vendor, locator = _require_runtime_provider(files, logical=True)
     pins = negative.NegativeStopPinsV1(
         negative.canonical.OwnerUpgradePinsV1(
             source["commit"], source["tree"], source["archive"], route
         ),
         request["maintenance_settings_sha256"],
+        snapshot,
     )
     raw = _private_bytes(
         Path(files.cold_manifest_file),
@@ -3515,7 +3710,8 @@ async def _execute_stopped55_readonly_v1(request, files):
     _install_owner_guard_v1()
     _guard()
     cold_fd = os.open(cold, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    working_fd = server = engine = None
+    working_fd = server = engine = lease = None
+    committed = False
     try:
         cold_identity = _directory_identity(os.fstat(cold_fd))
         _need(tuple(stopped["stopped_directory_identity"]) == cold_identity[:2])
@@ -3535,11 +3731,12 @@ async def _execute_stopped55_readonly_v1(request, files):
         _need(working_identity[:2] != cold_identity[:2])
         (runtime / "socket").mkdir(mode=0o700)
         os.chown(runtime / "socket", 70, 70)
+        cluster_name = "ctcc_stopped55_" + uuid.uuid4().hex
         settings = _bootstrap_config(
             runtime,
             database=route.database,
             owner=route.owner,
-            cluster_name="ctcc_stopped55_" + uuid.uuid4().hex,
+            cluster_name=cluster_name,
             tls=tls,
         )
         _need(settings["default_transaction_read_only"] == "on")
@@ -3579,12 +3776,65 @@ async def _execute_stopped55_readonly_v1(request, files):
             connect_args={"ssl": context, "timeout": 10, "server_settings": startup},
             hide_parameters=True,
         )
-        result = await negative._plan_stopped_copy_v1(
-            engine,
-            pins,
-            Path(files.source_archive_file),
-            expected_after_sha256=previous["after_sha256"],
-        )
+        archive = Path(files.source_archive_file)
+        if negative_stop:
+            # Mint only here, on the fixed confirmed child, never from the
+            # negative eligibility report or the reusable reader route.
+            async with engine.connect() as connection:
+                lock_profile = await _read_maintenance_lock_profile_v1(connection)
+            lease = object.__new__(OwnedRetainedBootstrapV1)
+            record = _LiveRecord(
+                owner=lease,
+                pins=pins,
+                origin=_Origin.STOPPED55_NEGATIVE,
+                preserved_apply_confirmed=False,
+                phase=_Phase.READY,
+                process_id=os.getpid(),
+                thread_id=threading.get_ident(),
+                task=asyncio.current_task(),
+                deadline_ns=time.monotonic_ns() + OWNER_SECONDS * 10**9,
+                server=server,
+                working_fd=working_fd,
+                working_identity=working_identity,
+                namespaces=namespaces,
+                cluster_name=cluster_name,
+                system_identifier_sha256=system,
+                database=route.database,
+                database_oid=route.database_oid,
+                owner_name=route.owner,
+                owner_oid=route.owner_oid,
+                cold_manifest_sha256=_sha(raw),
+                origin_sha256=parsed[3],
+                ca_sha256=route.ca_sha256,
+                ca_file=runtime / "ca-certificate.pem",
+                private_runtime=outer,
+                operation_id=uuid.uuid4().hex,
+                source_archive_sha256=source["archive"],
+                observed_provider_locator_sha256=locator,
+                maintenance_lock_profile_sha256=lock_profile,
+            )
+            _journal(record, _Phase.READY)
+            _RECORDS[id(lease)] = record
+            _bind_engine_v1(lease, engine)
+            result = await negative._run_owned_stopped55_negative_v1(
+                lease,
+                engine,
+                pins,
+                archive,
+                expected_after_sha256=previous["after_sha256"],
+            )
+            committed = True
+            final = _record(lease)
+            _need(
+                final.phase is _Phase.READBACK_ONLY
+                and final.commit_attempts == 1
+                and final.journal_step == 4
+            )
+            result["negative_eligibility_sha256"] = request["eligibility"]["sha256"]
+        else:
+            result = await negative._plan_stopped_copy_v1(
+                engine, pins, archive, expected_after_sha256=previous["after_sha256"]
+            )
         _guard()
         _need(
             _namespaces() == namespaces
@@ -3604,36 +3854,70 @@ async def _execute_stopped55_readonly_v1(request, files):
             "stopped_source_unchanged_verified": True,
             "distinct_working_copy_verified": True,
             "owned_server_fast_shutdown_verified": True,
-            "commit_attempts": 0,
+            "commit_attempts": int(committed),
         }
+    except negative.NegativeStopCommitUnknown:
+        raise RetainedBootstrapCommitUnknown(
+            "retained_pg_owned_commit_unknown_do_not_retry"
+        ) from None
+    except negative.NegativeStopReadbackRequired:
+        raise RetainedBootstrapReadbackRequired(
+            "retained_pg_owned_committed_readback_required"
+        ) from None
+    except BaseException:
+        if committed:
+            raise RetainedBootstrapReadbackRequired(
+                "retained_pg_owned_committed_readback_required"
+            ) from None
+        raise
     finally:
+        failed = sys.exc_info()[0] is not None
+        if lease is not None:
+            _RECORDS.pop(id(lease), None)
         try:
             if server is not None:
                 _need(_stop_held(server) == "FAST_SHUTDOWN_0")
             if engine is not None:
                 await engine.dispose()
+        except BaseException:
+            if not failed:
+                if committed:
+                    raise RetainedBootstrapReadbackRequired(
+                        "retained_pg_owned_committed_readback_required"
+                    ) from None
+                raise
         finally:
             if working_fd is not None:
                 os.close(working_fd)
             os.close(cold_fd)
 
 
-def _supervisor_stopped55_main_v1():
+def _supervisor_stopped55_negative_main_v1():
+    return _supervisor_stopped55_main_v1(negative_stop=True)
+
+
+def _supervisor_stopped55_main_v1(*, negative_stop=False):
     try:
         _linux()
         _need(Path(__file__).resolve().parents[1] == Path("/run/resources/source"))
-        request, files, source = _read_stopped55_request(Path("/run/request.json"))
+        request, files, source = _read_stopped55_request(
+            Path("/run/request.json"), apply=negative_stop
+        )
         _need(_current_executable_sha() == PYTHON_ELF_SHA256)
         _require_runtime_provider(files, logical=True)
         _verify_image(Path(files.pg_rootfs), Path(files.pg_inventory_file))
         _verify_source(files, source)
         _require_runtime_metadata_v1()
-        result = asyncio.run(_execute_stopped55_readonly_v1(request, files))
+        result = asyncio.run(
+            _execute_stopped55_v1(request, files, negative_stop=negative_stop)
+        )
         print(_canonical(result).decode("ascii"))
         return 0
     except BaseException as failure:  # noqa: BLE001 -- fixed DATA refusal; full diagnostic stays private.
         import traceback
 
+        error = type(failure)
+        status = error.status if error in _OWNED_TERMINAL_ERRORS else "REFUSED"
         try:
             _write_private(
                 Path("/run/stopped55-readonly-exception-chain.private.json"),
@@ -3644,8 +3928,9 @@ def _supervisor_stopped55_main_v1():
                 traceback.format_exc().encode("utf-8"),
             )
         except BaseException:  # noqa: BLE001 -- failed diagnostics cannot pass a refusal.
-            return 2
-        print(_owned_failure_stdout_v1("REFUSED").decode("ascii"), end="")
+            if status == "REFUSED":
+                return 2
+        print(_owned_failure_stdout_v1(status).decode("ascii"), end="")
         return 2
 
 

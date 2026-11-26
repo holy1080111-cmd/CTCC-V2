@@ -228,7 +228,7 @@ async def _observe(connection, pins, phase):
     return state
 
 
-async def _read(engine, pins, *, expected_after_sha256=None):
+async def _read(engine, pins, *, expected_after_sha256=None, _custody=None):
     if expected_after_sha256 is not None:
         from scripts import retained_pg_bootstrap_custody_v1 as custody
 
@@ -248,6 +248,8 @@ async def _read(engine, pins, *, expected_after_sha256=None):
                 _need(tuple(actual) == ("on", "on", "repeatable read", "127.0.0.1"))
                 await custody._read_maintenance_lock_profile_v1(connection)
                 custody._guard()
+                if _custody is not None:
+                    await custody._replay_owned_connection_v1(_custody, connection)
                 await owner._replay_stopped0055_continuity_v1(
                     connection,
                     _inspection_pins_v1(pins),
@@ -258,24 +260,33 @@ async def _read(engine, pins, *, expected_after_sha256=None):
             await transaction.rollback()
 
 
-async def _plan_stopped_copy_v1(engine, pins, archive_file, *, expected_after_sha256):
-    """Read the sealed target and negative Stop evidence twice. DATA only."""
+async def _stopped55_snapshot_v1(
+    engine, pins, archive_file, *, expected_after_sha256, _custody=None
+):
     _inspection_pins_v1(pins)
     _need(type(engine) is AsyncEngine and type(engine.pool) is NullPool)
     _need(owner.original._digest(expected_after_sha256))
     _source(pins, archive_file)
+    args = {"expected_after_sha256": expected_after_sha256}
+    if _custody is not None:
+        args["_custody"] = _custody
     async with asyncio.timeout(300):
-        before = await _read(engine, pins, expected_after_sha256=expected_after_sha256)
+        before = await _read(engine, pins, **args)
         _control(before["control"], revision=0)
-        _need(
-            await _read(engine, pins, expected_after_sha256=expected_after_sha256)
-            == before
-        )
+        _need(await _read(engine, pins, **args) == before)
     _source(pins, archive_file)
     snapshot = _digest(before)
     _need(
         pins.reviewed_snapshot_sha256 is None
         or pins.reviewed_snapshot_sha256 == snapshot
+    )
+    return before, snapshot
+
+
+async def _plan_stopped_copy_v1(engine, pins, archive_file, *, expected_after_sha256):
+    """Read the sealed target and negative Stop evidence twice. DATA only."""
+    _before, snapshot = await _stopped55_snapshot_v1(
+        engine, pins, archive_file, expected_after_sha256=expected_after_sha256
     )
     return {
         "schema": SCHEMA,
@@ -400,9 +411,16 @@ async def _verify_delta(
     )
 
 
-async def _write_once(engine, pins, archive_file, before):
-    owner._require_apply_lineage()
-    operation_id = uuid4()
+async def _write_once(engine, pins, archive_file, before, *, _custody=None):
+    if _custody is None:
+        owner._require_apply_lineage()
+        operation_id = uuid4()
+    else:
+        from scripts import retained_pg_bootstrap_custody_v1 as custody
+
+        operation_id = custody._claim_stopped55_negative_v1(
+            _custody, engine, pins, _digest(before)
+        )
     attempted = committed = False
     try:
         async with engine.connect() as connection:
@@ -445,6 +463,8 @@ async def _write_once(engine, pins, archive_file, before):
                     "reason_appended": guard.REASON,
                     "execution_authority": False,
                 }
+                if _custody is not None:
+                    await custody._replay_owned_connection_v1(_custody, connection)
                 actual_id = await connection.scalar(
                     _INSERT_SQL,
                     {
@@ -479,24 +499,93 @@ async def _write_once(engine, pins, archive_file, before):
                     connection, before, final, expected_control, operation_id, journal
                 )
                 _source(pins, archive_file)
+                if _custody is not None:
+                    await custody._replay_owned_connection_v1(_custody, connection)
                 _need(
                     asyncio.current_task() is not None
                     and not asyncio.current_task().cancelling()
                 )
+                if _custody is not None:
+                    custody._advance_stopped55_negative_v1(
+                        _custody, custody._Phase.COMMIT_ATTEMPTED
+                    )
                 attempted = True
                 await transaction.commit()
                 committed = True
+                if _custody is not None:
+                    custody._advance_stopped55_negative_v1(
+                        _custody, custody._Phase.READBACK_ONLY
+                    )
                 return operation_id, expected_control, journal, final
             except BaseException:
                 if not attempted:
                     await transaction.rollback()
                 raise
     except BaseException:  # noqa: BLE001 -- redact failures/cancellation after the monotone commit boundary.
+        if _custody is not None:
+            custody._mark_owned_unknown_v1(_custody)
         if committed:
             raise NegativeStopReadbackRequired(operation_id) from None
         if attempted:
             raise NegativeStopCommitUnknown(operation_id) from None
         raise NegativeStopRefused("retained0055_negative_stop_refused") from None
+
+
+async def _run_owned_stopped55_negative_v1(
+    lease, engine, pins, archive_file, *, expected_after_sha256
+):
+    from scripts import retained_pg_bootstrap_custody_v1 as custody
+
+    custody._require_stopped55_negative_v1(lease, engine, pins)
+    _need(owner.original._digest(pins.reviewed_snapshot_sha256))
+    before, before_sha = await _stopped55_snapshot_v1(
+        engine,
+        pins,
+        archive_file,
+        expected_after_sha256=expected_after_sha256,
+        _custody=lease,
+    )
+    operation, expected_control, journal, final = await _write_once(
+        engine, pins, archive_file, before, _custody=lease
+    )
+    try:
+        for _ in range(2):
+            _source(pins, archive_file)
+            async with engine.connect() as connection:
+                transaction = await _begin(connection, pins, _Phase.READ)
+                try:
+                    await custody._replay_owned_connection_v1(lease, connection)
+                    actual = await _observe(connection, pins, _Phase.READ)
+                    _need(actual == final)
+                    await _verify_delta(
+                        connection, before, actual, expected_control, operation, journal
+                    )
+                finally:
+                    await transaction.rollback()
+    except BaseException:  # noqa: BLE001 -- no future write after acknowledged commit.
+        custody._mark_owned_unknown_v1(lease)
+        raise NegativeStopReadbackRequired(operation) from None
+    return {
+        "schema": SCHEMA,
+        "status": "COMMITTED_NEGATIVE_STOP_READBACK_VERIFIED",
+        "operation_id": str(operation),
+        "database_head": "0055",
+        "control_revision": 1,
+        "armed": False,
+        "emergency_stop": True,
+        "restart_latch_required": True,
+        "independent_readbacks": 2,
+        "before_snapshot_sha256": before_sha,
+        "after_snapshot_sha256": _digest(final),
+        "old_rows_preserved_except_declared_control_delta": True,
+        "new_journal_rows": 1,
+        "schema_upgrade_authorized": False,
+        "full_schema0055_verified": False,
+        "human_arm_or_clear_authorization": False,
+        "exchange_flat": None,
+        "account_complete": False,
+        "execution_authority": False,
+    }
 
 
 async def reassert_retained_owner_0055_stop_v1(
