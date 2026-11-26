@@ -64,6 +64,7 @@ SOURCE17_PREFIX_SHA256 = (
 )
 PRESERVED_DOMAIN = b"ctcc.retained_pg.cold_preserved_8ef.v1\x00"
 FRESH_FIXTURE_DOMAIN = b"ctcc.retained_pg.cold_canonical17_fixture.v1\x00"
+STOPPED55_DOMAIN = b"ctcc.retained_pg.stopped_0055_physical_inventory.v1\x00"
 _PRESERVED_CONFIRMATION = "UPGRADE PRESERVED CTCC DB0017 TO STOPPED DB0055"
 BOOTSTRAP_SECONDS = 60
 OWNER_SECONDS = 600  # Existing owner API budget, unrelated to trading clocks.
@@ -117,6 +118,7 @@ _OWNED_TERMINAL_ERRORS = (
 _FRESH_SUCCESS_STATUS = "FRESH_CANONICAL17_COLD_TO_STOPPED0055_VERIFIED"
 _PRESERVED_PLAN_STATUS = "PRESERVED_COLD_0017_READ_ONLY_ELIGIBILITY_VERIFIED"
 _PRESERVED_UPGRADE_STATUS = "PRESERVED_COLD_0017_TO_STOPPED0055_VERIFIED"
+_STOPPED55_READONLY_STATUS = "READ_ONLY_STOPPED_COPY_NEGATIVE_ELIGIBILITY_DATA"
 
 
 def _need(value, code="retained_pg_bootstrap_refused"):
@@ -234,6 +236,7 @@ def _safe_exception_chain_v1(error):
 class _Origin(Enum):
     PRESERVED = "preserved_8ef_cold_cluster"
     FRESH_FIXTURE = "fresh_canonical17_cold_fixture"
+    STOPPED55_READER = "preserved_stopped0055_reader"
 
 
 class _Phase(Enum):
@@ -492,6 +495,7 @@ def _write_private(path, raw, *, uid=0, gid=0, _maximum=32 * 1024 * 1024):
 def _cold_manifest(raw, *, origin):
     _need(type(raw) is bytes and 0 < len(raw) <= 16 * 1024 * 1024)
     _need(type(origin) is _Origin)
+    _need(origin in (_Origin.PRESERVED, _Origin.FRESH_FIXTURE))
     if origin is _Origin.PRESERVED:
         _need(_sha(raw) == PRESERVED_MANIFEST_SHA256)
     value = json.loads(raw)
@@ -521,6 +525,21 @@ def _cold_manifest(raw, *, origin):
             type(value["system_identifier_sha256"]) is str
             and _HEX.fullmatch(value["system_identifier_sha256"]) is not None
         )
+    domain = PRESERVED_DOMAIN if origin is _Origin.PRESERVED else FRESH_FIXTURE_DOMAIN
+    parsed = _cold_tree_entries_v1(value, origin_sha256=_sha(domain + raw))
+    if origin is _Origin.PRESERVED:
+        files, directories, _, _ = parsed
+        _need(
+            (len(files), len(directories), value["regular_bytes"])
+            == (1579, 28, 136846581)
+        )
+        _need(
+            files.get("global/pg_control", (None, None))[1] == PRESERVED_CONTROL_SHA256
+        )
+    return parsed
+
+
+def _cold_tree_entries_v1(value, *, origin_sha256):
     files, directories = {}, set()
     _need(0 < len(value["entries"]) <= 100000)
     for item in value["entries"]:
@@ -543,11 +562,6 @@ def _cold_manifest(raw, *, origin):
     _need("" in directories and not _ABSENT.intersection(files.keys() | directories))
     count = sum(size for size, _ in files.values())
     _need(count == value.get("regular_bytes") and count <= 2**31)
-    if origin is _Origin.PRESERVED:
-        _need((len(files), len(directories), count) == (1579, 28, 136846581))
-        _need(
-            files.get("global/pg_control", (None, None))[1] == PRESERVED_CONTROL_SHA256
-        )
     expected_children = {name: set() for name in directories}
     for name in files.keys() | directories:
         if name:
@@ -555,8 +569,133 @@ def _cold_manifest(raw, *, origin):
             parent = "" if path.parent.as_posix() == "." else path.parent.as_posix()
             _need(parent in directories)
             expected_children[parent].add(path.name)
-    domain = PRESERVED_DOMAIN if origin is _Origin.PRESERVED else FRESH_FIXTURE_DOMAIN
-    return files, directories, expected_children, _sha(domain + raw)
+    return files, directories, expected_children, origin_sha256
+
+
+def _stopped55_manifest_v1(raw, request):
+    previous, route = request["predecessor"], request["route"]
+    _need(_sha(raw) == previous["physical_inventory_sha256"])
+    value = json.loads(raw)
+    _need(
+        type(value) is dict
+        and _canonical(value) == raw
+        and set(value)
+        == {
+            "schema",
+            "database_head",
+            "accepted_native_result_sha256",
+            "native_result",
+            "source_archive_sha256",
+            "private_parent_operation",
+            "journal_sha256",
+            "working_directory",
+            "stopped_directory_identity",
+            "entries",
+            "regular_bytes",
+            "execution_authority",
+            "reopen_authority",
+        }
+        and value["schema"] == "ctcc.retained_pg.stopped_0055_physical_inventory.v1"
+        and value["database_head"] == "0055"
+        and value["execution_authority"] is value["reopen_authority"] is False
+        and value["accepted_native_result_sha256"]
+        == previous["native_acceptance_sha256"]
+        and value["source_archive_sha256"] == previous["source_archive_sha256"]
+        and type(value["entries"]) is list
+    )
+    accepted, parent = value["native_result"], value["private_parent_operation"]
+    _need(
+        type(accepted) is dict
+        and type(parent) is dict
+        and accepted["schema"] == "ctcc.retained_pg.preserved_owner_result.v1"
+        and accepted["status"] == _PRESERVED_UPGRADE_STATUS
+        and accepted["database_head"] == "0055"
+        and accepted["after_sha256"] == previous["after_sha256"]
+        and accepted["origin"] == _Origin.PRESERVED.value
+        and accepted["cold_manifest_sha256"] == PRESERVED_MANIFEST_SHA256
+        and accepted["system_identifier_sha256"]
+        == route["cluster_system_identifier_sha256"]
+        and type(accepted["control_revision"]) is int
+        and accepted["control_revision"] == 0
+        and type(accepted["commit_attempts"]) is int
+        and accepted["commit_attempts"] == 1
+        and type(accepted["independent_readbacks"]) is int
+        and accepted["independent_readbacks"] == 2
+        and accepted["exchange_flat"] is None
+        and accepted["account_complete"]
+        is accepted["armed"]
+        is accepted["execution_authority"]
+        is False
+        and all(
+            accepted[name] is True
+            for name in (
+                "cold_source_unchanged_verified",
+                "distinct_working_copy_verified",
+                "owned_server_fast_shutdown_verified",
+                "migration_performed",
+                "emergency_stop",
+                "restart_latch_required",
+                "preserved_backup_lineage_verified",
+                "rehearsal_rolled_back_verified",
+                "source17_bootstrap_catalog_verified",
+            )
+        )
+    )
+    _need(
+        parent["schema"] == "ctcc.retained_pg.live_bootstrap_journal.v1"
+        and parent["execution_authority"] is False
+        and parent["source_archive_sha256"] == previous["source_archive_sha256"]
+        and type(parent["owner_oid"]) is int
+        and parent["owner_oid"] == route["owner_oid"]
+        and type(parent["database_oid"]) is int
+        and parent["database_oid"] == route["database_oid"]
+        and all(
+            parent[name] == accepted[name]
+            for name in (
+                "origin",
+                "origin_sha256",
+                "cold_manifest_sha256",
+                "system_identifier_sha256",
+            )
+        )
+    )
+    journals = value["journal_sha256"]
+    phases = (
+        "ready",
+        "claimed",
+        "rehearsal",
+        "rolled_back",
+        "final",
+        "commit_attempted",
+        "readback_only",
+    )
+    _need(type(journals) is list and len(journals) == len(phases))
+    _need(
+        all(
+            type(row) is dict
+            and set(row) == {"phase", "sha256"}
+            and row["phase"] == phase
+            and type(row["sha256"]) is str
+            and _HEX.fullmatch(row["sha256"]) is not None
+            for row, phase in zip(journals, phases, strict=True)
+        )
+    )
+    _need(len({row["sha256"] for row in journals}) == len(phases))
+    identity = value["stopped_directory_identity"]
+    _need(
+        type(identity) is list
+        and len(identity) == 2
+        and all(type(n) is int and n > 0 for n in identity)
+    )
+    _need(
+        type(value["working_directory"]) is str
+        and Path(value["working_directory"]).is_absolute()
+    )
+    parsed = _cold_tree_entries_v1(value, origin_sha256=_sha(STOPPED55_DOMAIN + raw))
+    _need(
+        {"global/pg_control", "PG_VERSION", "postgresql.auto.conf"} <= parsed[0].keys()
+    )
+    return value, parsed
 
 
 def _read_file_at(parent, name, size, expected, *, owner=70):
@@ -1669,6 +1808,8 @@ def _install_owner_guard_v1():
     from scripts import retained0017_owner_upgrade_0055_v1 as owner_api
     from scripts import retained0017_source_contract_v1 as source_contract
     from scripts import retained0017_upgrade_projection_v1 as projection
+    from scripts import retained0055_negative_stop_guard_v1 as negative_guard
+    from scripts import retained0055_negative_stop_reassert_v1 as negative_stop
     from scripts import verify_migration_identity as identity
 
     os_names = (
@@ -1745,6 +1886,8 @@ def _install_owner_guard_v1():
             baseline,
             bootstrap,
             projection,
+            negative_guard,
+            negative_stop,
             retained_rows,
             heap,
             indexes,
@@ -1982,7 +2125,11 @@ async def _capture_current_bootstrap_v1(
 async def _owned_bootstrap_generator_v1(files, pins, origin, *, confirmation=None):
     """Fixed genuine cold-copy factory. No supplied listener, checker or result."""
     _linux()
-    _need(type(files) is RetainedBootstrapFilesV1 and type(origin) is _Origin)
+    _need(
+        type(files) is RetainedBootstrapFilesV1
+        and type(origin) is _Origin
+        and origin in (_Origin.PRESERVED, _Origin.FRESH_FIXTURE)
+    )
     _need(
         confirmation is None
         or (
@@ -2834,6 +2981,102 @@ def _read_request(path):
     return value, RetainedBootstrapFilesV1(**value["files"]), source
 
 
+def _read_stopped55_request(path):
+    value = json.loads(_private_bytes(path, 65536))
+    _need(
+        type(value) is dict
+        and set(value)
+        == {
+            "schema",
+            "files",
+            "source",
+            "predecessor",
+            "route",
+            "maintenance_settings_sha256",
+        }
+        and value["schema"] == "ctcc.retained_pg.stopped0055_readonly_request.v1"
+    )
+    files, source, previous, route = (
+        value[name] for name in ("files", "source", "predecessor", "route")
+    )
+    _need(
+        type(files) is dict
+        and set(files) == set(RetainedBootstrapFilesV1.__dataclass_fields__)
+    )
+    _need(
+        all(
+            type(item) is str
+            and 0 < len(item) <= 2048
+            and Path(item).is_absolute()
+            and ".." not in Path(item).parts
+            for item in files.values()
+        )
+    )
+    _need(
+        type(source) is dict
+        and set(source) == {"commit", "tree", "archive", "manifest"}
+    )
+    _need(
+        all(
+            type(item) is str
+            and (_GIT if name in ("commit", "tree") else _HEX).fullmatch(item)
+            is not None
+            for name, item in source.items()
+        )
+    )
+    _need(
+        type(previous) is dict
+        and set(previous)
+        == {
+            "physical_inventory_sha256",
+            "native_acceptance_sha256",
+            "source_archive_sha256",
+            "after_sha256",
+        }
+    )
+    _need(
+        type(route) is dict
+        and set(route)
+        == {
+            "source_manifest_sha256",
+            "ca_sha256",
+            "cluster_system_identifier_sha256",
+            "host",
+            "port",
+            "database",
+            "owner",
+            "database_oid",
+            "owner_oid",
+            "database_head",
+        }
+    )
+    _need(
+        route["source_manifest_sha256"] == source["manifest"]
+        and (route["host"], route["port"], route["owner_oid"], route["database_head"])
+        == ("127.0.0.1", PORT, 10, "0055")
+        and all(
+            type(route[key]) is int for key in ("port", "owner_oid", "database_oid")
+        )
+        and 0 < route["database_oid"] < 2**32
+        and all(
+            type(route[key]) is str and _NAME.fullmatch(route[key]) is not None
+            for key in ("database", "owner")
+        )
+    )
+    _need(
+        all(
+            type(item) is str and _HEX.fullmatch(item) is not None
+            for item in (
+                *previous.values(),
+                route["ca_sha256"],
+                route["cluster_system_identifier_sha256"],
+                value["maintenance_settings_sha256"],
+            )
+        )
+    )
+    return value, RetainedBootstrapFilesV1(**files), source
+
+
 def _read_fresh_request(path):
     value = json.loads(_private_bytes(path, 65536))
     _need(type(value) is dict and set(value) == {"schema", "resources", "source"})
@@ -2946,13 +3189,10 @@ def _run_fixed_supervisor_v1(request, files, source, origin):
     """
     _linux()
     _need(type(origin) is _Origin)
+    has_cold_input = origin is not _Origin.FRESH_FIXTURE
     _need(
         type(files)
-        is (
-            RetainedBootstrapFilesV1
-            if origin is _Origin.PRESERVED
-            else FreshCanonical17ResourcesV1
-        )
+        is (RetainedBootstrapFilesV1 if has_cold_input else FreshCanonical17ResourcesV1)
     )
     venv, vendor_manifest, _locator_sha256 = _require_runtime_provider(files)
     _verify_image(Path(files.pg_rootfs), Path(files.pg_inventory_file))
@@ -2966,18 +3206,28 @@ def _run_fixed_supervisor_v1(request, files, source, origin):
         == this_raw
     )
     manifest_raw = None
-    if origin is _Origin.PRESERVED:
-        # Validate the fixed preserved origin BEFORE any image program starts.
-        manifest_raw = _private_bytes(
-            Path(files.cold_manifest_file),
-            16 * 1024 * 1024,
-            expected=PRESERVED_MANIFEST_SHA256,
+    if has_cold_input:
+        expected = (
+            PRESERVED_MANIFEST_SHA256
+            if origin is _Origin.PRESERVED
+            else request["predecessor"]["physical_inventory_sha256"]
         )
-        cold_manifest = _cold_manifest(manifest_raw, origin=_Origin.PRESERVED)
+        manifest_raw = _private_bytes(
+            Path(files.cold_manifest_file), 16 * 1024 * 1024, expected=expected
+        )
         cold = os.open(
             files.cold_directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
         )
         try:
+            if origin is _Origin.PRESERVED:
+                cold_manifest = _cold_manifest(manifest_raw, origin=_Origin.PRESERVED)
+            else:
+                stopped, cold_manifest = _stopped55_manifest_v1(manifest_raw, request)
+                _need(files.cold_directory == stopped["working_directory"])
+                _need(
+                    tuple(stopped["stopped_directory_identity"])
+                    == _directory_identity(os.fstat(cold))[:2]
+                )
             _verify_cold_tree(cold, cold_manifest)
         finally:
             os.close(cold)
@@ -3000,7 +3250,7 @@ def _run_fixed_supervisor_v1(request, files, source, origin):
     _readonly_bind(runtime / "source", resources / "source")
     _readonly_bind(Path(files.pg_rootfs), resources / "pg-rootfs")
     _readonly_bind(Path(files.python_rootfs), resources / "python-rootfs")
-    if origin is _Origin.PRESERVED:
+    if has_cold_input:
         _readonly_bind(Path(files.cold_directory), resources / "cold")
     _readonly_bind(venv, runtime / "venv")
     _write_private(runtime / "vendor-manifest.json", vendor_manifest)
@@ -3013,7 +3263,7 @@ def _run_fixed_supervisor_v1(request, files, source, origin):
             resources / name, _bounded_regular(Path(original), 2 * 1024 * 1024)
         )
     _write_admitted_source_archive_v1(resources / "source.tar", source_raw, source)
-    if origin is _Origin.PRESERVED:
+    if has_cold_input:
         _write_private(resources / "cold-manifest.json", manifest_raw)
     for name, raw in zip(("ca.pem", "server.pem", "server.key"), tls, strict=True):
         _write_private(resources / name, raw)
@@ -3029,7 +3279,7 @@ def _run_fixed_supervisor_v1(request, files, source, origin):
         "runtime_provider_file": "/run/resources/provider.json",
         "source_archive_file": "/run/resources/source.tar",
     }
-    if origin is _Origin.PRESERVED:
+    if has_cold_input:
         mapped = RetainedBootstrapFilesV1(
             **common_resources,
             cold_directory="/run/resources/cold",
@@ -3053,10 +3303,15 @@ def _run_fixed_supervisor_v1(request, files, source, origin):
             python_mount / "dev" / name, stat.S_IFCHR | 0o666, os.makedev(major, minor)
         )
         os.chmod(python_mount / "dev" / name, 0o666)
+    entry = {
+        _Origin.PRESERVED: "_supervisor_main_v1",
+        _Origin.FRESH_FIXTURE: "_supervisor_fresh_main_v1",
+        _Origin.STOPPED55_READER: "_supervisor_stopped55_main_v1",
+    }[origin]
     program = (
-        "import sys;sys.path.insert(0,'/run/resources/source');from scripts.retained_pg_bootstrap_custody_v1 import _supervisor_main_v1;raise SystemExit(_supervisor_main_v1())"
-        if origin is _Origin.PRESERVED
-        else "import sys;sys.path.insert(0,'/run/resources/source');from scripts.retained_pg_bootstrap_custody_v1 import _supervisor_fresh_main_v1;raise SystemExit(_supervisor_fresh_main_v1())"
+        "import sys;sys.path.insert(0,'/run/resources/source');"
+        f"from scripts.retained_pg_bootstrap_custody_v1 import {entry};"
+        f"raise SystemExit({entry}())"
     )
     controller_pid = os.getpid()
     common = {
@@ -3086,11 +3341,16 @@ def _run_fixed_supervisor_v1(request, files, source, origin):
     result = json.loads(outcome.stdout)
     _need(type(result) is dict and result.get("execution_authority") is False)
     expected_status = (
-        _FRESH_SUCCESS_STATUS
-        if origin is _Origin.FRESH_FIXTURE
-        else _PRESERVED_PLAN_STATUS
-        if request["confirmation"] is None
-        else _PRESERVED_UPGRADE_STATUS
+        (
+            _PRESERVED_PLAN_STATUS
+            if request["confirmation"] is None
+            else _PRESERVED_UPGRADE_STATUS
+        )
+        if origin is _Origin.PRESERVED
+        else {
+            _Origin.FRESH_FIXTURE: _FRESH_SUCCESS_STATUS,
+            _Origin.STOPPED55_READER: _STOPPED55_READONLY_STATUS,
+        }[origin]
     )
     _need(result.get("status") == expected_status)
     return result
@@ -3109,6 +3369,14 @@ def run_fresh_canonical17_acceptance_supervisor_v1(request_file):
     _need(type(request_file) is type(Path()))
     request, resources, source = _read_fresh_request(request_file)
     return _run_fixed_supervisor_v1(request, resources, source, _Origin.FRESH_FIXTURE)
+
+
+def run_stopped0055_readonly_supervisor_v1(request_file):
+    """Fixed owner readback of an independently sealed stopped DB0055 copy."""
+    _linux()
+    _need(type(request_file) is type(Path()))
+    request, files, source = _read_stopped55_request(request_file)
+    return _run_fixed_supervisor_v1(request, files, source, _Origin.STOPPED55_READER)
 
 
 def _completed_owned_data_v1(owned, origin, *, committed):
@@ -3213,6 +3481,172 @@ async def _execute_fresh_acceptance_v1(resources, source):
         "status": _FRESH_SUCCESS_STATUS,
         "preserved_pg_inputs_read": 0,
     }
+
+
+async def _execute_stopped55_readonly_v1(request, files):
+    from sqlalchemy.engine import URL
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from scripts import retained0017_owner_upgrade_0055_v1 as owner_api
+    from scripts import retained0055_negative_stop_reassert_v1 as negative
+
+    route = negative.canonical.OwnerRoutePinsV1(**request["route"])
+    source, previous = request["source"], request["predecessor"]
+    pins = negative.NegativeStopPinsV1(
+        negative.canonical.OwnerUpgradePinsV1(
+            source["commit"], source["tree"], source["archive"], route
+        ),
+        request["maintenance_settings_sha256"],
+    )
+    raw = _private_bytes(
+        Path(files.cold_manifest_file),
+        16 * 1024 * 1024,
+        expected=previous["physical_inventory_sha256"],
+    )
+    stopped, parsed = _stopped55_manifest_v1(raw, request)
+    cold = Path(files.cold_directory)
+    _need(
+        cold == Path("/run/resources/cold")
+        and os.statvfs(cold).f_flag & os.ST_RDONLY != 0
+    )
+    parent = Path(files.private_output_parent)
+    _private_parent(parent)
+    _install_owner_guard_v1()
+    _guard()
+    cold_fd = os.open(cold, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    working_fd = server = engine = None
+    try:
+        cold_identity = _directory_identity(os.fstat(cold_fd))
+        _need(tuple(stopped["stopped_directory_identity"]) == cold_identity[:2])
+        _verify_cold_tree(cold_fd, parsed)
+        tls = _tls_inputs(files)
+        _need(_sha(tls[0]) == route.ca_sha256)
+        namespaces = _private_namespaces()
+        _loopback_up()
+        outer = parent / ("ctcc-stopped0055-readonly-" + uuid.uuid4().hex)
+        outer.mkdir(mode=0o700)
+        runtime, pg_rootfs = outer / "runtime", outer / "pg-rootfs"
+        runtime.mkdir(mode=0o700)
+        pg_rootfs.mkdir(mode=0o700)
+        os.chown(runtime, 70, 70)
+        working_fd = _copy_cold_tree(cold_fd, runtime / "data", parsed)
+        working_identity = _directory_identity(os.fstat(working_fd))
+        _need(working_identity[:2] != cold_identity[:2])
+        (runtime / "socket").mkdir(mode=0o700)
+        os.chown(runtime / "socket", 70, 70)
+        settings = _bootstrap_config(
+            runtime,
+            database=route.database,
+            owner=route.owner,
+            cluster_name="ctcc_stopped55_" + uuid.uuid4().hex,
+            tls=tls,
+        )
+        _need(settings["default_transaction_read_only"] == "on")
+        _mount_pg_image(Path(files.pg_rootfs), pg_rootfs, runtime)
+        parent_pid = os.getpid()
+        control = ["/usr/local/bin/pg_controldata", "/run/data"]
+        common = {
+            "preexec_fn": lambda: _child_preexec(pg_rootfs, parent_pid),
+            "env": _fixed_environment(),
+            "close_fds": True,
+            "stdin": subprocess.DEVNULL,
+        }
+        system = route.cluster_system_identifier_sha256
+        _need(_control_state(_run_image(control, common, 5)) == system)
+        _clear_working_auto_conf(working_fd, runtime, parsed)
+        server, common = _new_server_v1(pg_rootfs, runtime, settings)
+        await _wait_server_v1(
+            server, common, database=route.database, owner=route.owner
+        )
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        context.load_verify_locations(cadata=tls[0].decode("ascii"))
+        _need(
+            context.check_hostname is True and context.verify_mode == ssl.CERT_REQUIRED
+        )
+        startup = dict(owner_api._STARTUP_SETTINGS)
+        _need(startup["default_transaction_read_only"] == "on")
+        engine = create_async_engine(
+            URL.create(
+                "postgresql+asyncpg",
+                username=route.owner,
+                host="127.0.0.1",
+                port=PORT,
+                database=route.database,
+            ),
+            poolclass=NullPool,
+            connect_args={"ssl": context, "timeout": 10, "server_settings": startup},
+            hide_parameters=True,
+        )
+        result = await negative._plan_stopped_copy_v1(
+            engine,
+            pins,
+            Path(files.source_archive_file),
+            expected_after_sha256=previous["after_sha256"],
+        )
+        _guard()
+        _need(
+            _namespaces() == namespaces
+            and _directory_identity(os.fstat(working_fd)) == working_identity
+        )
+        stopped_status = _stop_held(server)
+        server = None
+        _need(stopped_status == "FAST_SHUTDOWN_0")
+        _need(_control_state(_run_image(control, common, 5)) == system)
+        _verify_cold_tree(cold_fd, parsed)
+        return {
+            **result,
+            "stopped_inventory_sha256": previous["physical_inventory_sha256"],
+            "native_predecessor_acceptance_sha256": previous[
+                "native_acceptance_sha256"
+            ],
+            "stopped_source_unchanged_verified": True,
+            "distinct_working_copy_verified": True,
+            "owned_server_fast_shutdown_verified": True,
+            "commit_attempts": 0,
+        }
+    finally:
+        try:
+            if server is not None:
+                _need(_stop_held(server) == "FAST_SHUTDOWN_0")
+            if engine is not None:
+                await engine.dispose()
+        finally:
+            if working_fd is not None:
+                os.close(working_fd)
+            os.close(cold_fd)
+
+
+def _supervisor_stopped55_main_v1():
+    try:
+        _linux()
+        _need(Path(__file__).resolve().parents[1] == Path("/run/resources/source"))
+        request, files, source = _read_stopped55_request(Path("/run/request.json"))
+        _need(_current_executable_sha() == PYTHON_ELF_SHA256)
+        _require_runtime_provider(files, logical=True)
+        _verify_image(Path(files.pg_rootfs), Path(files.pg_inventory_file))
+        _verify_source(files, source)
+        _require_runtime_metadata_v1()
+        result = asyncio.run(_execute_stopped55_readonly_v1(request, files))
+        print(_canonical(result).decode("ascii"))
+        return 0
+    except BaseException as failure:  # noqa: BLE001 -- fixed DATA refusal; full diagnostic stays private.
+        import traceback
+
+        try:
+            _write_private(
+                Path("/run/stopped55-readonly-exception-chain.private.json"),
+                _canonical(_safe_exception_chain_v1(failure)),
+            )
+            _write_private(
+                Path("/run/stopped55-readonly-failure.private.txt"),
+                traceback.format_exc().encode("utf-8"),
+            )
+        except BaseException:  # noqa: BLE001 -- failed diagnostics cannot pass a refusal.
+            return 2
+        print(_owned_failure_stdout_v1("REFUSED").decode("ascii"), end="")
+        return 2
 
 
 def _supervisor_fresh_main_v1():

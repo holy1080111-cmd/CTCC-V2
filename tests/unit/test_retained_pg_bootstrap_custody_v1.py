@@ -97,6 +97,66 @@ def test_preserved_plan_lease_cannot_claim_write_or_switch_to_fixture(monkeypatc
     assert seen == [subject._Phase.CLAIMED]
 
 
+def _stopped55_request(tmp_path):
+    return {
+        "schema": "ctcc.retained_pg.stopped0055_readonly_request.v1",
+        "files": {
+            name: str(tmp_path / name)
+            for name in subject.RetainedBootstrapFilesV1.__dataclass_fields__
+        },
+        "source": {
+            "commit": "1" * 40,
+            "tree": "2" * 40,
+            "archive": "3" * 64,
+            "manifest": "4" * 64,
+        },
+        "predecessor": {
+            "physical_inventory_sha256": "5" * 64,
+            "native_acceptance_sha256": "6" * 64,
+            "source_archive_sha256": "7" * 64,
+            "after_sha256": "8" * 64,
+        },
+        "route": {
+            "source_manifest_sha256": "4" * 64,
+            "ca_sha256": "9" * 64,
+            "cluster_system_identifier_sha256": "a" * 64,
+            "host": "127.0.0.1",
+            "port": subject.PORT,
+            "database": "declared_db",
+            "owner": "declared_owner",
+            "database_oid": 21,
+            "owner_oid": 10,
+            "database_head": "0055",
+        },
+        "maintenance_settings_sha256": "b" * 64,
+    }
+
+
+def test_stopped55_request_is_a_distinct_read_only_purpose(tmp_path, monkeypatch):
+    packet = _stopped55_request(tmp_path)
+    monkeypatch.setattr(
+        subject, "_private_bytes", lambda *_: subject._canonical(packet)
+    )
+    assert subject._read_stopped55_request(tmp_path / "request")[0] == packet
+    packet["confirmation"] = subject._PRESERVED_CONFIRMATION
+    with pytest.raises(subject.RetainedBootstrapRefused):
+        subject._read_stopped55_request(tmp_path / "request")
+
+
+def test_stopped55_reader_purpose_cannot_claim_either_write_origin(monkeypatch):
+    record = SimpleNamespace(
+        phase=subject._Phase.READY,
+        origin=subject._Origin.STOPPED55_READER,
+        engine=object(),
+        preserved_apply_confirmed=True,
+    )
+    monkeypatch.setattr(subject, "_guard", lambda: None)
+    monkeypatch.setattr(subject, "_record", lambda _owner: record)
+    for fixture in (False, True):
+        with pytest.raises(subject.RetainedBootstrapRefused):
+            subject._claim_owned_apply_v1(object(), fixture=fixture)
+
+
 def test_private_maintenance_config_pins_lock_capacity_and_existing_limits(
     tmp_path, monkeypatch
 ):

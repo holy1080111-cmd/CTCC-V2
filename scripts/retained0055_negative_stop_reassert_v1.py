@@ -224,10 +224,25 @@ async def _observe(connection, pins, phase):
 
 
 async def _read(engine, pins, *, expected_after_sha256=None):
+    if expected_after_sha256 is not None:
+        from scripts import retained_pg_bootstrap_custody_v1 as custody
+
+        custody._guard()
     async with engine.connect() as connection:
         transaction = await _begin(connection, pins, _Phase.READ)
         try:
             if expected_after_sha256 is not None:
+                actual = (
+                    await connection.exec_driver_sql(
+                        "SELECT pg_catalog.current_setting('default_transaction_read_only'), "
+                        "pg_catalog.current_setting('transaction_read_only'), "
+                        "pg_catalog.current_setting('transaction_isolation'), "
+                        "pg_catalog.host(pg_catalog.inet_server_addr())"
+                    )
+                ).one()
+                _need(tuple(actual) == ("on", "on", "repeatable read", "127.0.0.1"))
+                await custody._read_maintenance_lock_profile_v1(connection)
+                custody._guard()
                 await owner._replay_stopped0055_continuity_v1(
                     connection,
                     _inspection_pins_v1(pins),
@@ -267,6 +282,7 @@ async def _plan_stopped_copy_v1(engine, pins, archive_file, *, expected_after_sh
         "independent_readbacks": 2,
         "mutation_performed": False,
         "exchange_flat": None,
+        "account_complete": False,
         "execution_authority": False,
     }
 
