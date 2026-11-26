@@ -29,6 +29,8 @@ from app.trade_qualification.public_market_collector import PublicMarketCollecti
 
 _TIME_FRAMES = frozenset(candle_collector.TIMEFRAMES)
 _MAX_AGE_SECONDS = 5
+_SNAPSHOT_FILENAME = "MarketSnapshot.json"
+_RECEIPT_FILENAME = "snapshot-receipt.json"
 # Anonymous V1 uses a shared age setting for its three REST quote components.
 # Keep ticker/mark at five seconds in the export check and cap funding data
 # return at V1's sixty-second maximum. The trading policies are separate.
@@ -118,18 +120,29 @@ def _snapshot(reopened, instrument: str) -> tuple[bytes, dict]:
     }
 
 
-def _write_export(directory, snapshot: bytes, receipt: dict) -> None:
-    receipt_raw = canonical(receipt)
-    if directory.names() or not 0 < len(snapshot) <= MAX_RAW:
+def _require_output_inventory(directory, *, resume_output: bool) -> None:
+    expected = [_SNAPSHOT_FILENAME] if resume_output else []
+    if sorted(directory.names()) != expected:
         raise SnapshotExportRefused("public_snapshot_output_unavailable")
-    for name, payload in (
-        ("MarketSnapshot.json", snapshot),
-        ("snapshot-receipt.json", receipt_raw),
+
+
+def _write_export(
+    directory, snapshot: bytes, receipt: dict, *, resume_output: bool = False
+) -> None:
+    receipt_raw = canonical(receipt)
+    _require_output_inventory(directory, resume_output=resume_output)
+    if not 0 < len(snapshot) <= MAX_RAW:
+        raise SnapshotExportRefused("public_snapshot_output_unavailable")
+    if not resume_output:
+        directory.publish(_SNAPSHOT_FILENAME, snapshot)
+    if directory.read(_SNAPSHOT_FILENAME, MAX_RAW) != snapshot:
+        raise SnapshotExportRefused("public_snapshot_output_readback")
+    directory.publish(_RECEIPT_FILENAME, receipt_raw)
+    if (
+        directory.read(_RECEIPT_FILENAME, MAX_RAW) != receipt_raw
+        or directory.read(_SNAPSHOT_FILENAME, MAX_RAW) != snapshot
+        or sorted(directory.names()) != [_SNAPSHOT_FILENAME, _RECEIPT_FILENAME]
     ):
-        directory.publish(name, payload)
-        if directory.read(name, MAX_RAW) != payload:
-            raise SnapshotExportRefused("public_snapshot_output_readback")
-    if sorted(directory.names()) != ["MarketSnapshot.json", "snapshot-receipt.json"]:
         raise SnapshotExportRefused("public_snapshot_output_readback")
 
 
@@ -155,6 +168,11 @@ def _arguments(arguments):
     )
     replay.add_argument("--plan-sha256", type=_sha256, required=True)
     replay.add_argument("--journal-sha256", type=_sha256, required=True)
+    replay.add_argument(
+        "--resume-output",
+        action="store_true",
+        help="Publish the missing receipt for an exact snapshot already in the output.",
+    )
     return parser.parse_args(arguments)
 
 
@@ -167,9 +185,9 @@ def _export(args) -> dict:
         or journal_path in output_path.parents
     ):
         raise SnapshotExportRefused("public_snapshot_separate_directories_required")
+    resume_output = args.mode == "replay" and args.resume_output
     with public_runtime_journal._root_context(output_path) as output:
-        if output.names():
-            raise SnapshotExportRefused("public_snapshot_output_unavailable")
+        _require_output_inventory(output, resume_output=resume_output)
         if args.mode == "capture":
             captured = asyncio.run(
                 public.capture_initial_global_public_market_v1(
@@ -189,7 +207,7 @@ def _export(args) -> dict:
             expected_journal_sha256=journal_sha256,
         )
         snapshot, receipt = _snapshot(reopened, args.instrument)
-        _write_export(output, snapshot, receipt)
+        _write_export(output, snapshot, receipt, resume_output=resume_output)
         return receipt
 
 

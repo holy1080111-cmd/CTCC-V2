@@ -86,6 +86,12 @@ the source or grant trading authority.
 To reproduce an existing accepted snapshot without network access, replace
 `capture` with `replay --plan-sha256 <digest> --journal-sha256 <digest>` and use
 another empty output directory. Replay retains the original observation time.
+If an interrupted export left only `MarketSnapshot.json`, use the same pinned
+replay command with `--resume-output` and that directory. The exporter verifies
+the existing snapshot byte-for-byte and adds only the missing receipt. Use the
+pair after the command succeeds and both files have been read back. For any
+other output inventory, retain the previous directory and replay into a new
+empty one.
 The exporter requires ticker/mark and quote receipts within five seconds of
 capture completion and allows a funding data-return age of at most sixty
 seconds for local analysis. Observations dated after receipt still fail.

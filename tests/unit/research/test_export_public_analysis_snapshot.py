@@ -73,6 +73,7 @@ def _replay_args(tmp_path, result):
         mode="replay",
         plan_sha256=result.plan_sha256,
         journal_sha256=result.journal_sha256,
+        resume_output=False,
     )
 
 
@@ -117,6 +118,15 @@ async def test_replay_exports_importable_snapshot_without_new_public_requests(
     assert "imported_snapshot_unverified" in imported.analysis.blockers
     assert receipt["source_authenticity_verified"] is False
     assert receipt["execution_authority"] is False
+
+    missing_receipt = output.content.pop("snapshot-receipt.json")
+    args.resume_output = True
+    assert export._export(args) == receipt
+    assert len(harness.requests) == requests_before
+    assert output.content == {
+        "MarketSnapshot.json": raw,
+        "snapshot-receipt.json": missing_receipt,
+    }
     harness.assert_closed()
 
 
@@ -197,3 +207,54 @@ def test_wrong_sha_arguments_are_rejected_before_any_root():
                 "0" * 64,
             ]
         )
+
+
+@pytest.mark.parametrize(
+    ("existing", "error"),
+    [
+        ({}, "public_snapshot_output_unavailable"),
+        ({"snapshot-receipt.json": b"receipt"}, "public_snapshot_output_unavailable"),
+        ({"MarketSnapshot.json": b"foreign"}, "public_snapshot_output_readback"),
+        (
+            {"MarketSnapshot.json": b"{}", "snapshot-receipt.json": b"receipt"},
+            "public_snapshot_output_unavailable",
+        ),
+        (
+            {"MarketSnapshot.json": b"{}", "other.json": b"foreign"},
+            "public_snapshot_output_unavailable",
+        ),
+    ],
+)
+def test_resume_output_refuses_inconsistent_inventory_without_overwriting(
+    existing, error
+):
+    output = MemoryDirectory(existing.copy())
+    with pytest.raises(export.SnapshotExportRefused, match=error):
+        export._write_export(output, b"{}", {}, resume_output=True)
+    assert output.content == existing
+
+
+def test_resume_output_is_available_only_on_pinned_replay(tmp_path):
+    common = [
+        "--instrument",
+        "BTC-USDT-SWAP",
+        "--journal",
+        str(tmp_path / "journal"),
+        "--output",
+        str(tmp_path / "export"),
+    ]
+    with pytest.raises(SystemExit):
+        export._arguments([*common, "capture", "--resume-output"])
+
+    args = export._arguments(
+        [
+            *common,
+            "replay",
+            "--plan-sha256",
+            "0" * 64,
+            "--journal-sha256",
+            "1" * 64,
+            "--resume-output",
+        ]
+    )
+    assert args.resume_output is True
