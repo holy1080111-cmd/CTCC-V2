@@ -11,6 +11,7 @@ from uuid import uuid4
 from scripts import canonical0055_catalog_reference_v1 as canonical55
 from scripts import native_owner_storage_diagnostic_v1 as storage
 from scripts import retained0017_reference_measurement_v1 as measurement
+from scripts import retained0056_fitted_reference_pair_v1 as fitted_reference
 from scripts import verify_final_hermetic as shared
 from scripts.devval_hermetic_tls import devval_tls
 from scripts.evidence_json import read_evidence_json
@@ -30,14 +31,8 @@ RUNNER = measurement.PROBE_RUNNER
 TEST_MODULE = "tests/integration/test_retained0017_catalog_references_v1_pg.py"
 REPORT = "test-results/retained0017-reference-probe.xml"
 canonical, digest = measurement.canonical, measurement.digest
-UNSCOPED_CASE = (
-    "tests.integration.test_native_owner_upgrade_0056_v2_pg",
-    "test_actual0056_unscoped_fitted_catalog_rejects_permissive_acl",
-)
-UNSCOPED_NODE = UNSCOPED_CASE[0].replace(".", "/") + ".py::" + UNSCOPED_CASE[1]
-UNSCOPED_REPORT = "test-results/unscoped-fitted56-owner.xml"
-UNSCOPED_SCHEMA = "ctcc.source58.unscoped_fitted56_tls_probe.v1"
-UNSCOPED_SCOPE = "disposable0056_owner_tls_acl_drift_no_external_execution_authority"
+UNSCOPED_SCHEMA = "ctcc.source58.unscoped_fitted56_bootstrap_reference_probe.v1"
+UNSCOPED_SCOPE = "fresh_disposable0056_bootstrap_owner_tls_data_reference"
 UNSCOPED_SUBJECT = "90f2a714bc31a7833579ee112b64619c31bea5d8"
 UNSCOPED_INPUTS = {
     "scripts/retained0056_unscoped_fitted_observation_v1.py": "1a8b9bcb33ec5649b102e5a01a38982fbecb7df3e218c765d55f07627f4ef55f",
@@ -52,9 +47,11 @@ def _storage_mode(args):
 
 
 def _unscoped_mode(args):
-    value = getattr(args, "unscoped_fitted56_owner_acl", False)
-    need(type(value) is bool and not (value and _storage_mode(args)))
-    return value
+    label = getattr(args, "unscoped_fitted56_reference", None)
+    need(
+        label is None or (label in fitted_reference.LABELS and not _storage_mode(args))
+    )
+    return label
 
 
 def _unscoped_subject(files):
@@ -69,7 +66,11 @@ def _unscoped_subject(files):
 
 def _test_scope(args):
     if _unscoped_mode(args):
-        return (UNSCOPED_CASE,), (UNSCOPED_NODE,), UNSCOPED_REPORT
+        return (
+            (fitted_reference.CASE,),
+            (fitted_reference.NODE,),
+            fitted_reference.REPORT,
+        )
     if _storage_mode(args):
         return (
             (*storage.CASES, canonical55.CASE),
@@ -106,9 +107,10 @@ def verify_probe(root, *, args, files):
         prefix = "ctcc-final-" + state["run_id"] + "-"
         need(
             state["schema"] == UNSCOPED_SCHEMA
-            and state["suite"] == "unscoped-fitted56-owner-acl"
+            and state["suite"] == "unscoped-fitted56-bootstrap-reference"
             and state["runner_contract"] == UNSCOPED_SCHEMA
             and state["validation_scope"] == UNSCOPED_SCOPE
+            and state["reference_label"] == unscoped
             and state["database_target"] == "0056"
             and state["source_contract_head"] == "0058"
             and state["source_files_sha256"] == digest(raw_map)
@@ -167,7 +169,12 @@ def verify_probe(root, *, args, files):
     )
     need(report["tests"] == report["passed"] == len(cases) and report["skipped"] == 0)
     if unscoped:
-        result = report
+        result = fitted_reference.measurement(
+            (root / fitted_reference.MEASUREMENT).read_bytes(),
+            label=unscoped,
+            manifest=state["manifest_sha256"],
+        )
+        need(state["reference_measurement"] == result)
     elif diagnostic:
         result = storage.verify_reports_v1(root, source)
         need(
@@ -238,10 +245,11 @@ def run_probe(args, raw, files, root):
     if unscoped:
         state.update(
             schema=UNSCOPED_SCHEMA,
-            suite="unscoped-fitted56-owner-acl",
+            suite="unscoped-fitted56-bootstrap-reference",
             runner_contract=UNSCOPED_SCHEMA,
             validation_scope=UNSCOPED_SCOPE,
             database_target="0056",
+            reference_label=unscoped,
             validation_subject=_unscoped_subject(files),
             execution_authority=False,
         )
@@ -391,7 +399,13 @@ def run_probe(args, raw, files, root):
         cases, nodes, report_path = _test_scope(args)
         if unscoped:
             test_stage = "unscoped-fitted56-tests"
-            measurement_environment = ()
+            measurement_environment = (
+                "-e",
+                "CTCC_UNSCOPED_FITTED56_REFERENCE=" + unscoped,
+                "-e",
+                "CTCC_DEVVAL_CUSTODY_TEST_SOURCE_MANIFEST_SHA256="
+                + state["manifest_sha256"],
+            )
         else:
             test_stage = "native-storage-tests" if diagnostic else "reference17-tests"
             measurement_environment = (
@@ -427,12 +441,18 @@ def run_probe(args, raw, files, root):
             report["tests"] == report["passed"] == len(cases) and report["skipped"] == 0
         )
         state["tests"] = report
-        if diagnostic:
+        if unscoped:
+            state["reference_measurement"] = fitted_reference.measurement(
+                (root / fitted_reference.MEASUREMENT).read_bytes(),
+                label=unscoped,
+                manifest=state["manifest_sha256"],
+            )
+        elif diagnostic:
             state["native_storage_components"] = storage.verify_reports_v1(root, state)
             state["canonical55_reference"] = canonical55.verify_reference_v1(
                 root, state, files
             )
-        elif not unscoped:
+        else:
             state["pair"] = measurement.verify_reference_pair(
                 root,
                 source=measurement.source_identity(state, files, mapping.read_bytes()),
@@ -464,7 +484,7 @@ def run_probe(args, raw, files, root):
         )
     verify_probe(root, args=args, files=files)
     if unscoped:
-        print("UNSCOPED_FITTED56_OWNER_TLS=PASS", flush=True)
+        print("UNSCOPED_FITTED56_BOOTSTRAP_REFERENCE=PASS", flush=True)
     else:
         print(
             "NATIVE_STORAGE_CATALOG_DIAGNOSTIC=PASS"
@@ -487,7 +507,9 @@ def main():
     parser.add_argument("--verify-only", action="store_true")
     purposes = parser.add_mutually_exclusive_group()
     purposes.add_argument("--native-storage-diagnostic", action="store_true")
-    purposes.add_argument("--unscoped-fitted56-owner-acl", action="store_true")
+    purposes.add_argument(
+        "--unscoped-fitted56-reference", choices=fitted_reference.LABELS
+    )
     args = parser.parse_args()
     for value, pattern in (
         (args.commit, r"[a-f0-9]{40}"),
@@ -499,7 +521,7 @@ def main():
     if args.verify_only:
         verify_probe(args.output, args=args, files=files)
         if _unscoped_mode(args):
-            print("UNSCOPED_FITTED56_OWNER_ARCHIVED_READBACK=PASS", flush=True)
+            print("UNSCOPED_FITTED56_BOOTSTRAP_ARCHIVED_READBACK=PASS", flush=True)
         else:
             print(
                 "NATIVE_STORAGE_DIAGNOSTIC_ARCHIVED_READBACK=PASS"

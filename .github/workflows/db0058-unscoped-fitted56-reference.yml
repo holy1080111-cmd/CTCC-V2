@@ -1,0 +1,125 @@
+name: Source58 independent DB0056 bootstrap fitted references
+
+on:
+  push:
+    branches: [work/db0058-unscoped-fitted56-reference]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  measure:
+    if: github.ref == 'refs/heads/work/db0058-unscoped-fitted56-reference'
+    name: Actual fresh bootstrap reference ${{ matrix.reference }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        reference: [a, b]
+    steps:
+      - name: Checkout exact validation topic
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Build and measure one fresh isolated PostgreSQL cluster
+        shell: bash
+        env:
+          CTCC_REFERENCE_LABEL: ${{ matrix.reference }}
+        run: |
+          set -euo pipefail
+          subject=8761dbb2b263ad7981e31c570264094f9c760fa0
+          commit=$(git rev-parse HEAD)
+          test "$commit" = "$GITHUB_SHA"
+          git merge-base --is-ancestor "$subject" "$commit"
+          diff -u <(printf '%s\n' \
+            .github/workflows/db0058-unscoped-fitted56-reference.yml MANIFEST.sha256 \
+            scripts/retained0056_fitted_reference_pair_v1.py scripts/run_retained0017_reference_probe_v1.py \
+            tests/integration/test_retained0056_fitted_reference_pair_v1_pg.py) \
+            <(git diff --name-only "$subject" "$commit")
+          python3 scripts/manifest.py --check
+          tree=$(git rev-parse 'HEAD^{tree}')
+          archive="$RUNNER_TEMP/ctcc-source.tar"
+          git -c core.autocrlf=false -c core.eol=lf archive --format=tar --output="$archive" "$commit"
+          digest=$(sha256sum "$archive" | cut -d ' ' -f 1)
+          options=(--archive "$archive" --archive-sha256 "$digest" --commit "$commit" --tree "$tree"
+            --unscoped-fitted56-reference "$CTCC_REFERENCE_LABEL" --output "$RUNNER_TEMP/ctcc-fitted56-reference")
+          python3 -m scripts.run_retained0017_reference_probe_v1 "${options[@]}"
+          python3 -m scripts.run_retained0017_reference_probe_v1 "${options[@]}" --verify-only
+      - name: Preserve measured source, JUnit and exact reference
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ctcc-fitted56-reference-${{ matrix.reference }}-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/ctcc-source.tar
+            ${{ runner.temp }}/ctcc-fitted56-reference/*.json
+            ${{ runner.temp }}/ctcc-fitted56-reference/*.log
+            ${{ runner.temp }}/ctcc-fitted56-reference/test-results/*.xml
+            ${{ runner.temp }}/ctcc-fitted56-reference/test-results/*.json
+          if-no-files-found: error
+          retention-days: 30
+
+  compare:
+    if: github.ref == 'refs/heads/work/db0058-unscoped-fitted56-reference'
+    needs: measure
+    name: Independently replay and compare both fitted references
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact validation topic
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download both exact run artifacts
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          pattern: ctcc-fitted56-reference-*-${{ github.sha }}
+          path: ${{ runner.temp }}/ctcc-fitted56-replayed
+      - name: Verify source and compare independently allocated catalogs
+        shell: bash
+        run: |
+          set -euo pipefail
+          commit=$(git rev-parse HEAD)
+          test "$commit" = "$GITHUB_SHA"
+          tree=$(git rev-parse 'HEAD^{tree}')
+          input="$RUNNER_TEMP/ctcc-fitted56-replayed"
+          for label in a b; do
+            artifact="$input/ctcc-fitted56-reference-$label-$commit"
+            archive="$artifact/ctcc-source.tar"
+            digest=$(sha256sum "$archive" | cut -d ' ' -f 1)
+            python3 -m scripts.run_retained0017_reference_probe_v1 \
+              --archive "$archive" --archive-sha256 "$digest" --commit "$commit" --tree "$tree" \
+              --unscoped-fitted56-reference "$label" --output "$artifact/ctcc-fitted56-reference" --verify-only
+          done
+          cmp "$input/ctcc-fitted56-reference-a-$commit/ctcc-source.tar" \
+            "$input/ctcc-fitted56-reference-b-$commit/ctcc-source.tar"
+          python3 - "$input" "$commit" "$tree" "$RUNNER_TEMP/unscoped-fitted56-reference-pair.json" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+          from scripts import retained0056_fitted_reference_pair_v1 as ref
+          base, commit, tree, output = sys.argv[1:]
+          roots = [Path(base) / f'ctcc-fitted56-reference-{label}-{commit}' / 'ctcc-fitted56-reference' for label in ref.LABELS]
+          states = [json.loads((root / 'identity.json').read_bytes()) for root in roots]
+          fields = ('commit', 'tree', 'archive_sha256', 'manifest_sha256', 'runner_sha256')
+          assert all(states[0][key] == states[1][key] for key in fields)
+          assert states[0]['commit'] == commit and states[0]['tree'] == tree
+          assert states[0]['run_id'] != states[1]['run_id']
+          pair = ref.compare(*[(root / ref.MEASUREMENT).read_bytes() for root in roots], manifest=states[0]['manifest_sha256'])
+          data = ref.canonical({**pair, 'validation_source': {key: states[0][key] for key in fields}})
+          with Path(output).open('xb') as stream:
+              assert stream.write(data) == len(data)
+          assert Path(output).read_bytes() == data
+          print('ACTUAL_DISPOSABLE_BOOTSTRAP_FITTED_PAIR_DATA=PASS sha256=' + ref.digest(data))
+          PY
+      - name: Retain compared data without an installed reference seal
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ctcc-fitted56-reference-pair-${{ github.sha }}
+          path: ${{ runner.temp }}/unscoped-fitted56-reference-pair.json
+          if-no-files-found: error
+          retention-days: 30
